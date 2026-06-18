@@ -1,0 +1,33 @@
+[package]
+name = "kt-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SSH + terminal engine for KitonyTerms (russh + alacritty_terminal). No UI dependencies."
+
+[dependencies]
+kt-config.workspace = true
+tokio.workspace = true
+russh.workspace = true
+alacritty_terminal.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# headless example helpers
+rpassword.workspace = true
+crossterm.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+# integration test: in-process SSH server
+russh = { workspace = true }
+rand = "0.10"
+bytes = "1"
+futures = "0.3"
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"

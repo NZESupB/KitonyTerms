@@ -1,0 +1,30 @@
+# Rust 构建产物 / Rust build artifacts
+/target
+**/*.rs.bk
+*.pdb
+# 注意:本仓库含可执行程序(kt-app),Cargo.lock 应当提交,故不忽略。
+# Note: this workspace ships a binary (kt-app), so Cargo.lock IS committed.
+
+# 代码覆盖率 / 性能分析 / Coverage & profiling
+*.profraw
+*.profdata
+
+# KitonySSH 本地状态(切勿提交密钥/会话)
+# KitonySSH local state (never commit secrets/sessions)
+/.kitony/
+*.vault
+
+# 环境变量与本地密钥 / Environment & local secrets
+.env
+.env.*
+!.env.example
+
+# OS / 编辑器 / OS & editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude 本地配置 / Claude local config
+.claude

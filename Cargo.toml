@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kt-core",
+    "crates/kt-config",
+    "crates/kt-secrets",
+    "crates/kt-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["KitonyTerms contributors"]
+repository = "https://github.com/nzesupb/KitonyTerms"
+
+# Centralized dependency versions shared across crates.
+# Versions are validated/bumped via `cargo add` — treat these as the source of truth.
+[workspace.dependencies]
+# --- internal crates ---
+kt-config = { path = "crates/kt-config" }
+kt-secrets = { path = "crates/kt-secrets" }
+kt-core = { path = "crates/kt-core" }
+
+# --- async runtime ---
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "sync", "macros", "time"] }
+
+# --- SSH (pure Rust) ---
+russh = "0.61"
+russh-config = "0.58"
+
+# --- terminal backend (API not stability-guaranteed → pinned) ---
+alacritty_terminal = "=0.26.0"
+
+# --- serialization / config ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+directories = "6"
+
+# --- crypto (master-password vault) ---
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = { version = "1", features = ["derive"] }
+
+# --- error handling / logging / utils ---
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- headless example helpers ---
+rpassword = "7"
+crossterm = "0.29"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

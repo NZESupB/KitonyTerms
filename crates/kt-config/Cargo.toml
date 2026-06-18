@@ -1,0 +1,17 @@
+[package]
+name = "kt-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Configuration, session profiles, and ~/.ssh/config parsing for KitonyTerms"
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+russh-config.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
