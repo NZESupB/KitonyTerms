@@ -132,6 +132,9 @@ impl ConnectParams {
 pub struct SessionProfile {
     /// Display name in the UI / session list.
     pub name: String,
+    /// 可选分组(侧栏文件夹树)。Optional group/folder for the sidebar tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(flatten)]
     pub params: ConnectParams,
 }
@@ -206,8 +209,8 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> Result<Self> {
-        let dirs = ProjectDirs::from("com", "kitony", "KitonyTerms")
-            .ok_or(ConfigError::NoConfigDir)?;
+        let dirs =
+            ProjectDirs::from("com", "kitony", "KitonyTerms").ok_or(ConfigError::NoConfigDir)?;
         Ok(Self { dirs })
     }
 
@@ -250,7 +253,8 @@ impl Config {
     /// Serialize and write the config to `path` atomically.
     pub fn save_to(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let toml = toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))?;
+        let toml =
+            toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
@@ -292,6 +296,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.upsert_session(SessionProfile {
             name: "prod-web".into(),
+            group: None,
             params: ConnectParams {
                 host: "10.0.0.5".into(),
                 port: 2222,
@@ -313,10 +318,12 @@ mod tests {
         let mut cfg = Config::default();
         cfg.upsert_session(SessionProfile {
             name: "x".into(),
+            group: None,
             params: ConnectParams::new("a", "u"),
         });
         cfg.upsert_session(SessionProfile {
             name: "x".into(),
+            group: None,
             params: ConnectParams::new("b", "u"),
         });
         assert_eq!(cfg.sessions.len(), 1);

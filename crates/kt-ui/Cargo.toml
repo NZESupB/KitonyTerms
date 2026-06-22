@@ -1,0 +1,30 @@
+[package]
+name = "kt-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Dioxus UI 框架
+dioxus = { version = "0.7", features = ["desktop"] }
+
+# 内部依赖
+kt-core.workspace = true
+kt-config.workspace = true
+kt-secrets.workspace = true
+
+# SSH（用于类型）
+russh.workspace = true
+
+# 异步运行时
+tokio.workspace = true
+
+# 错误处理
+anyhow.workspace = true
+tracing.workspace = true
+
+# 时间格式化
+chrono = "0.4"

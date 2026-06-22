@@ -4,25 +4,20 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "KitonyTerms GUI — egui/eframe + wgpu terminal rendering (no WebView)"
-default-run = "kitonyterms"
+authors.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "kitonyterms"
 path = "src/main.rs"
 
 [dependencies]
-kt-core.workspace = true
-kt-config.workspace = true
-kt-secrets.workspace = true
-tokio.workspace = true
-anyhow.workspace = true
+# UI 组件库
+kt-ui.workspace = true
+
+# Dioxus 框架
+dioxus.workspace = true
+
+# 日志
 tracing.workspace = true
 tracing-subscriber.workspace = true
-eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts"] }
-egui = "0.32.3"
-egui_tiles = "0.13.0"
-rfd = "0.17.2"
-# Pull in wgpu's native backends (Metal/Vulkan/DX12) — eframe's `wgpu` feature
-# alone does not enable a platform backend, so the wgpu Instance has none.
-wgpu = "25"

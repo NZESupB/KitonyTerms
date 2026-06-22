@@ -42,6 +42,9 @@ pub enum SshError {
     #[error("channel error: {0}")]
     Channel(String),
 
+    #[error("sftp error: {0}")]
+    Sftp(String),
+
     #[error(transparent)]
     Russh(#[from] russh::Error),
 }
@@ -108,12 +111,26 @@ impl SshShell {
         };
 
         let addr = (params.host.as_str(), params.port);
-        let mut handle = client::connect(config, addr, handler)
-            .await
-            .map_err(|e| match e {
+        // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。
+        // Bound connect + handshake so an unreachable host fails fast instead of
+        // hanging in the "Connecting" state.
+        let connect_fut = client::connect(config, addr, handler);
+        let mut handle = match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            connect_fut,
+        )
+        .await
+        {
+            Ok(res) => res.map_err(|e| match e {
                 russh::Error::IO(io) => SshError::Connect(io.to_string()),
                 other => SshError::Connect(other.to_string()),
-            })?;
+            })?,
+            Err(_) => {
+                return Err(SshError::Connect(
+                    "connection timed out after 15s / 连接超时(15 秒)".to_string(),
+                ))
+            }
+        };
 
         authenticate(&mut handle, params, auth).await?;
 
@@ -174,6 +191,47 @@ impl SshShell {
             .disconnect(Disconnect::ByApplication, "bye", "en")
             .await
             .map_err(SshError::from)
+    }
+
+    /// 打开一条用于资源监控的持久通道(非交互 `sh`,从通道 stdin 读命令)。
+    /// 返回的 [`russh::Channel`] 可 move 进监控任务,周期写入命令并读取输出。
+    ///
+    /// Open a persistent channel for resource monitoring: a non-interactive `sh`
+    /// reading commands from the channel stdin. The returned channel can be moved
+    /// into a monitor task that periodically writes commands and reads output.
+    pub async fn open_monitor_channel(&self) -> Result<russh::Channel<client::Msg>> {
+        let channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        channel
+            .exec(true, "sh")
+            .await
+            .map_err(|e| SshError::Channel(format!("exec sh: {e}")))?;
+        Ok(channel)
+    }
+
+    /// 在当前已认证会话上打开 SFTP 子系统,返回独立拥有通道流的 [`SftpSession`]。
+    ///
+    /// Open the SFTP subsystem on the already-authenticated session and return an
+    /// owned [`SftpSession`]. The returned session drives its own channel stream
+    /// independently, so it can be moved into a dedicated task without blocking
+    /// the interactive shell loop. The TCP session stays alive as long as this
+    /// [`SshShell`] (which owns `handle`) lives.
+    pub async fn open_sftp(&self) -> Result<russh_sftp::client::SftpSession> {
+        let channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| SshError::Channel(format!("request_subsystem sftp: {e}")))?;
+        russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| SshError::Sftp(e.to_string()))
     }
 }
 

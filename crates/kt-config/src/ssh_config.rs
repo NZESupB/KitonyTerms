@@ -100,7 +100,9 @@ Host known
 ",
         );
         // russh-config returns a config with defaults for unknown hosts.
-        let got = lookup_ssh_config(&path, "totally-unknown").unwrap().unwrap();
+        let got = lookup_ssh_config(&path, "totally-unknown")
+            .unwrap()
+            .unwrap();
         assert_eq!(got.hostname, None);
         assert_eq!(got.user, None);
         assert_eq!(got.port, None);

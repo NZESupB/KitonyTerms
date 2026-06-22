@@ -1,35 +1,22 @@
-//! KitonyTerms GUI entry point.
+//! KitonyTerms 桌面应用入口
 
-mod app;
-mod connect_dialog;
-mod fonts;
-mod input;
-mod store;
-mod terminal_view;
-mod unlock_dialog;
+use kt_ui::App;
 
-use eframe::egui;
+fn main() {
+    // 初始化日志
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
-fn main() -> eframe::Result<()> {
-    // Logging: RUST_LOG=info cargo run -p kt-app
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,kt_app=info".into()),
-        )
-        .try_init();
+    tracing::info!("启动 KitonyTerms");
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 680.0])
-            .with_min_inner_size([640.0, 400.0])
-            .with_title("KitonyTerms"),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "KitonyTerms",
-        native_options,
-        Box::new(|cc| Ok(Box::new(app::KitonyApp::new(cc)))),
-    )
+    // 启动应用
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(dioxus::desktop::Config::new().with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title("KitonyTerms")
+                .with_inner_size(dioxus::desktop::LogicalSize::new(1200.0, 800.0))
+                .with_resizable(true),
+        ))
+        .launch(App);
 }

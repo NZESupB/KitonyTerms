@@ -28,3 +28,6 @@
 
 # Claude 本地配置 / Claude local config
 .claude
+
+# AI 代理工作流文档（不提交到仓库）/ AI agent workflow docs
+.agentdocs/workflow/

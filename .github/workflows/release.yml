@@ -1,11 +1,21 @@
-# 三端打包与发布 / Cross-platform packaging & release
+# 多端打包与发布 / Cross-platform packaging & release
 #
 # 触发方式:
-#   - 推送 v* 标签(如 v0.1.0)→ 构建三端产物并创建 GitHub Release
+#   - 推送 v* 标签(如 v0.0.2)→ 构建各端产物并创建 GitHub Release
 #   - 手动触发(workflow_dispatch)→ 仅构建并上传 artifacts,便于验证打包流程
 #
-# 产物覆盖:Linux x86_64、macOS(aarch64 + x86_64)、Windows x86_64。
+# 产物覆盖:Linux(x86_64 + aarch64)、macOS(aarch64 + x86_64)、Windows(x86_64 + aarch64)。
 # 二进制名为 kitonyterms(来自 kt-app crate)。
+#
+# 打包格式:
+#   - Linux  → .tar.gz(仅可执行文件)
+#   - macOS  → .zip 与 .dmg(均内含 KitonyTerms.app 应用包)
+#   - Windows→ .zip(便携版)与 -setup.exe(Inno Setup 安装包)
+#
+# 备注:
+#   - macOS x86_64 在 Apple Silicon(macos-14)上交叉编译 —— Intel runner(macos-13)
+#     已进入淘汰期、排队严重,交叉编译可避免长时间 "Waiting for a runner"。
+#   - Linux/Windows ARM 使用原生 ARM 托管 runner,无需交叉工具链。
 name: release
 
 on:
@@ -34,31 +44,40 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
+          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x86_64。
           - name: macos-x86_64
-            os: macos-13
+            os: macos-14
             target: x86_64-apple-darwin
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+          - name: windows-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # egui/eframe(winit + wgpu)与 rfd(GTK3 后端)在 Linux 上的构建依赖。
+      # Dioxus Desktop (基于 Tauri/WebView) 在 Linux 上的构建依赖。
+      # 原生 ARM runner 会自动安装 arm64 版本,无需额外处理。
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libwayland-dev
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -73,37 +92,106 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release -p kt-app --target ${{ matrix.target }}
 
-      # 统一打包:类 Unix 平台输出 .tar.gz,Windows 输出 .zip。
-      # 归档内含可执行文件与许可证/说明文档。
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      # ---- 打包 / Packaging ----
+      # 各平台产物统一输出到 dist/ 目录,最后整目录上传。
+
+      # Linux:仅打包可执行文件为 .tar.gz。
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           version="${GITHUB_REF_NAME:-dev}"
           staging="kitonyterms-${version}-${{ matrix.name }}"
-          mkdir -p "$staging"
+          mkdir -p dist "$staging"
           cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/"
-          cp README.md README.zh-CN.md "$staging/" 2>/dev/null || true
-          tar -czf "${staging}.tar.gz" "$staging"
-          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+          tar -czf "dist/${staging}.tar.gz" "$staging"
 
+      # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          version_clean="${version#v}"
+          base="kitonyterms-${version}-${{ matrix.name }}"
+          app="KitonyTerms.app"
+          mkdir -p dist "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/kitonyterms"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>KitonyTerms</string>
+            <key>CFBundleDisplayName</key><string>KitonyTerms</string>
+            <key>CFBundleIdentifier</key><string>com.kitonyterms.app</string>
+            <key>CFBundleExecutable</key><string>kitonyterms</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${version_clean}</string>
+            <key>CFBundleShortVersionString</key><string>${version_clean}</string>
+            <key>LSMinimumSystemVersion</key><string>10.15</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x86_64、
+          # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
+          # 详见 Release 说明。
+          codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
+          codesign --force --sign - "$app"
+          codesign --verify --verbose "$app"
+          # .zip:直接归档应用包(ditto 保留 macOS 元数据)。
+          ditto -c -k --keepParent "$app" "dist/${base}.zip"
+          # .dmg:含应用包与 /Applications 软链,便于拖拽安装。
+          dmgroot="$(mktemp -d)"
+          cp -R "$app" "$dmgroot/"
+          ln -s /Applications "$dmgroot/Applications"
+          hdiutil create -volname "KitonyTerms" -srcfolder "$dmgroot" \
+            -ov -format UDZO "dist/${base}.dmg"
+
+      # Windows:输出便携版 .zip 与 Inno Setup 安装包 -setup.exe。
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
-          $staging = "kitonyterms-$version-${{ matrix.name }}"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" $staging
-          Copy-Item README.md, README.zh-CN.md $staging -ErrorAction SilentlyContinue
-          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
-          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $base = "kitonyterms-$version-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path dist, staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" staging
+          # 便携版 zip。
+          Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
+          # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
+          choco install innosetup -y --no-progress
+          $appVersion = $version -replace '^v', ''
+          $iss = @"
+          [Setup]
+          AppName=KitonyTerms
+          AppVersion=$appVersion
+          DefaultDirName={autopf}\KitonyTerms
+          DefaultGroupName=KitonyTerms
+          UninstallDisplayName=KitonyTerms
+          OutputDir=dist
+          OutputBaseFilename=$base-setup
+          Compression=lzma2
+          SolidCompression=yes
+          [Files]
+          Source: "staging\kitonyterms.exe"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{group}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          Name: "{autodesktop}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          [Run]
+          Filename: "{app}\kitonyterms.exe"; Description: "Launch KitonyTerms"; Flags: nowait postinstall skipifsilent
+          "@
+          $iss | Out-File -FilePath app.iss -Encoding utf8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc app.iss
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.ASSET }}
+          path: dist/
           if-no-files-found: error
 
   # 仅在打 tag 时汇总所有平台产物并创建 Release。
@@ -114,7 +202,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
@@ -125,3 +213,22 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # 安装提示置于自动生成的发布说明之前。应用未做 Apple 公证 /
+          # Windows 代码签名,故说明首次打开方式。
+          body: |
+            ## 安装说明 / Installation notes
+
+            ### macOS
+            应用未经 Apple 公证,首次打开会提示「已损坏」或「无法打开」。这属正常现象,执行一次以下命令移除隔离属性即可:
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/KitonyTerms.app
+            ```
+
+            或前往「系统设置 → 隐私与安全性」,在被拦截提示处点击「仍要打开」。
+
+            ### Windows
+            安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
+
+            ---
+

@@ -18,12 +18,55 @@ use tokio::sync::mpsc;
 
 use kt_config::ConnectParams;
 
+use crate::monitor::MonitorStats;
 use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
 /// Opaque session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub u64);
+
+/// 远端目录条目(core 内中立类型,不向 UI 暴露 russh-sftp 的类型)。
+/// A remote directory entry (a neutral type; russh-sftp types stay in the core).
+#[derive(Debug, Clone)]
+pub struct SftpEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    /// Unix 修改时间(秒)。Unix mtime in seconds.
+    pub modified: Option<u32>,
+    /// Unix 权限位。Unix permission bits.
+    pub permissions: Option<u32>,
+}
+
+/// SFTP 操作类型,随完成回执返回,便于 UI 决定后续动作(如刷新列表)。
+/// The kind of completed SFTP operation, returned with the done event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SftpOp {
+    Download,
+    Upload,
+    Mkdir,
+    Remove,
+    Rename,
+}
+
+/// 一次 SFTP 请求(路径均为远端 POSIX 路径,以 `/` 分隔)。
+/// One SFTP request. Remote paths are POSIX (`/`-separated).
+#[derive(Debug, Clone)]
+pub enum SftpRequest {
+    /// 列出远端目录。List a remote directory.
+    List { path: String },
+    /// 下载远端文件到本地。Download a remote file to a local path.
+    Download { remote: String, local: std::path::PathBuf },
+    /// 上传本地文件到远端。Upload a local file to a remote path.
+    Upload { local: std::path::PathBuf, remote: String },
+    /// 新建远端目录。Create a remote directory.
+    Mkdir { path: String },
+    /// 删除远端文件或目录。Remove a remote file or directory.
+    Remove { path: String, is_dir: bool },
+    /// 重命名/移动远端条目。Rename/move a remote entry.
+    Rename { from: String, to: String },
+}
 
 /// Commands sent from the UI into the core.
 #[derive(Debug)]
@@ -44,6 +87,11 @@ pub enum ToCore {
     },
     /// Scroll the viewport by `delta` lines (positive = into history).
     Scroll { id: SessionId, delta: i32 },
+    /// An SFTP request on this session (opens the subsystem lazily on first use).
+    Sftp { id: SessionId, req: SftpRequest },
+    /// 启动该会话的资源监控(首次惰性开启,之后持续到断开)。
+    /// Start resource monitoring (lazy on first use, runs until disconnect).
+    StartMonitor { id: SessionId },
     /// Close / disconnect a session.
     Disconnect { id: SessionId },
 }
@@ -62,6 +110,28 @@ pub enum FromCore {
     Title { id: SessionId, title: String },
     /// Terminal bell.
     Bell { id: SessionId },
+    /// SFTP 目录列表就绪。SFTP directory listing is ready.
+    SftpListing {
+        id: SessionId,
+        path: String,
+        entries: Vec<SftpEntry>,
+    },
+    /// SFTP 传输进度(`total` 为 0 表示未知)。Transfer progress (`total` 0 = unknown).
+    SftpProgress {
+        id: SessionId,
+        name: String,
+        transferred: u64,
+        total: u64,
+    },
+    /// SFTP 操作完成。An SFTP operation finished successfully.
+    SftpDone { id: SessionId, op: SftpOp },
+    /// SFTP 操作失败。An SFTP operation failed.
+    SftpError { id: SessionId, message: String },
+    /// 资源监控采样。A resource-monitor sample.
+    Monitor {
+        id: SessionId,
+        stats: Box<MonitorStats>,
+    },
     /// Session ended. `error` is `None` for a clean exit.
     Closed {
         id: SessionId,
@@ -174,6 +244,16 @@ async fn core_loop(
                     let _ = h.cmd_tx.send(SessionCmd::Scroll(delta));
                 }
             }
+            ToCore::Sftp { id, req } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h.cmd_tx.send(SessionCmd::Sftp(req));
+                }
+            }
+            ToCore::StartMonitor { id } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h.cmd_tx.send(SessionCmd::StartMonitor);
+                }
+            }
             ToCore::Disconnect { id } => {
                 if let Some(h) = sessions.remove(&id) {
                     let _ = h.cmd_tx.send(SessionCmd::Disconnect);
@@ -188,6 +268,8 @@ enum SessionCmd {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     Scroll(i32),
+    Sftp(SftpRequest),
+    StartMonitor,
     Disconnect,
 }
 
@@ -240,6 +322,14 @@ impl SessionTask {
 
         let mut close_error: Option<String> = None;
 
+        // SFTP 子任务的命令发送端,首次收到 SFTP 请求时惰性建立。
+        // Command sender to the SFTP subtask, created lazily on first request.
+        let mut sftp_tx: Option<mpsc::UnboundedSender<SftpRequest>> = None;
+
+        // 资源监控子任务是否已启动(惰性,首次请求时开启)。
+        // Whether the monitor subtask has been started (lazy on first request).
+        let mut monitor_started = false;
+
         loop {
             tokio::select! {
                 // Control messages from the UI.
@@ -259,6 +349,52 @@ impl SessionTask {
                         Some(SessionCmd::Scroll(delta)) => {
                             term.scroll(delta);
                             self.emit_render(&term);
+                        }
+                        Some(SessionCmd::Sftp(req)) => {
+                            // 首次使用时在同一会话上开 SFTP 子系统,并 move 进独立子任务。
+                            // Open the SFTP subsystem lazily and move it into a subtask.
+                            if sftp_tx.is_none() {
+                                match shell.open_sftp().await {
+                                    Ok(session) => {
+                                        let (tx, rx) = mpsc::unbounded_channel();
+                                        tokio::spawn(crate::sftp::sftp_task(
+                                            id,
+                                            session,
+                                            rx,
+                                            self.out.clone(),
+                                        ));
+                                        sftp_tx = Some(tx);
+                                    }
+                                    Err(e) => {
+                                        let _ = self.out.send(FromCore::SftpError {
+                                            id,
+                                            message: e.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            if let Some(tx) = &sftp_tx {
+                                let _ = tx.send(req);
+                            }
+                        }
+                        Some(SessionCmd::StartMonitor) => {
+                            // 首次请求时在同一会话上开监控通道,并 move 进独立子任务。
+                            // Open the monitor channel lazily and move it into a subtask.
+                            if !monitor_started {
+                                match shell.open_monitor_channel().await {
+                                    Ok(channel) => {
+                                        tokio::spawn(crate::monitor::monitor_task(
+                                            id,
+                                            channel,
+                                            self.out.clone(),
+                                        ));
+                                        monitor_started = true;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("failed to start monitor: {e}");
+                                    }
+                                }
+                            }
                         }
                         Some(SessionCmd::Disconnect) | None => {
                             let _ = shell.disconnect().await;

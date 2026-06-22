@@ -127,6 +127,9 @@ fn event_loop(mgr: &mut SessionManager, out: &mut std::io::Stdout) -> anyhow::Re
                 }
                 return Ok(());
             }
+            // headless 示例不涉及 SFTP,忽略相关事件。
+            // The headless example has no SFTP UI; ignore those events.
+            Some(_) => {}
             None => return Ok(()), // core stopped
         }
     }

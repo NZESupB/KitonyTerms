@@ -2,110 +2,121 @@
 
 **English** | [中文](README.zh-CN.md)
 
-A lightweight, cross-platform SSH client — a spiritual successor to
-[WindTerm](https://github.com/kingToolbox/WindTerm), built in **Rust** with
-**native GPU rendering** (no Electron, no WebView).
+A lightweight, cross-platform SSH terminal client built in **Rust** with [Dioxus](https://dioxuslabs.com/) — a modern desktop framework leveraging native WebView for the UI layer while keeping SSH/terminal logic in pure Rust.
 
-> **Goals:** fast startup, low memory, native feel, one small binary on
-> macOS / Windows / Linux.
+> **Goals:** Fast startup, low memory footprint, native system integration, and a single compact binary for macOS / Windows / Linux (x86_64 + aarch64).
 
 ## Status
 
-Phase 1 (core engine) and Phase 2 (a working GUI) are **functional**. Polish and
-advanced features (Phase 3) are ongoing.
+**Functional** — core SSH engine, terminal emulation, system monitoring, and SFTP file transfer are working. The UI is built with Dioxus 0.7 desktop.
 
-| Crate | What it does | Tests |
-|-------|--------------|-------|
-| `kt-secrets` | Master-password vault: Argon2id + XChaCha20-Poly1305, encrypted-at-rest secrets (SSH passwords, key passphrases) | 6 ✅ |
+| Crate | Responsibility | Tests |
+|-------|---------------|-------|
+| `kt-secrets` | Master-password vault: Argon2id + XChaCha20-Poly1305 for encrypted-at-rest secrets (SSH passwords, key passphrases) | 6 ✅ |
 | `kt-config` | TOML session profiles & app settings + `~/.ssh/config` parsing/merging | 9 ✅ |
-| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration. **No UI deps.** | 13 ✅ |
-| `kt-app` | egui/eframe + wgpu (Metal/Vulkan/DX12) GUI: tabs, terminal rendering, input, connect dialog | — |
+| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration + SFTP support + system monitoring. **No UI dependencies.** | 13 ✅ |
+| `kt-ui` | Dioxus components: terminal view, connection dialog, SFTP panel, system monitor | — |
+| `kt-app` | Main binary: integrates `kt-ui` with `kt-core` via async message channels | — |
 
-**28 tests pass; `clippy` is clean.** The headline core result is an **in-process
-round-trip integration test** (`kt-core/tests/roundtrip.rs`) that stands up a
-real `russh` SSH server on loopback and drives the real `SessionManager` through
-the entire path: `connect → password auth → PTY request → shell → channel data
-→ TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes
-actually land in the rendered grid. The GUI launches on macOS via the wgpu Metal
-backend and renders grids through egui's painter.
+**28 tests pass; `clippy` is clean.** The core validation is an **in-process round-trip integration test** ([`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)) that spins up a real `russh` SSH server on loopback and drives the full `SessionManager` path: `connect → password auth → PTY → shell → channel data → TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes actually land in the rendered grid.
 
 ### What works today
 
-- Connect to an SSH host (password / public-key / agent-selection) via a dialog
-- Interactive PTY shell rendered in a GPU-accelerated terminal view
-- Multiple concurrent sessions in tabs; per-tab resize, scrollback, font zoom
-- True color, bold/underline/strikeout, block/bar/underline cursor
-- `~/.ssh/config` lookup + default identity files (headless example)
-- **Session persistence**: save connections to `config.toml`; passwords are
-  encrypted into the master-password vault and auto-filled on reconnect
-- **Master-password unlock**: set on first run, prompted on later launches (skippable)
-- **Sidebar**: saved-session list — click to reconnect, delete sessions
+- **SSH Terminal**: Connect via password / public-key / keyboard-interactive auth
+- **Multiple Sessions**: Tabbed interface with per-session scrollback and resize
+- **Terminal Features**: True color, bold/italic/underline/strikethrough, block/bar/underline cursor
+- **Session Persistence**: Save connections to `config.toml`; passwords encrypted in master-password vault
+- **Master Password**: Set on first run, prompted on later launches (skippable)
+- **SFTP Panel**: Browse remote filesystem, upload/download files, create directories, delete/rename
+- **System Monitoring**: Real-time CPU, memory, network, and disk usage (local system)
+- **SSH Config Integration**: Reads `~/.ssh/config` for host aliases and default settings
 
-### Not yet wired
+### Not yet implemented
 
-- Real `known_hosts` trust store (GUI currently trusts on first use).
-- Mid-handshake auth prompts in the GUI (password is collected up front).
-- SFTP, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting.
+- Real `known_hosts` trust store (currently trust-on-first-use)
+- Mid-handshake auth prompts (password collected upfront in connect dialog)
+- SSH agent forwarding, ProxyJump, split panes, triggers/syntax highlighting
 
 ## Architecture
 
 ```
-kt-app (egui/eframe + wgpu)         ← UI thread, immediate-mode
-   │  ToCore (input/resize)   ▲ FromCore (render snapshot/events)
-   ▼  via channels            │
-kt-core (tokio runtime, background)
-   ├─ ssh/      russh: connect, auth (password/pubkey/keyboard-int), PTY shell
-   ├─ term/     alacritty_terminal wrapper → Send-able GridSnapshot (resolved RGB)
-   └─ session   SessionManager: one task per session, UI⇄core message protocol
-        │                         │
-   kt-config             kt-secrets
-   (TOML + ssh_config)       (Argon2id + XChaCha20-Poly1305 vault)
+kt-app (Dioxus desktop binary)
+   ├─ kt-ui (Dioxus components)
+   │    └─ Terminal / Dialog / SFTP / Monitor views
+   └─ kt-core (tokio runtime, background)
+       ├─ ssh/      russh: connect, auth, PTY shell, SFTP subsystem
+       ├─ term/     alacritty_terminal wrapper → GridSnapshot (resolved RGB)
+       ├─ monitor/  System resource monitoring (CPU, memory, disk, network)
+       ├─ sftp/     SFTP task: list/upload/download/mkdir/remove/rename
+       └─ session/  SessionManager: one task per session, UI⇄core message protocol
+            │                         │
+       kt-config             kt-secrets
+       (TOML + ssh_config)   (Argon2id + XChaCha20 vault)
 ```
 
-The terminal **engine** (VT parsing, grid, scrollback) is fully decoupled from
-**rendering**: the core produces an immutable `GridSnapshot` with colors already
-resolved to 24-bit RGB, so the renderer needs no dependency on
-`alacritty_terminal`. The alacritty public API (which is explicitly *not*
-stability-guaranteed) is contained entirely within `kt-core/src/term/`.
+The terminal **engine** (VT parsing, grid, scrollback) is fully decoupled from **rendering**: the core produces an immutable `GridSnapshot` with colors resolved to 24-bit RGB, so the renderer needs no dependency on `alacritty_terminal`. The `alacritty_terminal` API (which is explicitly *not* stability-guaranteed) is contained entirely within `kt-core/src/term/`.
+
+### Session & secrets storage
+
+- **Sessions** (`SessionProfile`: host/port/user/auth/…) are **non-secret** and stored plaintext in `config.toml`.
+- **Secrets** (passwords, key passphrases) are indexed by vault id (`user@host:port`) and encrypted in the vault, never plaintext on disk.
+- On startup the vault is **locked** until the master password is entered in the unlock dialog; skipping unlock allows connections but disables saved-password reading/writing.
 
 ## Tech stack
 
-- **SSH:** [`russh`](https://crates.io/crates/russh) 0.61 (pure-Rust, async)
+- **SSH:** [`russh`](https://crates.io/crates/russh) 0.61 (pure Rust, async)
 - **Terminal backend:** [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) 0.26 (pinned)
-- **GUI/GPU:** `eframe`/`egui` + `wgpu` (Phase 2)
-- **Async:** `tokio`
+- **UI framework:** [Dioxus](https://dioxuslabs.com/) 0.7 desktop (wry + tao + native WebView)
+- **Async runtime:** `tokio`
 - **Crypto:** `argon2`, `chacha20poly1305`, `zeroize`
 - **Config:** `serde` + `toml`, `directories`
 
 ## Building & running
 
-Requires a Rust toolchain (stable, 1.85+).
+Requires Rust toolchain (stable, 1.85+) and platform-specific dependencies:
 
+### Linux (Ubuntu/Debian)
+```bash
+sudo apt install libwebkit2gtk-4.1-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libxdo-dev \
+  libssl-dev \
+  pkg-config
+```
+
+### macOS
+No extra dependencies — the system WebKit is used.
+
+### Windows
+No extra dependencies.
+
+### Build & run
 ```bash
 # Run all tests
 cargo test
 
 # Launch the GUI
 cargo run -p kt-app
-#   first run: set a master password (skippable)
-#   click ➕ New → enter host / user / auth → Connect
-#   tick "Save session" to add it to the sidebar; its password is encrypted in the vault
-#   click a sidebar session to reconnect (password auto-filled)
-#   click the terminal to focus it, then type; mouse-wheel scrolls; A+/A− zoom
+#   First run: set a master password (skippable)
+#   Click ➕ New → enter host / user / auth → Connect
+#   Tick "Save session" to persist it; password encrypted in vault
+#   Click sidebar session to reconnect (password auto-filled)
+#   Terminal view: click to focus, type; mouse wheel scrolls; Cmd/Ctrl +/− zoom
 
-# Try the headless SSH client (exercises the full core pipeline in your terminal)
+# Try the headless SSH client (exercises full core pipeline in terminal)
 cargo run -p kt-core --example headless -- user@host
-#   auth: tries ~/.ssh/config + default keys, then keyboard-interactive, then password
-#   quit: Ctrl-]
+#   Auth: tries ~/.ssh/config + default keys, then keyboard-interactive, then password
+#   Quit: Ctrl-]
 ```
 
 ## Roadmap
 
-- [x] **Phase 1** — core engine (SSH + terminal + sessions), verified end-to-end
-- [x] **Phase 2** — GUI: wgpu terminal rendering, input, connect dialog, multi-tab
-- [x] **Phase 3 (partial)** — session persistence (TOML + vault) + master-password unlock + sidebar
-- [ ] **Remaining** — `known_hosts` trust store, split panes, SFTP panel, ssh-agent,
-      ProxyJump, triggers/highlighting
+- [x] **Phase 1** — Core engine (SSH + terminal + sessions), verified end-to-end
+- [x] **Phase 2** — Dioxus desktop UI: terminal rendering, input, connect dialog, multi-tab
+- [x] **Phase 3** — Session persistence (TOML + vault), master password, SFTP panel, system monitor
+- [ ] **Phase 4** — `known_hosts` trust store, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting
 
 ## License
 
