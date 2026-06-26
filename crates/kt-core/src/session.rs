@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 
@@ -21,6 +22,9 @@ use kt_config::ConnectParams;
 use crate::monitor::MonitorStats;
 use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
+
+const SFTP_REUSE_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+const SFTP_STANDALONE_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Opaque session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -57,9 +61,15 @@ pub enum SftpRequest {
     /// 列出远端目录。List a remote directory.
     List { path: String },
     /// 下载远端文件到本地。Download a remote file to a local path.
-    Download { remote: String, local: std::path::PathBuf },
+    Download {
+        remote: String,
+        local: std::path::PathBuf,
+    },
     /// 上传本地文件到远端。Upload a local file to a remote path.
-    Upload { local: std::path::PathBuf, remote: String },
+    Upload {
+        local: std::path::PathBuf,
+        remote: String,
+    },
     /// 新建远端目录。Create a remote directory.
     Mkdir { path: String },
     /// 删除远端文件或目录。Remove a remote file or directory.
@@ -80,11 +90,7 @@ pub enum ToCore {
     /// Keyboard input bytes for a session's PTY.
     Input { id: SessionId, data: Vec<u8> },
     /// New terminal size (columns, rows).
-    Resize {
-        id: SessionId,
-        cols: u16,
-        rows: u16,
-    },
+    Resize { id: SessionId, cols: u16, rows: u16 },
     /// Scroll the viewport by `delta` lines (positive = into history).
     Scroll { id: SessionId, delta: i32 },
     /// An SFTP request on this session (opens the subsystem lazily on first use).
@@ -246,7 +252,17 @@ async fn core_loop(
             }
             ToCore::Sftp { id, req } => {
                 if let Some(h) = sessions.get(&id) {
-                    let _ = h.cmd_tx.send(SessionCmd::Sftp(req));
+                    if h.cmd_tx.send(SessionCmd::Sftp(req)).is_err() {
+                        let _ = tx.send(FromCore::SftpError {
+                            id,
+                            message: "SFTP 请求无法投递，会话任务已结束".to_string(),
+                        });
+                    }
+                } else {
+                    let _ = tx.send(FromCore::SftpError {
+                        id,
+                        message: "SFTP 请求失败：会话不存在或已关闭".to_string(),
+                    });
                 }
             }
             ToCore::StartMonitor { id } => {
@@ -354,27 +370,87 @@ impl SessionTask {
                             // 首次使用时在同一会话上开 SFTP 子系统,并 move 进独立子任务。
                             // Open the SFTP subsystem lazily and move it into a subtask.
                             if sftp_tx.is_none() {
-                                match shell.open_sftp().await {
-                                    Ok(session) => {
+                                let primary_error = match tokio::time::timeout(
+                                    SFTP_REUSE_OPEN_TIMEOUT,
+                                    shell.open_sftp(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(session)) => {
                                         let (tx, rx) = mpsc::unbounded_channel();
                                         tokio::spawn(crate::sftp::sftp_task(
                                             id,
                                             session,
+                                            None,
                                             rx,
                                             self.out.clone(),
                                         ));
                                         sftp_tx = Some(tx);
+                                        None
                                     }
-                                    Err(e) => {
-                                        let _ = self.out.send(FromCore::SftpError {
-                                            id,
-                                            message: e.to_string(),
-                                        });
+                                    Ok(Err(e)) => Some(format!("复用当前 SSH 会话失败：{e}")),
+                                    Err(_) => Some(format!(
+                                        "复用当前 SSH 会话超时({} 秒)",
+                                        SFTP_REUSE_OPEN_TIMEOUT.as_secs()
+                                    )),
+                                };
+
+                                if sftp_tx.is_none() {
+                                    match tokio::time::timeout(
+                                        SFTP_STANDALONE_OPEN_TIMEOUT,
+                                        SshShell::open_standalone_sftp(
+                                            &self.params,
+                                            self.verifier.clone(),
+                                            self.provider.as_mut(),
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok((session, guard))) => {
+                                            let (tx, rx) = mpsc::unbounded_channel();
+                                            tokio::spawn(crate::sftp::sftp_task(
+                                                id,
+                                                session,
+                                                Some(guard),
+                                                rx,
+                                                self.out.clone(),
+                                            ));
+                                            sftp_tx = Some(tx);
+                                        }
+                                        Ok(Err(e)) => {
+                                            let prefix = primary_error
+                                                .as_deref()
+                                                .unwrap_or("复用当前 SSH 会话失败");
+                                            let _ = self.out.send(FromCore::SftpError {
+                                                id,
+                                                message: format!(
+                                                    "打开 SFTP 子系统失败：{prefix}；独立连接也失败：{e}"
+                                                ),
+                                            });
+                                        }
+                                        Err(_) => {
+                                            let prefix = primary_error
+                                                .as_deref()
+                                                .unwrap_or("复用当前 SSH 会话失败");
+                                            let _ = self.out.send(FromCore::SftpError {
+                                                id,
+                                                message: format!(
+                                                    "打开 SFTP 子系统失败：{prefix}；独立连接超时({} 秒)",
+                                                    SFTP_STANDALONE_OPEN_TIMEOUT.as_secs()
+                                                ),
+                                            });
+                                        }
                                     }
                                 }
                             }
                             if let Some(tx) = &sftp_tx {
-                                let _ = tx.send(req);
+                                if tx.send(req).is_err() {
+                                    sftp_tx = None;
+                                    let _ = self.out.send(FromCore::SftpError {
+                                        id,
+                                        message: "SFTP 子任务已退出，请刷新后重试".to_string(),
+                                    });
+                                }
                             }
                         }
                         Some(SessionCmd::StartMonitor) => {
@@ -382,10 +458,10 @@ impl SessionTask {
                             // Open the monitor channel lazily and move it into a subtask.
                             if !monitor_started {
                                 match shell.open_monitor_channel().await {
-                                    Ok(channel) => {
+                                    Ok(session) => {
                                         tokio::spawn(crate::monitor::monitor_task(
                                             id,
-                                            channel,
+                                            session,
                                             self.out.clone(),
                                         ));
                                         monitor_started = true;
@@ -461,5 +537,72 @@ impl SessionTask {
             id: self.id,
             snapshot,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh::{AcceptAllVerifier, AuthProvider};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct NoopAuth;
+
+    impl AuthProvider for NoopAuth {
+        fn password(&mut self, _user: &str, _host: &str) -> Option<String> {
+            None
+        }
+
+        fn key_passphrase(&mut self, _key_path: &str) -> Option<String> {
+            None
+        }
+
+        fn keyboard_interactive(
+            &mut self,
+            _name: &str,
+            _instructions: &str,
+            _prompts: &[(String, bool)],
+        ) -> Option<Vec<String>> {
+            None
+        }
+    }
+
+    struct NoopFactory;
+
+    impl AuthProviderFactory for NoopFactory {
+        fn create(&self, _id: SessionId, _params: &ConnectParams) -> Box<dyn AuthProvider> {
+            Box::new(NoopAuth)
+        }
+    }
+
+    #[test]
+    fn sftp_request_for_missing_session_returns_error() {
+        let mut manager =
+            SessionManager::spawn(Arc::new(AcceptAllVerifier), Arc::new(NoopFactory)).unwrap();
+
+        manager.send(ToCore::Sftp {
+            id: SessionId(404),
+            req: SftpRequest::List {
+                path: ".".to_string(),
+            },
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            if let Some(event) = manager.try_recv() {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "等待 SFTP 错误事件超时");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        match event {
+            FromCore::SftpError { id, message } => {
+                assert_eq!(id, SessionId(404));
+                assert!(message.contains("会话不存在"));
+            }
+            other => panic!("期望 SftpError，实际收到 {other:?}"),
+        }
     }
 }

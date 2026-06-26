@@ -6,10 +6,12 @@
 //! errors). A single failed operation reports an error but keeps the task alive.
 
 use russh_sftp::client::SftpSession;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::session::{FromCore, SessionId, SftpEntry, SftpOp, SftpRequest};
+use crate::ssh::ClientHandler;
 
 /// 传输分块大小;同时作为进度上报的步长基准。
 /// Transfer chunk size; also the basis for progress-reporting cadence.
@@ -17,6 +19,9 @@ const CHUNK: usize = 32 * 1024;
 /// 进度上报的最小字节间隔,避免刷屏。
 /// Minimum byte interval between progress events to avoid flooding.
 const PROGRESS_STEP: u64 = 256 * 1024;
+/// 单次快速 SFTP 操作超时,避免 UI 无限 loading。
+/// Timeout for quick SFTP operations so the UI never spins forever.
+const QUICK_OP_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// SFTP 子任务主循环。`rx` 关闭(会话结束)时退出,`session` 随之 drop 关闭通道。
 /// Main loop. Exits when `rx` closes (session ended); dropping `session` closes
@@ -24,6 +29,7 @@ const PROGRESS_STEP: u64 = 256 * 1024;
 pub async fn sftp_task(
     id: SessionId,
     session: SftpSession,
+    _connection_guard: Option<russh::client::Handle<ClientHandler>>,
     mut rx: mpsc::UnboundedReceiver<SftpRequest>,
     out: mpsc::UnboundedSender<FromCore>,
 ) {
@@ -47,14 +53,32 @@ async fn handle(
         SftpRequest::List { path } => {
             // 规范化为绝对路径,便于 UI 做上级/进入目录的路径拼接。
             // Canonicalize to an absolute path so the UI can join/parent cleanly.
-            let abs = session
-                .canonicalize(path.clone())
-                .await
-                .unwrap_or_else(|_| path.clone());
-            let read_dir = session
-                .read_dir(abs.clone())
-                .await
-                .map_err(|e| e.to_string())?;
+            let abs =
+                match tokio::time::timeout(QUICK_OP_TIMEOUT, session.canonicalize(path.clone()))
+                    .await
+                {
+                    Ok(Ok(abs)) => abs,
+                    Ok(Err(e)) => {
+                        tracing::debug!(
+                            "SFTP canonicalize {path} failed, fallback to original path: {e}"
+                        );
+                        path.clone()
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "SFTP canonicalize {path} timed out, fallback to original path"
+                        );
+                        path.clone()
+                    }
+                };
+            let read_dir =
+                match tokio::time::timeout(QUICK_OP_TIMEOUT, session.read_dir(abs.clone())).await {
+                    Ok(Ok(read_dir)) => read_dir,
+                    Ok(Err(e)) => {
+                        return Err(format!("读取目录 {abs} 失败：{e}"));
+                    }
+                    Err(_) => return Err(timeout_message("读取目录", &abs)),
+                };
             let mut entries: Vec<SftpEntry> = read_dir
                 .map(|e| {
                     let meta = e.metadata();
@@ -214,4 +238,23 @@ where
 /// Last `/`-separated segment of a remote POSIX path, for display.
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn timeout_message(operation: &str, path: &str) -> String {
+    format!(
+        "{operation} {path} 超时({} 秒)，远端 SFTP 子系统可能无响应",
+        QUICK_OP_TIMEOUT.as_secs()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_message_includes_operation_path_and_limit() {
+        let message = timeout_message("读取目录", "/root");
+        assert!(message.contains("读取目录 /root 超时"));
+        assert!(message.contains("12 秒"));
+    }
 }

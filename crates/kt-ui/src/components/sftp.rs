@@ -1,4 +1,4 @@
-//! SFTP 文件管理面板组件
+//! SFTP 文件管理面板组件。
 
 use dioxus::prelude::*;
 use kt_core::{SessionId, SftpEntry, SftpRequest, ToCore};
@@ -6,171 +6,296 @@ use std::sync::{Arc, Mutex};
 
 use crate::state::AppState;
 
+const UI_SFTP_TIMEOUT_SECS: u64 = 15;
+
 #[component]
 pub fn SftpPanel(session_id: SessionId) -> Element {
     let state = crate::components::app::get_state().clone();
     let state_for_load = state.clone();
+    let state_for_sync = state.clone();
     let state_for_back = state.clone();
     let state_for_refresh = state.clone();
 
-    // SFTP 状态
-    let mut current_path = use_signal(|| "/".to_string());
-    let entries = use_signal(Vec::<SftpEntry>::new);
-    let loading = use_signal(|| false);
-    let error_message = use_signal(|| None::<String>);
+    let mut current_path = use_signal(|| ".".to_string());
+    let mut entries = use_signal(Vec::<SftpEntry>::new);
+    let mut loading = use_signal(|| false);
+    let mut error_message = use_signal(|| None::<String>);
+    let mut did_initial_load = use_signal(|| false);
 
-    // 初始加载
     use_effect(move || {
-        load_directory(state_for_load.clone(), session_id, current_path(), loading, entries);
+        if !did_initial_load() {
+            did_initial_load.set(true);
+            load_directory(
+                state_for_load.clone(),
+                session_id,
+                ".".to_string(),
+                loading,
+                entries,
+                error_message,
+            );
+        }
+    });
+
+    use_effect(move || {
+        let value = state_for_sync.clone();
+        spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                if let Ok(app_state) = value.lock() {
+                    if let Some(sess) = app_state.sessions.get(&session_id) {
+                        if *current_path.peek() != sess.sftp_path {
+                            current_path.set(sess.sftp_path.clone());
+                        }
+                        if !entries_same(&entries.peek(), &sess.sftp_entries) {
+                            entries.set(sess.sftp_entries.clone());
+                        }
+                        if *loading.peek() != sess.sftp_loading {
+                            loading.set(sess.sftp_loading);
+                        }
+                        if *error_message.peek() != sess.sftp_error {
+                            error_message.set(sess.sftp_error.clone());
+                        }
+                    }
+                }
+            }
+        });
     });
 
     rsx! {
         div {
-            style: "display: flex; flex-direction: column; height: 100%; background: #ffffff;",
+            class: "sftp-panel",
 
-            // 工具栏
             div {
-                style: "padding: 12px; border-bottom: 1px solid #d3d7de; display: flex; align-items: center; gap: 8px;",
+                class: "sftp-titlebar",
+                strong { "SFTP" }
+                button { class: "icon-button slim", title: "关闭", "×" }
+            }
 
-                // 返回上级目录按钮
+            div {
+                class: "sftp-toolbar",
                 button {
-                    style: "padding: 6px 12px; background: #e5e7eb; border: none; border-radius: 4px; cursor: pointer;",
+                    class: "icon-button slim",
+                    title: "返回上级",
+                    disabled: current_path() == "/" || current_path() == ".",
                     onclick: move |_| {
                         let path = current_path();
-                        if path != "/" {
+                        if path != "/" && path != "." {
                             let parent = parent_path(&path);
                             current_path.set(parent.clone());
-                            load_directory(state_for_back.clone(), session_id, parent, loading, entries);
+                            load_directory(
+                                state_for_back.clone(),
+                                session_id,
+                                parent,
+                                loading,
+                                entries,
+                                error_message,
+                            );
                         }
                     },
-                    disabled: current_path() == "/",
-                    "⬆️ 上级"
+                    "←"
                 }
 
-                // 当前路径
+                button {
+                    class: "icon-button slim",
+                    title: "刷新",
+                    onclick: move |_| {
+                        load_directory(
+                            state_for_refresh.clone(),
+                            session_id,
+                            current_path(),
+                            loading,
+                            entries,
+                            error_message,
+                        );
+                    },
+                    "↻"
+                }
+
                 div {
-                    style: "flex: 1; padding: 6px 12px; background: #f0f1f4; border-radius: 4px; font-family: monospace; font-size: 13px;",
-                    "{current_path()}"
+                    class: "sftp-path",
+                    "{display_path(&current_path())}"
                 }
 
-                // 刷新按钮
-                button {
-                    style: "padding: 6px 12px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;",
-                    onclick: move |_| {
-                        load_directory(state_for_refresh.clone(), session_id, current_path(), loading, entries);
-                    },
-                    "🔄 刷新"
+                button { class: "icon-button slim", title: "更多", "…" }
+            }
+
+            div {
+                class: "sftp-table",
+
+                div {
+                    class: "sftp-table-head",
+                    span { "名称" }
+                    span { "大小" }
+                    span { "修改时间" }
                 }
 
-                // 新建文件夹按钮
-                button {
-                    style: "padding: 6px 12px; background: #2b7de9; color: white; border: none; border-radius: 4px; cursor: pointer;",
-                    onclick: move |_| {
-                        // TODO: 弹出对话框输入文件夹名
-                        tracing::info!("新建文件夹");
-                    },
-                    "📁 新建"
+                if loading() {
+                    div { class: "sftp-message", "正在读取远端目录..." }
+                } else if let Some(err) = error_message() {
+                    div { class: "sftp-message error", "SFTP 错误: {err}" }
+                } else {
+                    div {
+                        class: "sftp-row is-parent",
+                        onclick: move |_| {
+                            let path = current_path();
+                            if path != "/" && path != "." {
+                                let parent = parent_path(&path);
+                                current_path.set(parent.clone());
+                                load_directory(
+                                    state.clone(),
+                                    session_id,
+                                    parent,
+                                    loading,
+                                    entries,
+                                    error_message,
+                                );
+                            }
+                        },
+                        span { class: "file-name", span { class: "file-icon folder", "■" } ".." }
+                        span {}
+                        span {}
+                    }
+
+                    for entry in entries() {
+                        SftpRow {
+                            key: "{entry.name}",
+                            name: entry.name.clone(),
+                            is_dir: entry.is_dir,
+                            size: entry.size,
+                            modified: entry.modified,
+                            current_path: current_path(),
+                            on_open: {
+                                let state = state.clone();
+                                move |path: String| {
+                                    current_path.set(path.clone());
+                                    load_directory(
+                                        state.clone(),
+                                        session_id,
+                                        path,
+                                        loading,
+                                        entries,
+                                        error_message,
+                                    );
+                                }
+                            },
+                        }
+                    }
                 }
             }
 
-            // 文件列表
             div {
-                style: "flex: 1; overflow-y: auto; padding: 8px;",
-
-                if loading() {
-                    div {
-                        style: "padding: 20px; text-align: center; color: #6b7280;",
-                        "加载中..."
-                    }
-                } else if let Some(err) = error_message() {
-                    div {
-                        style: "padding: 20px; color: #dc2626; background: #fee2e2; border-radius: 6px; margin: 8px;",
-                        "错误: {err}"
-                    }
-                } else {
-                    // 文件列表表格
-                    div {
-                        style: "display: flex; flex-direction: column; gap: 2px;",
-
-                        for entry in entries() {
-                            div {
-                                key: "{entry.name}",
-                                style: "padding: 8px 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 4px; cursor: pointer; hover: background: #f3f4f6; display: flex; align-items: center; gap: 12px;",
-                                onclick: {
-                                    let entry = entry.clone();
-                                    let state_clone = state.clone();
-                                    move |_| {
-                                        if entry.is_dir {
-                                            let new_path = join_path(&current_path(), &entry.name);
-                                            current_path.set(new_path.clone());
-                                            load_directory(state_clone.clone(), session_id, new_path, loading, entries);
-                                        } else {
-                                            tracing::info!("选择文件: {}", entry.name);
-                                            // TODO: 显示文件操作菜单（下载、删除、重命名等）
-                                        }
-                                    }
-                                },
-
-                                // 图标
-                                div {
-                                    style: "font-size: 20px;",
-                                    if entry.is_dir { "📁" } else { "📄" }
-                                }
-
-                                // 文件名
-                                div {
-                                    style: "flex: 1; font-size: 14px; color: #1f2937;",
-                                    "{entry.name}"
-                                }
-
-                                // 文件大小
-                                if !entry.is_dir {
-                                    div {
-                                        style: "font-size: 12px; color: #6b7280;",
-                                        "{format_size(entry.size)}"
-                                    }
-                                }
-
-                                // 修改时间
-                                if let Some(modified) = entry.modified {
-                                    div {
-                                        style: "font-size: 12px; color: #6b7280;",
-                                        "{format_time(modified)}"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                class: "sftp-footer",
+                span { "{entries().len()} 个项目" }
+                div { class: "footer-actions" }
+                button { title: "上传", "⇧" }
+                button { title: "下载", "⇩" }
+                button { title: "列表视图", "☷" }
+                button { title: "删除", "⌫" }
             }
         }
     }
 }
 
-/// 加载目录列表
+#[component]
+fn SftpRow(
+    name: String,
+    is_dir: bool,
+    size: u64,
+    modified: Option<u32>,
+    current_path: String,
+    on_open: EventHandler<String>,
+) -> Element {
+    let file_size = if is_dir {
+        String::new()
+    } else {
+        format_size(size)
+    };
+    let modified = modified.map(format_time).unwrap_or_default();
+
+    rsx! {
+        div {
+            class: "sftp-row",
+            onclick: move |_| {
+                if is_dir {
+                    on_open.call(join_path(&current_path, &name));
+                }
+            },
+
+            span {
+                class: "file-name",
+                span {
+                    class: if is_dir { "file-icon folder" } else { "file-icon document" },
+                    if is_dir { "■" } else { "□" }
+                }
+                "{name}"
+            }
+            span { "{file_size}" }
+            span { "{modified}" }
+        }
+    }
+}
+
 fn load_directory(
     state: Arc<Mutex<AppState>>,
     session_id: SessionId,
     path: String,
     mut loading: Signal<bool>,
     mut entries: Signal<Vec<SftpEntry>>,
+    mut error_message: Signal<Option<String>>,
 ) {
+    let requested_path = path.clone();
     loading.set(true);
     entries.set(Vec::new());
+    error_message.set(None);
 
-    if let Ok(app_state) = state.lock() {
-        app_state.manager.send(ToCore::Sftp {
-            id: session_id,
-            req: SftpRequest::List { path },
+    let mut request_sent = false;
+    if let Ok(mut app_state) = state.lock() {
+        if let Some(sess) = app_state.sessions.get_mut(&session_id) {
+            if should_skip_duplicate_request(sess, &requested_path) {
+                loading.set(true);
+                return;
+            }
+            sess.sftp_path = requested_path.clone();
+            sess.sftp_loading = true;
+            sess.sftp_error = None;
+            sess.sftp_entries.clear();
+            request_sent = true;
+        } else {
+            loading.set(false);
+            error_message.set(Some("会话不存在或已关闭，无法读取 SFTP".to_string()));
+        }
+        if request_sent {
+            app_state.manager.send(ToCore::Sftp {
+                id: session_id,
+                req: SftpRequest::List { path },
+            });
+        }
+    } else {
+        loading.set(false);
+        error_message.set(Some("无法访问应用状态，SFTP 请求未发送".to_string()));
+    }
+
+    if request_sent {
+        let state_for_timeout = state.clone();
+        spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(UI_SFTP_TIMEOUT_SECS)).await;
+            if let Ok(mut app_state) = state_for_timeout.lock() {
+                if let Some(sess) = app_state.sessions.get_mut(&session_id) {
+                    if sess.sftp_loading && sess.sftp_path == requested_path {
+                        sess.sftp_loading = false;
+                        sess.sftp_error = Some(ui_timeout_message(&requested_path));
+                    }
+                }
+            }
         });
     }
 }
 
-/// 获取父目录路径
 fn parent_path(path: &str) -> String {
-    if path == "/" {
+    if path == "/" || path == "." {
         return "/".to_string();
     }
+
     let trimmed = path.trim_end_matches('/');
     if let Some(pos) = trimmed.rfind('/') {
         if pos == 0 {
@@ -183,37 +308,137 @@ fn parent_path(path: &str) -> String {
     }
 }
 
-/// 拼接路径
 fn join_path(base: &str, name: &str) -> String {
     if base == "/" {
         format!("/{}", name)
+    } else if base == "." {
+        name.to_string()
     } else {
-        format!("{}/{}", base, name)
+        format!("{}/{}", base.trim_end_matches('/'), name)
     }
 }
 
-/// 格式化文件大小
+fn display_path(path: &str) -> String {
+    if path == "." {
+        "~".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn ui_timeout_message(path: &str) -> String {
+    format!("读取远端目录 {path} 超时({UI_SFTP_TIMEOUT_SECS} 秒)，请刷新重试")
+}
+
+fn should_skip_duplicate_request(sess: &crate::state::SessionState, path: &str) -> bool {
+    sess.sftp_loading && sess.sftp_path == path
+}
+
+fn entries_same(left: &[SftpEntry], right: &[SftpEntry]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(a, b)| {
+            a.name == b.name
+                && a.is_dir == b.is_dir
+                && a.size == b.size
+                && a.modified == b.modified
+                && a.permissions == b.permissions
+        })
+}
+
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
 
     if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
+        format!("{:.1} MB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+        format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
     }
 }
 
-/// 格式化时间戳
 fn format_time(timestamp: u32) -> String {
     use std::time::{Duration, UNIX_EPOCH};
 
     let time = UNIX_EPOCH + Duration::from_secs(timestamp as u64);
     let datetime: chrono::DateTime<chrono::Local> = time.into();
-    datetime.format("%Y-%m-%d %H:%M").to_string()
+    datetime.format("%m-%d %H:%M").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_path_handles_root_and_nested_paths() {
+        assert_eq!(parent_path("/"), "/");
+        assert_eq!(parent_path("."), "/");
+        assert_eq!(parent_path("/root"), "/");
+        assert_eq!(parent_path("/root/.ssh"), "/root");
+        assert_eq!(parent_path("/var/log/"), "/var");
+    }
+
+    #[test]
+    fn join_path_keeps_posix_paths_stable() {
+        assert_eq!(join_path("/", ".ssh"), "/.ssh");
+        assert_eq!(join_path("/root", ".ssh"), "/root/.ssh");
+        assert_eq!(join_path("/root/", ".ssh"), "/root/.ssh");
+        assert_eq!(join_path(".", ".ssh"), ".ssh");
+    }
+
+    #[test]
+    fn format_size_uses_compact_units() {
+        assert_eq!(format_size(18), "18 B");
+        assert_eq!(format_size(2 * 1024 + 512), "2.5 KB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
+    }
+
+    #[test]
+    fn ui_timeout_message_includes_path_and_limit() {
+        let message = ui_timeout_message("/root");
+        assert!(message.contains("/root"));
+        assert!(message.contains("15 秒"));
+    }
+
+    #[test]
+    fn entries_same_compares_visible_file_fields() {
+        let left = vec![SftpEntry {
+            name: ".ssh".to_string(),
+            is_dir: true,
+            size: 0,
+            modified: Some(100),
+            permissions: Some(0o755),
+        }];
+        let mut right = left.clone();
+
+        assert!(entries_same(&left, &right));
+
+        right[0].size = 1;
+        assert!(!entries_same(&left, &right));
+    }
+
+    #[test]
+    fn duplicate_request_is_skipped_only_for_same_loading_path() {
+        let mut sess = crate::state::SessionState {
+            id: SessionId(1),
+            title: "demo".to_string(),
+            snapshot: None,
+            connected: true,
+            sftp_path: "/root".to_string(),
+            sftp_entries: Vec::new(),
+            sftp_loading: true,
+            sftp_error: None,
+            monitor: None,
+        };
+
+        assert!(should_skip_duplicate_request(&sess, "/root"));
+        assert!(!should_skip_duplicate_request(&sess, "/tmp"));
+
+        sess.sftp_loading = false;
+        assert!(!should_skip_duplicate_request(&sess, "/root"));
+    }
 }

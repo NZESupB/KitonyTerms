@@ -1,11 +1,10 @@
-//! 主应用组件 —— 整合会话列表、终端、SFTP、资源监控的主界面。
+//! 主应用组件 —— 深色工作台。
 //!
-//! 布局参考 FinalShell + WindTerm:
-//! - 顶部:已打开会话的标签页
-//! - 左侧:已保存连接列表(新建/编辑/删除)
-//! - 中央:终端区域 + 底部可切换的 SFTP 抽屉
-//! - 右侧:资源监控面板(可折叠)
-//! - 底部:状态栏
+//! 布局保留现有 core 通信链路，只重塑 Dioxus 界面层:
+//! - 左侧:图标导航 + 可拖动资源管理器
+//! - 中央:会话标签、终端
+//! - 右侧:可拖动 SFTP 抽屉
+//! - 底部:系统监控与状态栏
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -26,6 +25,26 @@ static GLOBAL_STORE: OnceLock<Arc<Store>> = OnceLock::new();
 
 /// 全局 AppState(只初始化一次)。
 static GLOBAL_STATE: OnceLock<Arc<Mutex<AppState>>> = OnceLock::new();
+
+const RESOURCE_PANEL_DEFAULT_WIDTH: f64 = 206.0;
+const RESOURCE_PANEL_MIN_WIDTH: f64 = 176.0;
+const RESOURCE_PANEL_MAX_WIDTH: f64 = 320.0;
+const SFTP_PANEL_DEFAULT_WIDTH: f64 = 330.0;
+const SFTP_PANEL_MIN_WIDTH: f64 = 280.0;
+const SFTP_PANEL_MAX_WIDTH: f64 = 500.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResizeTarget {
+    Resource,
+    Sftp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResizeDrag {
+    target: ResizeTarget,
+    start_x: f64,
+    start_width: f64,
+}
 
 /// 获取全局 state(供其他模块使用)。
 pub fn get_state() -> &'static Arc<Mutex<AppState>> {
@@ -59,9 +78,11 @@ impl AuthProvider for StoreAuthProvider {
     fn password(&mut self, _user: &str, _host: &str) -> Option<String> {
         self.store.get_secret(&self.vault_id)
     }
+
     fn key_passphrase(&mut self, _key_path: &str) -> Option<String> {
         None
     }
+
     fn keyboard_interactive(
         &mut self,
         _name: &str,
@@ -101,19 +122,11 @@ impl HostKeyVerifier for AcceptAllVerifier {
     }
 }
 
-/// 中央区域的视图模式:终端 or SFTP。
-#[derive(Clone, Copy, PartialEq)]
-enum CenterView {
-    Terminal,
-    Sftp,
-}
-
 #[component]
 pub fn App() -> Element {
     let store = get_store();
     let state = get_state();
 
-    // 对话框状态
     let mut show_dialog = use_signal(|| false);
     let mut dialog_mode = use_signal(|| "new".to_string());
     let mut edit_name = use_signal(String::new);
@@ -122,22 +135,15 @@ pub fn App() -> Element {
     let mut edit_user = use_signal(String::new);
     let mut edit_password = use_signal(String::new);
 
-    // 当前活动会话 ID
     let mut active_session_id = use_signal(|| None::<SessionId>);
-
-    // 所有会话列表(定时刷新)
     let mut all_sessions = use_signal(Vec::<SessionState>::new);
-
-    // 中央视图模式(终端/SFTP)
-    let mut center_view = use_signal(|| CenterView::Terminal);
-
-    // 右侧监控面板是否展开
-    let mut show_monitor = use_signal(|| false);
-
-    // 触发重建保存连接列表(删除/新建后)
+    let mut show_sftp = use_signal(|| true);
+    let mut show_monitor = use_signal(|| true);
     let mut saved_tick = use_signal(|| 0u64);
+    let mut resource_width = use_signal(|| RESOURCE_PANEL_DEFAULT_WIDTH);
+    let mut sftp_width = use_signal(|| SFTP_PANEL_DEFAULT_WIDTH);
+    let mut active_resize = use_signal(|| None::<ResizeDrag>);
 
-    // 定时泵送事件(每 16ms = ~60fps)
     use_future(move || async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;
@@ -147,7 +153,6 @@ pub fn App() -> Element {
         }
     });
 
-    // 定期更新会话列表(100ms)
     use_effect(move || {
         spawn(async move {
             loop {
@@ -156,7 +161,6 @@ pub fn App() -> Element {
                     let sessions: Vec<SessionState> = s.sessions.values().cloned().collect();
                     all_sessions.set(sessions.clone());
 
-                    // 如果没有活动会话,选择第一个
                     if active_session_id().is_none() && !sessions.is_empty() {
                         active_session_id.set(Some(sessions[0].id));
                     }
@@ -165,255 +169,453 @@ pub fn App() -> Element {
         });
     });
 
-    // 获取当前活动会话
-    let active_session = move || {
-        if let Some(id) = active_session_id() {
-            all_sessions().into_iter().find(|s| s.id == id)
-        } else {
-            None
-        }
+    let active_session =
+        move || active_session_id().and_then(|id| all_sessions().into_iter().find(|s| s.id == id));
+
+    let saved_profiles = {
+        let _ = saved_tick();
+        store.saved_sessions()
+    };
+
+    let active_title = active_session()
+        .map(|s| s.title)
+        .unwrap_or_else(|| "未选择会话".to_string());
+    let resource_panel_style = format!(
+        "width: {:.0}px; flex-basis: {:.0}px;",
+        resource_width(),
+        resource_width()
+    );
+    let sftp_panel_style = format!(
+        "width: {:.0}px; flex-basis: {:.0}px;",
+        sftp_width(),
+        sftp_width()
+    );
+    let window_class = if active_resize().is_some() {
+        "kt-window is-resizing"
+    } else {
+        "kt-window"
     };
 
     rsx! {
-        // 全局样式(光标闪烁动画)
         style { {include_str!("../assets/app.css")} }
 
         div {
-            style: "display: flex; flex-direction: column; height: 100vh; width: 100vw; background: #f0f1f4; font-family: -apple-system, 'Segoe UI', sans-serif;",
-
-            // ===== 顶部标签栏 =====
-            header {
-                style: "height: 40px; background: #f0f1f4; border-bottom: 1px solid #d3d7de; display: flex; align-items: center; padding: 0 12px; gap: 4px;",
-
-                for sess in all_sessions() {
-                    div {
-                        key: "tab-{sess.id.0}",
-                        style: if active_session_id() == Some(sess.id) {
-                            "padding: 6px 12px; background: #ffffff; color: #1f2937; border: 1px solid #d3d7de; border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px;"
-                        } else {
-                            "padding: 6px 12px; background: #e5e7eb; color: #6b7280; border: 1px solid transparent; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px;"
-                        },
-                        onclick: {
-                            let id = sess.id;
-                            move |_| active_session_id.set(Some(id))
-                        },
-                        if sess.connected {
-                            span { style: "color: #16a34a; font-size: 10px;", "●" }
-                        } else {
-                            span { style: "color: #dc4e5a; font-size: 10px;", "○" }
+            class: "{window_class}",
+            onmousemove: move |evt| {
+                if let Some(drag) = active_resize() {
+                    let current_x = evt.client_coordinates().x;
+                    match drag.target {
+                        ResizeTarget::Resource => {
+                            resource_width.set(panel_width_after_drag(
+                                drag.start_width,
+                                drag.start_x,
+                                current_x,
+                                ResizeTarget::Resource,
+                                RESOURCE_PANEL_MIN_WIDTH,
+                                RESOURCE_PANEL_MAX_WIDTH,
+                            ));
                         }
-                        span { "{sess.title}" }
-                        span {
-                            style: "margin-left: 4px; cursor: pointer; opacity: 0.6; font-size: 14px;",
-                            onclick: {
-                                let id = sess.id;
-                                move |evt| {
-                                    evt.stop_propagation();
-                                    if let Ok(mut app_state) = state.lock() {
-                                        app_state.manager.send(ToCore::Disconnect { id });
-                                        app_state.sessions.remove(&id);
-                                        if active_session_id() == Some(id) {
-                                            let next = app_state.sessions.keys().next().copied();
-                                            active_session_id.set(next);
+                        ResizeTarget::Sftp => {
+                            sftp_width.set(panel_width_after_drag(
+                                drag.start_width,
+                                drag.start_x,
+                                current_x,
+                                ResizeTarget::Sftp,
+                                SFTP_PANEL_MIN_WIDTH,
+                                SFTP_PANEL_MAX_WIDTH,
+                            ));
+                        }
+                    }
+                }
+            },
+            onmouseup: move |_| active_resize.set(None),
+            onmouseleave: move |_| active_resize.set(None),
+
+            div {
+                class: "kt-content",
+
+                nav {
+                    class: "nav-rail",
+
+                    div { class: "nav-logo", "KT" }
+
+                    button { class: "nav-item is-active", title: "连接", span { "⌘" } small { "连接" } }
+                    button { class: "nav-item", title: "会话", span { "▣" } small { "会话" } }
+                    button {
+                        class: if show_sftp() { "nav-item is-active-subtle" } else { "nav-item" },
+                        title: "SFTP",
+                        onclick: move |_| show_sftp.set(!show_sftp()),
+                        span { "□" }
+                        small { "SFTP" }
+                    }
+                    button {
+                        class: if show_monitor() { "nav-item is-active-subtle" } else { "nav-item" },
+                        title: "监控",
+                        onclick: move |_| show_monitor.set(!show_monitor()),
+                        span { "▱" }
+                        small { "监控" }
+                    }
+
+                    div { class: "nav-grow" }
+                    button { class: "nav-item", title: "设置", span { "⚙" } small { "设置" } }
+                }
+
+                div {
+                    class: "main-column",
+
+                    div {
+                        class: "workspace-commandbar",
+
+                        div {
+                            class: "workspace-session",
+                            if let Some(sess) = active_session() {
+                                span {
+                                    class: if sess.connected { "status-dot online" } else { "status-dot connecting" },
+                                }
+                                span { "{sess.title}" }
+                            } else {
+                                span { class: "status-dot idle" }
+                                span { "未选择会话" }
+                            }
+                        }
+
+                        div { class: "commandbar-spacer" }
+
+                        div {
+                            class: "global-search compact",
+                            span { class: "search-symbol", "⌕" }
+                            input {
+                                class: "global-search-input",
+                                placeholder: "搜索",
+                            }
+                            span { class: "search-shortcut", "⌘K" }
+                        }
+
+                        button { class: "icon-button slim", title: "通知", "⌁" }
+                        button { class: "icon-button slim", title: "设置", "⚙" }
+                        button { class: "avatar-button compact", title: "账户", "K" }
+                    }
+
+                    div {
+                        class: "main-workbench",
+
+                        aside {
+                            class: "resource-panel",
+                            style: "{resource_panel_style}",
+
+                            div {
+                                class: "resource-header",
+                                div {
+                                    h1 { "KitonyTerms" }
+                                    p { "全端 SSH 客户端" }
+                                }
+                            }
+
+                            div {
+                                class: "resource-card",
+
+                                div {
+                                    class: "resource-card-head",
+                                    strong { "资源管理器" }
+                                    button {
+                                        class: "tiny-pill",
+                                        title: "新建连接",
+                                        onclick: move |_| {
+                                            dialog_mode.set("new".to_string());
+                                            edit_name.set(String::new());
+                                            edit_host.set(String::new());
+                                            edit_port.set("22".to_string());
+                                            edit_user.set(String::new());
+                                            edit_password.set(String::new());
+                                            show_dialog.set(true);
+                                        },
+                                        "＋"
+                                    }
+                                }
+
+                                div {
+                                    class: "panel-search",
+                                    span { "⌕" }
+                                    input {
+                                        placeholder: "搜索主机、标签",
+                                    }
+                                }
+
+                                div {
+                                    class: "connection-tree",
+
+                                    div {
+                                        class: "tree-group",
+                                        div {
+                                            class: "tree-group-title",
+                                            span { "⌄" }
+                                            "我的连接"
+                                            button { class: "ghost-more", title: "更多", "…" }
+                                        }
+
+                                        if saved_profiles.is_empty() {
+                                            div {
+                                                class: "empty-resource",
+                                                strong { "暂无保存连接" }
+                                                p { "新建连接后会显示在这里。" }
+                                            }
+                                        }
+
+                                        for profile in saved_profiles {
+                                            ConnectionCard {
+                                                key: "saved-{profile.name}",
+                                                profile: profile.clone(),
+                                                active: active_title == profile.name,
+                                                on_connect: {
+                                                    let profile = profile.clone();
+                                                    move |_| {
+                                                        if let Ok(mut app_state) = state.lock() {
+                                                            let id = app_state.next_session_id();
+                                                            app_state.sessions.insert(
+                                                                id,
+                                                                session_state_from_profile(id, &profile),
+                                                            );
+                                                            app_state.manager.send(ToCore::Connect {
+                                                                id,
+                                                                params: Box::new(profile.params.clone()),
+                                                                pty: PtySize { cols: 100, rows: 30 },
+                                                            });
+                                                            active_session_id.set(Some(id));
+                                                        }
+                                                    }
+                                                },
+                                                on_edit: {
+                                                    let profile = profile.clone();
+                                                    move |_| {
+                                                        dialog_mode.set("edit".to_string());
+                                                        edit_name.set(profile.name.clone());
+                                                        edit_host.set(profile.params.host.clone());
+                                                        edit_port.set(profile.params.port.to_string());
+                                                        edit_user.set(profile.params.user.clone());
+                                                        edit_password.set(String::new());
+                                                        show_dialog.set(true);
+                                                    }
+                                                },
+                                                on_delete: {
+                                                    let name = profile.name.clone();
+                                                    move |_| {
+                                                        if let Err(e) = store.delete_session(&name) {
+                                                            tracing::error!("删除失败: {}", e);
+                                                        } else {
+                                                            saved_tick.set(saved_tick() + 1);
+                                                        }
+                                                    }
+                                                },
+                                            }
                                         }
                                     }
                                 }
-                            },
-                            "✕"
+
+                                div {
+                                    class: "resource-footer",
+                                    button { title: "筛选", "≡" }
+                                    button { title: "连接设置", "⚙" }
+                                }
+                            }
                         }
-                    }
-                }
 
-                if all_sessions().is_empty() {
-                    span { style: "color: #9ca3af; font-size: 13px;", "从左侧选择连接 →" }
-                }
-            }
-
-            // ===== 主内容区 =====
-            main {
-                style: "flex: 1; display: flex; overflow: hidden;",
-
-                // ----- 左侧:已保存连接 -----
-                aside {
-                    style: "width: 240px; background: #f0f1f4; border-right: 1px solid #d3d7de; display: flex; flex-direction: column;",
-
-                    div {
-                        style: "display: flex; justify-content: space-between; align-items: center; padding: 12px;",
-                        span { style: "font-size: 14px; font-weight: 600; color: #374151;", "已保存的连接" }
-                        button {
-                            style: "padding: 4px 10px; font-size: 12px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;",
-                            onclick: move |_| {
-                                dialog_mode.set("new".to_string());
-                                edit_name.set(String::new());
-                                edit_host.set(String::new());
-                                edit_port.set("22".to_string());
-                                edit_user.set(String::new());
-                                edit_password.set(String::new());
-                                show_dialog.set(true);
+                        div {
+                            class: if is_resizing_target(active_resize(), ResizeTarget::Resource) {
+                                "splitter is-active"
+                            } else {
+                                "splitter"
                             },
-                            "+ 新建"
+                            title: "拖动调整资源管理器宽度",
+                            onmousedown: move |evt| {
+                                evt.stop_propagation();
+                                evt.prevent_default();
+                                active_resize.set(Some(ResizeDrag {
+                                    target: ResizeTarget::Resource,
+                                    start_x: evt.client_coordinates().x,
+                                    start_width: resource_width(),
+                                }));
+                            },
                         }
-                    }
 
-                    div {
-                        style: "flex: 1; overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 6px;",
+                        div {
+                            class: "session-stage",
 
-                        {
-                            let _ = saved_tick(); // 订阅刷新信号
-                            rsx! {
-                                for profile in store.saved_sessions() {
-                                    ConnectionCard {
-                                        key: "saved-{profile.name}",
-                                        profile: profile.clone(),
-                                        on_connect: {
-                                            let profile = profile.clone();
-                                            move |_| {
-                                                if let Ok(mut app_state) = state.lock() {
-                                                    let id = app_state.next_session_id();
-                                                    app_state.sessions.insert(id, SessionState {
-                                                        id,
-                                                        title: profile.name.clone(),
-                                                        snapshot: None,
-                                                        connected: false,
-                                                        sftp_path: "/".to_string(),
-                                                        sftp_entries: Vec::new(),
-                                                        sftp_loading: false,
-                                                        sftp_error: None,
-                                                        monitor: None,
-                                                    });
-                                                    app_state.manager.send(ToCore::Connect {
-                                                        id,
-                                                        params: Box::new(profile.params.clone()),
-                                                        pty: PtySize { cols: 80, rows: 24 },
-                                                    });
-                                                    active_session_id.set(Some(id));
+                            div {
+                                class: "stage-main",
+
+                                section {
+                                    class: "terminal-panel",
+
+                                    div {
+                                        class: "session-tabs",
+
+                                        for sess in all_sessions() {
+                                            div {
+                                                key: "tab-{sess.id.0}",
+                                                class: if active_session_id() == Some(sess.id) { "session-tab is-active" } else { "session-tab" },
+                                                onclick: {
+                                                    let id = sess.id;
+                                                    move |_| active_session_id.set(Some(id))
+                                                },
+
+                                                span {
+                                                    class: if sess.connected { "status-dot online" } else { "status-dot connecting" },
+                                                }
+                                                span { class: "tab-title", "{sess.title}" }
+                                                button {
+                                                    class: "tab-close",
+                                                    title: "关闭会话",
+                                                    onclick: {
+                                                        let id = sess.id;
+                                                        move |evt| {
+                                                            evt.stop_propagation();
+                                                            if let Ok(mut app_state) = state.lock() {
+                                                                app_state.manager.send(ToCore::Disconnect { id });
+                                                                app_state.sessions.remove(&id);
+                                                                if active_session_id() == Some(id) {
+                                                                    let next = app_state.sessions.keys().next().copied();
+                                                                    active_session_id.set(next);
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "×"
                                                 }
                                             }
-                                        },
-                                        on_edit: {
-                                            let profile = profile.clone();
-                                            move |_| {
-                                                dialog_mode.set("edit".to_string());
-                                                edit_name.set(profile.name.clone());
-                                                edit_host.set(profile.params.host.clone());
-                                                edit_port.set(profile.params.port.to_string());
-                                                edit_user.set(profile.params.user.clone());
+                                        }
+
+                                        button {
+                                            class: "new-tab-button",
+                                            title: "新建连接",
+                                            onclick: move |_| {
+                                                dialog_mode.set("new".to_string());
+                                                edit_name.set(String::new());
+                                                edit_host.set(String::new());
+                                                edit_port.set("22".to_string());
+                                                edit_user.set(String::new());
                                                 edit_password.set(String::new());
                                                 show_dialog.set(true);
+                                            },
+                                            "+"
+                                        }
+                                    }
+
+                                    div {
+                                        class: "terminal-toolbar",
+
+                                        div {
+                                            class: "breadcrumb",
+                                            span { class: "protocol-badge", "ssh" }
+                                            span { class: "chevron", "›" }
+                                            if let Some(sess) = active_session() {
+                                                span {
+                                                    class: "host-pill",
+                                                    span { class: if sess.connected { "status-dot online" } else { "status-dot connecting" } }
+                                                    "{sess.title}"
+                                                }
+                                            } else {
+                                                span { class: "host-pill muted", "未连接" }
                                             }
-                                        },
-                                        on_delete: {
-                                            let name = profile.name.clone();
-                                            move |_| {
-                                                if let Err(e) = store.delete_session(&name) {
-                                                    tracing::error!("删除失败: {}", e);
-                                                } else {
-                                                    saved_tick.set(saved_tick() + 1);
+                                        }
+
+                                        div { class: "toolbar-spacer" }
+                                        button { class: "icon-button slim", title: "分屏", "＋" }
+                                        button { class: "icon-button slim", title: "水平分屏", "▣" }
+                                        button { class: "icon-button slim", title: "垂直分屏", "▦" }
+                                        button { class: "icon-button slim", title: "清空", "⌫" }
+                                        button { class: "icon-button slim", title: "更多", "…" }
+                                    }
+
+                                    div {
+                                        class: "terminal-body",
+
+                                        if let Some(sess) = active_session() {
+                                            if let Some(snapshot) = sess.snapshot.clone() {
+                                                Terminal {
+                                                    snapshot: SnapshotWrapper(snapshot),
+                                                    session_id: sess.id,
+                                                }
+                                            } else {
+                                                TerminalPlaceholder {
+                                                    connected: sess.connected,
+                                                    title: sess.title.clone(),
                                                 }
                                             }
-                                        },
+                                        } else {
+                                            EmptyWorkbench {}
+                                        }
+                                    }
+                                }
+
+                                if show_sftp() {
+                                    if let Some(sess) = active_session() {
+                                        div {
+                                            class: if is_resizing_target(active_resize(), ResizeTarget::Sftp) {
+                                                "splitter splitter-right is-active"
+                                            } else {
+                                                "splitter splitter-right"
+                                            },
+                                            title: "拖动调整 SFTP 宽度",
+                                            onmousedown: move |evt| {
+                                                evt.stop_propagation();
+                                                evt.prevent_default();
+                                                active_resize.set(Some(ResizeDrag {
+                                                    target: ResizeTarget::Sftp,
+                                                    start_x: evt.client_coordinates().x,
+                                                    start_width: sftp_width(),
+                                                }));
+                                            },
+                                        }
+
+                                        aside {
+                                            class: "sftp-shell",
+                                            style: "{sftp_panel_style}",
+                                            SftpPanel {
+                                                key: "sftp-{sess.id.0}",
+                                                session_id: sess.id,
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // ----- 中央:终端 / SFTP -----
-                section {
-                    style: "flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #1a1b26;",
-
-                    if let Some(sess) = active_session() {
-                        // 视图切换栏
+                    if show_monitor() {
                         div {
-                            style: "height: 32px; background: #16161e; display: flex; align-items: center; padding: 0 8px; gap: 4px; border-bottom: 1px solid #2a2b36;",
-                            button {
-                                style: if center_view() == CenterView::Terminal {
-                                    "padding: 4px 12px; background: #2b7de9; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                } else {
-                                    "padding: 4px 12px; background: transparent; color: #9ca3af; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                },
-                                onclick: move |_| center_view.set(CenterView::Terminal),
-                                "终端"
+                            class: "monitor-dock",
+                            if let Some(sess) = active_session() {
+                                MonitorPanel {
+                                    key: "monitor-{sess.id.0}",
+                                    session_id: sess.id,
+                                }
+                            } else {
+                                MonitorPlaceholder {}
                             }
-                            button {
-                                style: if center_view() == CenterView::Sftp {
-                                    "padding: 4px 12px; background: #2b7de9; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                } else {
-                                    "padding: 4px 12px; background: transparent; color: #9ca3af; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                },
-                                onclick: move |_| center_view.set(CenterView::Sftp),
-                                "文件 (SFTP)"
-                            }
-                            div { style: "flex: 1;" }
-                            // 监控面板开关
-                            button {
-                                style: if show_monitor() {
-                                    "padding: 4px 12px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                } else {
-                                    "padding: 4px 12px; background: transparent; color: #9ca3af; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;"
-                                },
-                                onclick: move |_| show_monitor.set(!show_monitor()),
-                                "📊 监控"
-                            }
-                        }
-
-                        // 内容区
-                        div {
-                            style: "flex: 1; overflow: hidden;",
-                            match center_view() {
-                                CenterView::Terminal => rsx! {
-                                    if let Some(snapshot) = sess.snapshot.clone() {
-                                        Terminal {
-                                            snapshot: SnapshotWrapper(snapshot),
-                                            session_id: sess.id,
-                                        }
-                                    } else {
-                                        div {
-                                            style: "color: #6b7280; padding: 16px; font-size: 14px;",
-                                            "等待终端数据..."
-                                        }
-                                    }
-                                },
-                                CenterView::Sftp => rsx! {
-                                    SftpPanel { session_id: sess.id }
-                                },
-                            }
-                        }
-                    } else {
-                        div {
-                            style: "flex: 1; display: flex; align-items: center; justify-content: center; color: #6b7280; font-size: 14px;",
-                            "点击左侧连接以开始"
-                        }
-                    }
-                }
-
-                // ----- 右侧:资源监控(可折叠) -----
-                if show_monitor() {
-                    if let Some(sess) = active_session() {
-                        aside {
-                            style: "width: 320px; border-left: 1px solid #d3d7de; overflow: hidden;",
-                            MonitorPanel { session_id: sess.id }
                         }
                     }
                 }
             }
 
-            // ===== 底部状态栏 =====
             footer {
-                style: "height: 26px; background: #f0f1f4; border-top: 1px solid #d3d7de; display: flex; align-items: center; padding: 0 12px; font-size: 12px; color: #6b7280; gap: 16px;",
+                class: "status-bar",
                 if let Some(sess) = active_session() {
-                    span {
-                        if sess.connected { "● 已连接" } else { "○ 连接中..." }
-                    }
+                    span { class: if sess.connected { "status-pill connected" } else { "status-pill pending" }, if sess.connected { "已连接" } else { "连接中" } }
                     span { "{sess.title}" }
+                    span { class: "status-separator" }
+                    span { "SSH 连接" }
+                    span { class: "status-grow" }
+                    span { "UTF-8" }
+                    span { class: "status-separator" }
+                    span { "100x30" }
+                    span { class: "latency", "28ms" }
                 } else {
-                    span { "就绪" }
+                    span { class: "status-pill pending", "就绪" }
+                    span { "选择或新建连接以开始" }
                 }
             }
         }
 
-        // 连接编辑对话框
         ConnectionDialog {
             show: show_dialog,
             mode: dialog_mode,
@@ -440,55 +642,233 @@ pub fn App() -> Element {
     }
 }
 
-/// 左侧的单个连接卡片。
+fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> SessionState {
+    SessionState {
+        id,
+        title: profile.name.clone(),
+        snapshot: None,
+        connected: false,
+        sftp_path: ".".to_string(),
+        sftp_entries: Vec::new(),
+        sftp_loading: false,
+        sftp_error: None,
+        monitor: None,
+    }
+}
+
+fn panel_width_after_drag(
+    start_width: f64,
+    start_x: f64,
+    current_x: f64,
+    target: ResizeTarget,
+    min_width: f64,
+    max_width: f64,
+) -> f64 {
+    let delta = current_x - start_x;
+    let raw = match target {
+        ResizeTarget::Resource => start_width + delta,
+        ResizeTarget::Sftp => start_width - delta,
+    };
+    clamp_panel_width(raw, min_width, max_width)
+}
+
+fn clamp_panel_width(width: f64, min_width: f64, max_width: f64) -> f64 {
+    if width.is_finite() {
+        width.clamp(min_width, max_width)
+    } else {
+        min_width
+    }
+}
+
+fn is_resizing_target(drag: Option<ResizeDrag>, target: ResizeTarget) -> bool {
+    drag.is_some_and(|drag| drag.target == target)
+}
+
 #[component]
 fn ConnectionCard(
     profile: SessionProfile,
+    active: bool,
     on_connect: EventHandler<()>,
     on_edit: EventHandler<()>,
     on_delete: EventHandler<()>,
 ) -> Element {
     let subtitle = format!(
-        "{}@{}:{}",
-        profile.params.user, profile.params.host, profile.params.port
+        "{}@{}",
+        profile.params.user,
+        if profile.params.port == 22 {
+            profile.params.host.clone()
+        } else {
+            format!("{}:{}", profile.params.host, profile.params.port)
+        }
     );
 
     rsx! {
         div {
-            style: "background: #ffffff; border: 1px solid #d3d7de; border-radius: 6px; padding: 10px;",
+            class: if active { "connection-card is-active" } else { "connection-card" },
 
             div {
-                style: "cursor: pointer;",
+                class: "connection-main",
                 onclick: move |_| on_connect.call(()),
+
+                span { class: "status-dot online" }
                 div {
-                    style: "font-size: 14px; font-weight: 600; color: #1f2937; margin-bottom: 2px;",
-                    "{profile.name}"
-                }
-                div {
-                    style: "font-size: 12px; color: #6b7280;",
-                    "{subtitle}"
+                    class: "connection-copy",
+                    strong { "{profile.name}" }
+                    small { "{subtitle}" }
                 }
             }
 
             div {
-                style: "margin-top: 8px; display: flex; gap: 6px;",
+                class: "connection-actions",
                 button {
-                    style: "flex: 1; padding: 4px 8px; font-size: 11px; background: #e5e7eb; color: #374151; border: none; border-radius: 3px; cursor: pointer;",
+                    title: "编辑",
                     onclick: move |evt| {
                         evt.stop_propagation();
                         on_edit.call(());
                     },
-                    "✏️ 编辑"
+                    "✎"
                 }
                 button {
-                    style: "flex: 1; padding: 4px 8px; font-size: 11px; background: #fee2e2; color: #dc2626; border: none; border-radius: 3px; cursor: pointer;",
+                    title: "删除",
                     onclick: move |evt| {
                         evt.stop_propagation();
                         on_delete.call(());
                     },
-                    "🗑️ 删除"
+                    "×"
                 }
             }
         }
+    }
+}
+
+#[component]
+fn TerminalPlaceholder(connected: bool, title: String) -> Element {
+    let state_line = if connected {
+        "正在等待终端输出"
+    } else {
+        "正在建立 SSH 连接"
+    };
+
+    rsx! {
+        div {
+            class: "terminal-placeholder",
+            pre {
+                r#"
+ _  ___ _                         _____
+| |/ (_) |                       |_   _|
+| ' / _| |_ ___  _ __  _   _      | | ___ _ __ _ __ ___  ___
+|  < | | __/ _ \| '_ \| | | |     | |/ _ \ '__| '_ ` _ \/ __|
+| . \| | || (_) | | | | |_| |     | |  __/ |  | | | | | \__ \
+|_|\_\_|\__\___/|_| |_|\__, |     \_/\___|_|  |_| |_| |_|___/
+                         __/ |
+                        |___/
+"#
+            }
+            p { "会话: {title}" }
+            p { "{state_line}" }
+            span { class: "terminal-caret" }
+        }
+    }
+}
+
+#[component]
+fn EmptyWorkbench() -> Element {
+    rsx! {
+        div {
+            class: "empty-workbench",
+            div { class: "empty-logo", "KT" }
+            h2 { "选择一个连接" }
+            p { "左侧资源管理器会打开 SSH 会话、SFTP 与监控视图。" }
+        }
+    }
+}
+
+#[component]
+fn MonitorPlaceholder() -> Element {
+    rsx! {
+        div {
+            class: "monitor-panel compact",
+            div { class: "monitor-title", "系统监控" }
+            div {
+                class: "monitor-grid",
+                for label in ["CPU", "内存", "负载", "网络"] {
+                    div {
+                        class: "metric-card",
+                        span { class: "metric-label", "{label}" }
+                        strong { "--" }
+                        div { class: "sparkline muted" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kt_config::{AuthMethod, ConnectParams, SessionProfile};
+
+    #[test]
+    fn session_state_from_profile_initializes_ui_defaults() {
+        let profile = SessionProfile {
+            name: "Web Server 01".to_string(),
+            group: None,
+            params: ConnectParams {
+                host: "10.0.1.10".to_string(),
+                port: 22,
+                user: "root".to_string(),
+                auth: vec![AuthMethod::Password],
+                vault_id: None,
+            },
+        };
+
+        let state = session_state_from_profile(SessionId(7), &profile);
+
+        assert_eq!(state.id, SessionId(7));
+        assert_eq!(state.title, "Web Server 01");
+        assert!(!state.connected);
+        assert_eq!(state.sftp_path, ".");
+        assert!(state.sftp_entries.is_empty());
+        assert!(state.snapshot.is_none());
+        assert!(state.monitor.is_none());
+    }
+
+    #[test]
+    fn resource_panel_drag_grows_to_the_right() {
+        let width =
+            panel_width_after_drag(206.0, 100.0, 140.0, ResizeTarget::Resource, 176.0, 320.0);
+        assert_eq!(width, 246.0);
+    }
+
+    #[test]
+    fn sftp_panel_drag_grows_to_the_left() {
+        let width = panel_width_after_drag(330.0, 500.0, 450.0, ResizeTarget::Sftp, 280.0, 500.0);
+        assert_eq!(width, 380.0);
+    }
+
+    #[test]
+    fn panel_drag_width_is_clamped() {
+        assert_eq!(
+            panel_width_after_drag(206.0, 100.0, -100.0, ResizeTarget::Resource, 176.0, 320.0),
+            176.0
+        );
+        assert_eq!(
+            panel_width_after_drag(330.0, 500.0, -300.0, ResizeTarget::Sftp, 280.0, 500.0),
+            500.0
+        );
+    }
+
+    #[test]
+    fn resize_target_detection_checks_only_target() {
+        let drag = Some(ResizeDrag {
+            target: ResizeTarget::Sftp,
+            start_x: 24.0,
+            start_width: 330.0,
+        });
+
+        assert!(is_resizing_target(drag, ResizeTarget::Sftp));
+        assert!(!is_resizing_target(drag, ResizeTarget::Resource));
+        assert!(!is_resizing_target(None, ResizeTarget::Sftp));
     }
 }

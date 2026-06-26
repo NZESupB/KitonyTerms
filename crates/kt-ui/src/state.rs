@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use kt_core::{FromCore, SessionId, SessionManager, SftpEntry};
-use kt_core::term::GridSnapshot;
 use kt_core::monitor::MonitorStats;
+use kt_core::term::GridSnapshot;
+use kt_core::{FromCore, SessionId, SessionManager, SftpEntry};
 
 /// 单个会话的 UI 状态
 #[derive(Clone)]
@@ -52,7 +52,7 @@ impl AppState {
         let mut event_count = 0;
         while let Some(ev) = self.manager.try_recv() {
             event_count += 1;
-            tracing::info!("收到事件: {:?}", ev);
+            tracing::debug!("收到事件: {:?}", ev);
             match ev {
                 FromCore::Connected { id } => {
                     tracing::info!("会话 {:?} 已连接", id);
@@ -61,7 +61,11 @@ impl AppState {
                     }
                 }
                 FromCore::Render { id, snapshot } => {
-                    tracing::info!("收到终端渲染数据，会话 {:?}，revision {}", id, snapshot.revision);
+                    tracing::debug!(
+                        "收到终端渲染数据，会话 {:?}，revision {}",
+                        id,
+                        snapshot.revision
+                    );
                     if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.snapshot = Some(*snapshot);
                     }
@@ -80,7 +84,12 @@ impl AppState {
                     }
                 }
                 FromCore::SftpListing { id, path, entries } => {
-                    tracing::info!("收到 SFTP 列表，会话 {:?}，路径 {}，{} 项", id, path, entries.len());
+                    tracing::info!(
+                        "收到 SFTP 列表，会话 {:?}，路径 {}，{} 项",
+                        id,
+                        path,
+                        entries.len()
+                    );
                     if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.sftp_path = path;
                         sess.sftp_entries = entries;
@@ -109,7 +118,7 @@ impl AppState {
             }
         }
         if event_count > 0 {
-            tracing::info!("本轮处理了 {} 个事件", event_count);
+            tracing::debug!("本轮处理了 {} 个事件", event_count);
         }
     }
 }

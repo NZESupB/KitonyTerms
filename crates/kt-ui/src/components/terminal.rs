@@ -49,7 +49,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
                             cols: new_cols,
                             rows: new_rows,
                         });
-                        tracing::info!("调整终端大小: {}x{}", new_cols, new_rows);
+                        tracing::debug!("调整终端大小: {}x{}", new_cols, new_rows);
                     }
                 }
             }
@@ -59,7 +59,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
     rsx! {
         div {
             id: "terminal-{session_id.0}",
-            style: "width: 100%; height: 100%; background: #1a1b26; padding: 8px; overflow: auto; font-family: 'SF Mono', 'Menlo', 'Consolas', monospace; font-size: 14px; line-height: 1.2; outline: none; cursor: text;",
+            class: "terminal-surface",
             tabindex: "0",
             autofocus: true,
 
@@ -81,7 +81,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
                 }
             },
             onkeydown: move |evt| {
-                tracing::info!("键盘事件: key={:?}, code={:?}", evt.key(), evt.code());
+                tracing::debug!("键盘事件: key={:?}, code={:?}", evt.key(), evt.code());
 
                 let data: Vec<u8> = match evt.key() {
                     Key::Enter => vec![b'\r'],
@@ -112,7 +112,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
                 };
 
                 if !data.is_empty() {
-                    tracing::info!("发送输入: {:?}", data);
+                    tracing::debug!("发送输入: {:?}", data);
                     if let Ok(app_state) = state_for_input.lock() {
                         app_state.manager.send(ToCore::Input {
                             id: session_id,
@@ -126,7 +126,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
             for row in 0..rows {
                 div {
                     key: "{row}",
-                    style: "white-space: pre; height: 1.2em;",
+                    class: "terminal-row",
 
                     for col in 0..cols {
                         {

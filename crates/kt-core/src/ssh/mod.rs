@@ -99,41 +99,11 @@ impl SshShell {
         verifier: Arc<dyn HostKeyVerifier>,
         auth: &mut dyn AuthProvider,
     ) -> Result<Self> {
-        let config = Arc::new(client::Config {
-            keepalive_interval: Some(std::time::Duration::from_secs(30)),
-            ..Default::default()
-        });
+        let handle = connect_authenticated(params, verifier, auth).await?;
+        Self::open_shell_on_handle(handle, pty).await
+    }
 
-        let handler = ClientHandler {
-            host: params.host.clone(),
-            port: params.port,
-            verifier,
-        };
-
-        let addr = (params.host.as_str(), params.port);
-        // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。
-        // Bound connect + handshake so an unreachable host fails fast instead of
-        // hanging in the "Connecting" state.
-        let connect_fut = client::connect(config, addr, handler);
-        let mut handle = match tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            connect_fut,
-        )
-        .await
-        {
-            Ok(res) => res.map_err(|e| match e {
-                russh::Error::IO(io) => SshError::Connect(io.to_string()),
-                other => SshError::Connect(other.to_string()),
-            })?,
-            Err(_) => {
-                return Err(SshError::Connect(
-                    "connection timed out after 15s / 连接超时(15 秒)".to_string(),
-                ))
-            }
-        };
-
-        authenticate(&mut handle, params, auth).await?;
-
+    async fn open_shell_on_handle(handle: Handle<ClientHandler>, pty: PtySize) -> Result<Self> {
         // Open session channel, request a PTY, then a shell.
         let channel = handle
             .channel_open_session()
@@ -233,6 +203,66 @@ impl SshShell {
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))
     }
+
+    /// 新建一条独立 SSH 连接并打开 SFTP 子系统。
+    /// 返回的 `Handle` 必须与 `SftpSession` 一起持有,否则连接会被关闭。
+    pub async fn open_standalone_sftp(
+        params: &ConnectParams,
+        verifier: Arc<dyn HostKeyVerifier>,
+        auth: &mut dyn AuthProvider,
+    ) -> Result<(russh_sftp::client::SftpSession, Handle<ClientHandler>)> {
+        let handle = connect_authenticated(params, verifier, auth).await?;
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| SshError::Channel(format!("request_subsystem sftp: {e}")))?;
+        let session = russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| SshError::Sftp(e.to_string()))?;
+        Ok((session, handle))
+    }
+}
+
+async fn connect_authenticated(
+    params: &ConnectParams,
+    verifier: Arc<dyn HostKeyVerifier>,
+    auth: &mut dyn AuthProvider,
+) -> Result<Handle<ClientHandler>> {
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(std::time::Duration::from_secs(30)),
+        ..Default::default()
+    });
+
+    let handler = ClientHandler {
+        host: params.host.clone(),
+        port: params.port,
+        verifier,
+    };
+
+    let addr = (params.host.as_str(), params.port);
+    // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。
+    // Bound connect + handshake so an unreachable host fails fast instead of
+    // hanging in the "Connecting" state.
+    let connect_fut = client::connect(config, addr, handler);
+    let mut handle =
+        match tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut).await {
+            Ok(res) => res.map_err(|e| match e {
+                russh::Error::IO(io) => SshError::Connect(io.to_string()),
+                other => SshError::Connect(other.to_string()),
+            })?,
+            Err(_) => {
+                return Err(SshError::Connect(
+                    "connection timed out after 15s / 连接超时(15 秒)".to_string(),
+                ))
+            }
+        };
+
+    authenticate(&mut handle, params, auth).await?;
+    Ok(handle)
 }
 
 /// Run the authentication sequence, trying each configured method in order.
