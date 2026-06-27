@@ -17,7 +17,7 @@ const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 /// 命令包:各段以哨兵分隔,便于切分解析。
 /// Command bundle; sections delimited by sentinels for easy splitting.
 const CMD: &str = "echo __KTM_BEGIN__;\
-cat /proc/stat 2>/dev/null | grep '^cpu ';echo __KTM_SEC__;\
+cat /proc/stat 2>/dev/null | grep '^cpu';echo __KTM_SEC__;\
 cat /proc/meminfo 2>/dev/null;echo __KTM_SEC__;\
 cat /proc/net/dev 2>/dev/null;echo __KTM_SEC__;\
 df -P -k 2>/dev/null;echo __KTM_SEC__;\
@@ -51,6 +51,8 @@ pub struct ProcInfo {
 pub struct MonitorStats {
     /// CPU 使用率(0..100)。
     pub cpu_percent: f32,
+    /// 远端 CPU 逻辑核心数。
+    pub cpu_cores: u32,
     pub mem_used: u64,
     pub mem_total: u64,
     pub swap_used: u64,
@@ -60,6 +62,8 @@ pub struct MonitorStats {
     pub net_tx_rate: u64,
     pub load1: f32,
     pub uptime_secs: u64,
+    /// 一次监控命令从写入到读完整块的耗时，近似远端监控通道延迟。
+    pub latency_ms: u64,
     pub disks: Vec<DiskUsage>,
     pub processes: Vec<ProcInfo>,
 }
@@ -91,6 +95,7 @@ pub async fn monitor_task(
     let mut buf = String::new();
 
     loop {
+        let sample_started = Instant::now();
         // 写入命令包。Write the command bundle.
         if channel.data(CMD.as_bytes()).await.is_err() {
             break;
@@ -108,9 +113,7 @@ pub async fn monitor_task(
                     }
                 }
                 Some(russh::ChannelMsg::ExtendedData { .. }) => {}
-                Some(russh::ChannelMsg::Eof)
-                | Some(russh::ChannelMsg::Close)
-                | None => {
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
                     closed = true;
                     break;
                 }
@@ -122,12 +125,13 @@ pub async fn monitor_task(
         }
 
         let now = Instant::now();
-        let elapsed = prev_at.map(|p| now.duration_since(p).as_secs_f64()).unwrap_or(0.0);
+        let elapsed = prev_at
+            .map(|p| now.duration_since(p).as_secs_f64())
+            .unwrap_or(0.0);
         prev_at = Some(now);
 
-        if let Some(stats) =
-            parse_block(&buf, &mut prev_cpu, &mut prev_net, elapsed)
-        {
+        if let Some(mut stats) = parse_block(&buf, &mut prev_cpu, &mut prev_net, elapsed) {
+            stats.latency_ms = sample_started.elapsed().as_millis() as u64;
             if out
                 .send(FromCore::Monitor {
                     id,
@@ -178,6 +182,7 @@ fn parse_block(
         }
         *prev_cpu = Some(cur);
     }
+    stats.cpu_cores = parse_cpu_cores(get(0));
 
     // --- MEM ---
     let (mt, ma, st, sf) = parse_meminfo(get(1));
@@ -201,7 +206,11 @@ fn parse_block(
     stats.disks = parse_df(get(3));
 
     // --- LOAD ---
-    stats.load1 = get(4).split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    stats.load1 = get(4)
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
 
     // --- UPTIME ---
     stats.uptime_secs = get(5)
@@ -237,6 +246,17 @@ fn parse_cpu(s: &str) -> Option<CpuSample> {
     })
 }
 
+fn parse_cpu_cores(s: &str) -> u32 {
+    s.lines()
+        .filter(|line| {
+            let Some(rest) = line.strip_prefix("cpu") else {
+                return false;
+            };
+            !rest.is_empty() && rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        })
+        .count() as u32
+}
+
 /// 解析 `/proc/meminfo` → (MemTotal, MemAvailable, SwapTotal, SwapFree) 字节。
 fn parse_meminfo(s: &str) -> (u64, u64, u64, u64) {
     let kb = |key: &str| -> u64 {
@@ -268,7 +288,10 @@ fn parse_net(s: &str) -> Option<NetSample> {
         if iface == "lo" || iface.is_empty() {
             continue;
         }
-        let f: Vec<u64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        let f: Vec<u64> = rest
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
         // rx bytes = f[0],tx bytes = f[8]。
         if f.len() >= 9 {
             rx += f[0];
@@ -331,20 +354,29 @@ mod tests {
 
     #[test]
     fn cpu_delta_percent() {
-        let mut prev = Some(CpuSample { busy: 100, total: 200 });
+        let mut prev = Some(CpuSample {
+            busy: 100,
+            total: 200,
+        });
         let mut net = None;
         let block = format!(
-            "x{BEGIN}\ncpu  150 0 0 250 0 0 0 0\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{END}y"
+            "x{BEGIN}\ncpu  150 0 0 250 0 0 0 0\ncpu0 75 0 0 125 0 0 0 0\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{END}y"
         );
         // busy=150,total=400;delta busy=50,total=200 → 25%
         let s = parse_block(&block, &mut prev, &mut net, 2.0).unwrap();
         assert!((s.cpu_percent - 25.0).abs() < 0.01, "{}", s.cpu_percent);
+        assert_eq!(s.cpu_cores, 1);
+    }
+
+    #[test]
+    fn cpu_cores_count_only_per_core_lines() {
+        let s = "cpu  1 0 0 2\ncpu0 1 0 0 1\ncpu1 0 0 0 1\nctxt 10\n";
+        assert_eq!(parse_cpu_cores(s), 2);
     }
 
     #[test]
     fn meminfo_parsed() {
-        let (t, a, _st, _sf) =
-            parse_meminfo("MemTotal:       1024 kB\nMemAvailable:    512 kB\n");
+        let (t, a, _st, _sf) = parse_meminfo("MemTotal:       1024 kB\nMemAvailable:    512 kB\n");
         assert_eq!(t, 1024 * 1024);
         assert_eq!(a, 512 * 1024);
     }

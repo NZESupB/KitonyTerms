@@ -24,7 +24,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 `SessionManager` 持有一个多线程 tokio 运行时,每个会话一个 task。调用方(GUI / headless 示例)**只**通过两条 channel 通信:
 
 - `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,req}`、`StartMonitor{id}`、`Disconnect{id}`。
-- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op}`、`SftpError{message}`、`Monitor{stats}`、`Closed{error}`。
+- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`Monitor{stats}`、`Closed{error}`。
 
 要点:
 - `SessionManager::spawn(verifier, auth_factory)` 启动 `core_loop`,后者按 `id` 把命令路由到各 `SessionTask`。
@@ -49,7 +49,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - SFTP 打开采用两段式:先复用当前 SSH 会话开 `sftp` 子系统(8 秒超时),失败后自动新建独立 SSH 连接承载 SFTP(20 秒超时),并把两段失败原因合并为 `SftpError` 返回 UI。
 - `sftp_task` 拥有独立 mpsc 与 `FromCore` 发送端,**串行**处理请求,故大文件传输不阻塞 shell `select` 循环。
 - 请求类型 `SftpRequest`:`List`(先 `canonicalize` 成绝对路径再 `read_dir`,目录优先 + 名称不分大小写排序;快速操作 12 秒超时)、`Download`/`Upload`(用 `File` 的 tokio `AsyncRead`/`AsyncWrite` 分块拷贝,按 `PROGRESS_STEP` 节流上报进度)、`Mkdir`/`Remove`(按 `is_dir` 选 `remove_dir`/`remove_file`)/`Rename`。
-- `SftpEntry`(name/is_dir/size/modified/permissions)是 core 内中立类型,**不向 UI 暴露** russh-sftp 类型。
+- `SftpEntry`(name/is_dir/size/modified/permissions/user/group/uid/gid)是 core 内中立类型,**不向 UI 暴露** russh-sftp 类型。
 - 依赖:`russh-sftp`(传输无关,基于流);`tokio` 启用 `fs` 特性用于本地异步文件。
 
 ## kt-core:终端引擎
@@ -64,8 +64,8 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 - `kt-app` 只负责初始化日志、创建 Dioxus Desktop 窗口并 `launch(App)`；业务界面在 `kt-ui`。
 - `App` 通过全局 `Store` 与 `AppState` 懒初始化 `SessionManager`。UI 每 16ms 泵送 `FromCore`，每 100ms 从 `AppState.sessions` 同步会话列表。
-- **主界面结构**:系统原生标题栏 + 工作区顶部命令条 + 左侧窄导航 + 可拖动资源管理器 + 中央终端工作区 + 可拖动右侧 SFTP 抽屉 + 底部系统监控 + 状态栏。参考图式深色工作台样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。
+- **主界面结构**:系统原生标题栏 + 左侧边栏(分组连接树、SFTP 表格、设置入口) + 中央终端工作区 + 底部系统监控横条 + 状态栏。样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。
 - **终端渲染**:[terminal.rs](../crates/kt-ui/src/components/terminal.rs) 使用 `GridSnapshot` 渲染 HTML 行列，并把键盘、滚轮输入转成 `ToCore::Input`/`Scroll`。
-- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error`。自动加载只在挂载后执行一次；同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。
+- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。外部编辑器流程在 [app.rs](../crates/kt-ui/src/components/app.rs) 中处理，必须下载完成后打开本地临时文件，监听本地保存后弹窗选择回传策略，回传进度放到底部状态栏。
 - **资源监控**:[monitor.rs](../crates/kt-ui/src/components/monitor.rs) 挂载后发送 `StartMonitor`，从 `SessionState.monitor` 拉取采样并渲染底部横向指标卡片。
 - **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。保存连接后按 `effective_vault_id()` 写入 vault 中的密码。

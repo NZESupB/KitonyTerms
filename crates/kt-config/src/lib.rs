@@ -252,6 +252,8 @@ fn default_mono_font() -> &'static str {
 pub struct Config {
     #[serde(default)]
     pub settings: AppSettings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
     #[serde(default)]
     pub sessions: Vec<SessionProfile>,
 }
@@ -335,6 +337,83 @@ impl Config {
             self.sessions.push(profile);
         }
     }
+
+    /// 返回显式分组与会话引用分组的并集，用于兼容旧配置。
+    pub fn group_names(&self) -> Vec<String> {
+        let mut groups = self
+            .groups
+            .iter()
+            .filter_map(|name| normalize_group_name(name))
+            .collect::<Vec<_>>();
+        for session in &self.sessions {
+            if let Some(group) = session.group.as_deref().and_then(normalize_group_name) {
+                groups.push(group);
+            }
+        }
+        groups.sort();
+        groups.dedup();
+        groups
+    }
+
+    /// 新增分组。空白名称会被忽略。
+    pub fn add_group(&mut self, name: impl AsRef<str>) {
+        let Some(name) = normalize_group_name(name.as_ref()) else {
+            return;
+        };
+        if !self.groups.iter().any(|group| group == &name) {
+            self.groups.push(name);
+            self.groups.sort();
+        }
+    }
+
+    /// 重命名分组，并同步所有引用该分组的会话。
+    pub fn rename_group(&mut self, old_name: &str, new_name: impl AsRef<str>) {
+        let Some(old_name) = normalize_group_name(old_name) else {
+            return;
+        };
+        let Some(new_name) = normalize_group_name(new_name.as_ref()) else {
+            return;
+        };
+        if old_name == new_name {
+            self.add_group(new_name);
+            return;
+        }
+
+        for group in &mut self.groups {
+            if group == &old_name {
+                *group = new_name.clone();
+            }
+        }
+        for session in &mut self.sessions {
+            if session.group.as_deref() == Some(old_name.as_str()) {
+                session.group = Some(new_name.clone());
+            }
+        }
+        self.groups.retain(|group| !group.trim().is_empty());
+        if !self.groups.iter().any(|group| group == &new_name) {
+            self.groups.push(new_name);
+        }
+        self.groups.sort();
+        self.groups.dedup();
+    }
+
+    /// 删除分组；引用该分组的会话会移入默认分组。
+    pub fn delete_group(&mut self, name: &str) {
+        let Some(name) = normalize_group_name(name) else {
+            return;
+        };
+        self.groups.retain(|group| group != &name);
+        for session in &mut self.sessions {
+            if session.group.as_deref() == Some(name.as_str()) {
+                session.group = None;
+            }
+        }
+    }
+}
+
+pub fn normalize_group_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -353,9 +432,10 @@ mod tests {
     fn config_toml_roundtrip() {
         let mut cfg = Config::default();
         cfg.settings.language = AppLanguage::Chinese;
+        cfg.add_group("Web");
         cfg.upsert_session(SessionProfile {
             name: "prod-web".into(),
-            group: None,
+            group: Some("Web".into()),
             params: ConnectParams {
                 host: "10.0.0.5".into(),
                 port: 2222,
@@ -369,6 +449,7 @@ mod tests {
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&toml).unwrap();
         assert_eq!(back.settings.language, AppLanguage::Chinese);
+        assert_eq!(back.group_names(), vec!["Web"]);
         assert_eq!(back.sessions.len(), 1);
         assert_eq!(back.session("prod-web").unwrap().params.port, 2222);
     }
@@ -415,6 +496,38 @@ use_ssh_config = true
         });
         assert_eq!(cfg.sessions.len(), 1);
         assert_eq!(cfg.session("x").unwrap().params.host, "b");
+    }
+
+    #[test]
+    fn group_names_include_legacy_session_groups() {
+        let mut cfg = Config::default();
+        cfg.add_group("Ops");
+        cfg.upsert_session(SessionProfile {
+            name: "x".into(),
+            group: Some("Web".into()),
+            params: ConnectParams::new("a", "u"),
+        });
+
+        assert_eq!(cfg.group_names(), vec!["Ops", "Web"]);
+    }
+
+    #[test]
+    fn rename_and_delete_group_update_sessions() {
+        let mut cfg = Config::default();
+        cfg.add_group("Old");
+        cfg.upsert_session(SessionProfile {
+            name: "x".into(),
+            group: Some("Old".into()),
+            params: ConnectParams::new("a", "u"),
+        });
+
+        cfg.rename_group("Old", "New");
+        assert_eq!(cfg.group_names(), vec!["New"]);
+        assert_eq!(cfg.session("x").unwrap().group.as_deref(), Some("New"));
+
+        cfg.delete_group("New");
+        assert!(cfg.group_names().is_empty());
+        assert_eq!(cfg.session("x").unwrap().group, None);
     }
 
     #[test]

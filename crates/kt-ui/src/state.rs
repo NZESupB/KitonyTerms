@@ -4,7 +4,21 @@ use std::collections::HashMap;
 
 use kt_core::monitor::MonitorStats;
 use kt_core::term::GridSnapshot;
-use kt_core::{FromCore, SessionId, SessionManager, SftpEntry};
+use kt_core::{FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest, ToCore};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SftpCompletion {
+    pub op: SftpOp,
+    pub path: String,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SftpProgressState {
+    pub name: String,
+    pub transferred: u64,
+    pub total: u64,
+}
 
 /// 单个会话的 UI 状态
 #[derive(Clone)]
@@ -19,6 +33,8 @@ pub struct SessionState {
     pub sftp_entries: Vec<SftpEntry>,
     pub sftp_loading: bool,
     pub sftp_error: Option<String>,
+    pub sftp_last_done: Option<SftpCompletion>,
+    pub sftp_progress: Option<SftpProgressState>,
 
     /// 最近一次资源监控采样。
     pub monitor: Option<MonitorStats>,
@@ -29,6 +45,7 @@ pub struct AppState {
     pub manager: SessionManager,
     pub sessions: HashMap<SessionId, SessionState>,
     pub next_id: u64,
+    next_sftp_completion_revision: u64,
 }
 
 impl AppState {
@@ -37,6 +54,7 @@ impl AppState {
             manager,
             sessions: HashMap::new(),
             next_id: 1,
+            next_sftp_completion_revision: 1,
         }
     }
 
@@ -56,8 +74,23 @@ impl AppState {
             match ev {
                 FromCore::Connected { id } => {
                     tracing::info!("会话 {:?} 已连接", id);
-                    if let Some(sess) = self.sessions.get_mut(&id) {
+                    let sftp_path = if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.connected = true;
+                        if should_auto_load_sftp(sess) {
+                            sess.sftp_loading = true;
+                            sess.sftp_error = None;
+                            Some(sess.sftp_path.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(path) = sftp_path {
+                        self.manager.send(ToCore::Sftp {
+                            id,
+                            req: SftpRequest::List { path },
+                        });
                     }
                 }
                 FromCore::Render { id, snapshot } => {
@@ -102,10 +135,48 @@ impl AppState {
                     if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.sftp_loading = false;
                         sess.sftp_error = Some(message);
+                        sess.sftp_progress = None;
                     }
                 }
-                FromCore::SftpDone { id, op } => {
-                    tracing::info!("SFTP 操作完成，会话 {:?}: {:?}", id, op);
+                FromCore::SftpProgress {
+                    id,
+                    name,
+                    transferred,
+                    total,
+                } => {
+                    if let Some(sess) = self.sessions.get_mut(&id) {
+                        sess.sftp_progress = Some(SftpProgressState {
+                            name,
+                            transferred,
+                            total,
+                        });
+                    }
+                }
+                FromCore::SftpDone { id, op, path } => {
+                    tracing::info!("SFTP 操作完成，会话 {:?}: {:?} {}", id, op, path);
+                    let revision = self.next_sftp_completion_revision;
+                    self.next_sftp_completion_revision += 1;
+                    if let Some(sess) = self.sessions.get_mut(&id) {
+                        sess.sftp_last_done = Some(SftpCompletion {
+                            op,
+                            path: path.clone(),
+                            revision,
+                        });
+                        sess.sftp_progress = None;
+                    }
+                    if should_refresh_after_sftp_op(op) {
+                        let sftp_path = self.sessions.get_mut(&id).map(|sess| {
+                            sess.sftp_loading = true;
+                            sess.sftp_error = None;
+                            sess.sftp_path.clone()
+                        });
+                        if let Some(path) = sftp_path {
+                            self.manager.send(ToCore::Sftp {
+                                id,
+                                req: SftpRequest::List { path },
+                            });
+                        }
+                    }
                 }
                 FromCore::Monitor { id, stats } => {
                     if let Some(sess) = self.sessions.get_mut(&id) {
@@ -125,3 +196,59 @@ impl AppState {
 
 /// 全局状态包装器（用于 Dioxus Signal）
 pub type GlobalState = std::sync::Arc<std::sync::Mutex<AppState>>;
+
+fn should_auto_load_sftp(sess: &SessionState) -> bool {
+    sess.connected
+        && !sess.sftp_loading
+        && sess.sftp_entries.is_empty()
+        && sess.sftp_error.is_none()
+}
+
+fn should_refresh_after_sftp_op(op: SftpOp) -> bool {
+    matches!(
+        op,
+        SftpOp::Upload | SftpOp::Mkdir | SftpOp::Remove | SftpOp::Rename
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_state(connected: bool) -> SessionState {
+        SessionState {
+            id: SessionId(1),
+            title: "demo".to_string(),
+            snapshot: None,
+            connected,
+            sftp_path: ".".to_string(),
+            sftp_entries: Vec::new(),
+            sftp_loading: false,
+            sftp_error: None,
+            sftp_last_done: None,
+            sftp_progress: None,
+            monitor: None,
+        }
+    }
+
+    #[test]
+    fn auto_sftp_load_only_when_connected_and_idle() {
+        let mut sess = session_state(false);
+        assert!(!should_auto_load_sftp(&sess));
+
+        sess.connected = true;
+        assert!(should_auto_load_sftp(&sess));
+
+        sess.sftp_loading = true;
+        assert!(!should_auto_load_sftp(&sess));
+    }
+
+    #[test]
+    fn mutating_sftp_ops_refresh_listing() {
+        assert!(should_refresh_after_sftp_op(SftpOp::Mkdir));
+        assert!(should_refresh_after_sftp_op(SftpOp::Remove));
+        assert!(should_refresh_after_sftp_op(SftpOp::Rename));
+        assert!(should_refresh_after_sftp_op(SftpOp::Upload));
+        assert!(!should_refresh_after_sftp_op(SftpOp::Download));
+    }
+}

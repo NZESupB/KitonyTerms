@@ -88,6 +88,10 @@ async fn handle(
                         size: meta.size.unwrap_or(0),
                         modified: meta.mtime,
                         permissions: meta.permissions,
+                        user: meta.user,
+                        group: meta.group,
+                        uid: meta.uid,
+                        gid: meta.gid,
                     }
                 })
                 .collect();
@@ -121,6 +125,7 @@ async fn handle(
             let _ = out.send(FromCore::SftpDone {
                 id,
                 op: SftpOp::Download,
+                path: remote.clone(),
             });
             Ok(())
         }
@@ -142,6 +147,7 @@ async fn handle(
             let _ = out.send(FromCore::SftpDone {
                 id,
                 op: SftpOp::Upload,
+                path: remote.clone(),
             });
             Ok(())
         }
@@ -154,6 +160,7 @@ async fn handle(
             let _ = out.send(FromCore::SftpDone {
                 id,
                 op: SftpOp::Mkdir,
+                path: path.clone(),
             });
             Ok(())
         }
@@ -173,6 +180,7 @@ async fn handle(
             let _ = out.send(FromCore::SftpDone {
                 id,
                 op: SftpOp::Remove,
+                path: path.clone(),
             });
             Ok(())
         }
@@ -185,6 +193,7 @@ async fn handle(
             let _ = out.send(FromCore::SftpDone {
                 id,
                 op: SftpOp::Rename,
+                path: to.clone(),
             });
             Ok(())
         }

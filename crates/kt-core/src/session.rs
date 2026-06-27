@@ -32,7 +32,7 @@ pub struct SessionId(pub u64);
 
 /// 远端目录条目(core 内中立类型,不向 UI 暴露 russh-sftp 的类型)。
 /// A remote directory entry (a neutral type; russh-sftp types stay in the core).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpEntry {
     pub name: String,
     pub is_dir: bool,
@@ -41,6 +41,14 @@ pub struct SftpEntry {
     pub modified: Option<u32>,
     /// Unix 权限位。Unix permission bits.
     pub permissions: Option<u32>,
+    /// 远端返回的用户名称。Remote owner name.
+    pub user: Option<String>,
+    /// 远端返回的用户组名称。Remote group name.
+    pub group: Option<String>,
+    /// 远端返回的用户 ID。Remote owner id.
+    pub uid: Option<u32>,
+    /// 远端返回的用户组 ID。Remote group id.
+    pub gid: Option<u32>,
 }
 
 /// SFTP 操作类型,随完成回执返回,便于 UI 决定后续动作(如刷新列表)。
@@ -130,7 +138,11 @@ pub enum FromCore {
         total: u64,
     },
     /// SFTP 操作完成。An SFTP operation finished successfully.
-    SftpDone { id: SessionId, op: SftpOp },
+    SftpDone {
+        id: SessionId,
+        op: SftpOp,
+        path: String,
+    },
     /// SFTP 操作失败。An SFTP operation failed.
     SftpError { id: SessionId, message: String },
     /// 资源监控采样。A resource-monitor sample.

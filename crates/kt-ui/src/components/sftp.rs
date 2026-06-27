@@ -202,11 +202,6 @@ pub fn SftpPanel(session_id: SessionId, language: AppLanguage) -> Element {
             div {
                 class: "sftp-footer",
                 span { "{entries().len()} {t.items}" }
-                div { class: "footer-actions" }
-                button { title: "{t.upload}", Icon { name: "upload" } }
-                button { title: "{t.download}", Icon { name: "download" } }
-                button { title: "{t.list_view}", Icon { name: "list" } }
-                button { title: "{t.delete}", Icon { name: "trash" } }
             }
         }
     }
@@ -266,55 +261,65 @@ fn load_directory(
     mut error_message: Signal<Option<String>>,
     language: AppLanguage,
 ) {
-    let requested_path = path.clone();
     loading.set(true);
     entries.set(Vec::new());
     error_message.set(None);
 
-    let mut request_sent = false;
-    if let Ok(mut app_state) = state.lock() {
-        if let Some(sess) = app_state.sessions.get_mut(&session_id) {
-            if should_skip_duplicate_request(sess, &requested_path) {
-                loading.set(true);
-                return;
-            }
-            sess.sftp_path = requested_path.clone();
-            sess.sftp_loading = true;
-            sess.sftp_error = None;
-            sess.sftp_entries.clear();
-            request_sent = true;
-        } else {
-            loading.set(false);
-            error_message.set(Some(texts(language).sftp.session_missing.to_string()));
-        }
-        if request_sent {
-            app_state.manager.send(ToCore::Sftp {
-                id: session_id,
-                req: SftpRequest::List { path },
-            });
-        }
-    } else {
+    if let Err(message) = request_directory(state, session_id, path, language) {
         loading.set(false);
-        error_message.set(Some(texts(language).sftp.state_unavailable.to_string()));
-    }
-
-    if request_sent {
-        let state_for_timeout = state.clone();
-        spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_secs(UI_SFTP_TIMEOUT_SECS)).await;
-            if let Ok(mut app_state) = state_for_timeout.lock() {
-                if let Some(sess) = app_state.sessions.get_mut(&session_id) {
-                    if sess.sftp_loading && sess.sftp_path == requested_path {
-                        sess.sftp_loading = false;
-                        sess.sftp_error = Some(ui_timeout_message(&requested_path, language));
-                    }
-                }
-            }
-        });
+        error_message.set(Some(message));
     }
 }
 
-fn parent_path(path: &str) -> String {
+pub(crate) fn request_directory(
+    state: Arc<Mutex<AppState>>,
+    session_id: SessionId,
+    path: String,
+    language: AppLanguage,
+) -> Result<(), String> {
+    let requested_path = path.clone();
+
+    {
+        let Ok(mut app_state) = state.lock() else {
+            return Err(texts(language).sftp.state_unavailable.to_string());
+        };
+
+        let Some(sess) = app_state.sessions.get_mut(&session_id) else {
+            return Err(texts(language).sftp.session_missing.to_string());
+        };
+
+        if should_skip_duplicate_request(sess, &requested_path) {
+            return Ok(());
+        }
+
+        sess.sftp_path = requested_path.clone();
+        sess.sftp_loading = true;
+        sess.sftp_error = None;
+        sess.sftp_entries.clear();
+
+        app_state.manager.send(ToCore::Sftp {
+            id: session_id,
+            req: SftpRequest::List { path },
+        });
+    }
+
+    let state_for_timeout = state.clone();
+    spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(UI_SFTP_TIMEOUT_SECS)).await;
+        if let Ok(mut app_state) = state_for_timeout.lock() {
+            if let Some(sess) = app_state.sessions.get_mut(&session_id) {
+                if sess.sftp_loading && sess.sftp_path == requested_path {
+                    sess.sftp_loading = false;
+                    sess.sftp_error = Some(ui_timeout_message(&requested_path, language));
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+pub(crate) fn parent_path(path: &str) -> String {
     if path == "/" || path == "." {
         return "/".to_string();
     }
@@ -331,7 +336,7 @@ fn parent_path(path: &str) -> String {
     }
 }
 
-fn join_path(base: &str, name: &str) -> String {
+pub(crate) fn join_path(base: &str, name: &str) -> String {
     if base == "/" {
         format!("/{}", name)
     } else if base == "." {
@@ -341,7 +346,7 @@ fn join_path(base: &str, name: &str) -> String {
     }
 }
 
-fn display_path(path: &str) -> String {
+pub(crate) fn display_path(path: &str) -> String {
     if path == "." {
         "~".to_string()
     } else {
@@ -365,6 +370,10 @@ fn entries_same(left: &[SftpEntry], right: &[SftpEntry]) -> bool {
                 && a.size == b.size
                 && a.modified == b.modified
                 && a.permissions == b.permissions
+                && a.user == b.user
+                && a.group == b.group
+                && a.uid == b.uid
+                && a.gid == b.gid
         })
 }
 
@@ -435,6 +444,10 @@ mod tests {
             size: 0,
             modified: Some(100),
             permissions: Some(0o755),
+            user: Some("root".to_string()),
+            group: Some("root".to_string()),
+            uid: Some(0),
+            gid: Some(0),
         }];
         let mut right = left.clone();
 
@@ -455,6 +468,8 @@ mod tests {
             sftp_entries: Vec::new(),
             sftp_loading: true,
             sftp_error: None,
+            sftp_last_done: None,
+            sftp_progress: None,
             monitor: None,
         };
 

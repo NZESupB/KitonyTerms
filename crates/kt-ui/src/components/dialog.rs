@@ -13,7 +13,9 @@ pub fn ConnectionDialog(
     host: Signal<String>,
     port: Signal<String>,
     user: Signal<String>,
+    group: Signal<String>,
     password: Signal<String>,
+    groups: Vec<String>,
     language: AppLanguage,
     on_save: EventHandler<SessionProfile>,
 ) -> Element {
@@ -121,6 +123,30 @@ pub fn ConnectionDialog(
                         }
                     }
 
+                    // 分组
+                    div {
+                        label {
+                            style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
+                            "{t.group}"
+                        }
+                        input {
+                            style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
+                            r#type: "text",
+                            list: "connection-groups",
+                            value: "{group()}",
+                            oninput: move |evt| {
+                                group.set(evt.value().clone());
+                            },
+                            placeholder: "{t.group_placeholder}"
+                        }
+                        datalist {
+                            id: "connection-groups",
+                            for group_name in groups.iter() {
+                                option { value: "{group_name}" }
+                            }
+                        }
+                    }
+
                     // 密码
                     div {
                         label {
@@ -159,6 +185,7 @@ pub fn ConnectionDialog(
                             let host_val = host();
                             let port_str = port();
                             let user_val = user();
+                            let group_val = group();
 
                             if name_val.is_empty() || host_val.is_empty() || user_val.is_empty() {
                                 tracing::warn!("{}", t.required_warning);
@@ -170,7 +197,14 @@ pub fn ConnectionDialog(
                             // 创建 SessionProfile
                             let profile = SessionProfile {
                                 name: name_val.clone(),
-                                group: None,
+                                group: {
+                                    let trimmed = group_val.trim();
+                                    if trimmed.is_empty() {
+                                        None
+                                    } else {
+                                        Some(trimmed.to_string())
+                                    }
+                                },
                                 params: ConnectParams {
                                     host: host_val.clone(),
                                     port: port_val,
