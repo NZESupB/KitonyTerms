@@ -149,9 +149,41 @@ pub enum CursorStyle {
     Underline,
 }
 
+/// Application display language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppLanguage {
+    English,
+    Chinese,
+}
+
+impl Default for AppLanguage {
+    fn default() -> Self {
+        Self::system_default()
+    }
+}
+
+impl AppLanguage {
+    pub fn system_default() -> Self {
+        system_locale_language().unwrap_or_else(env_locale_language)
+    }
+
+    fn from_locale_tag(tag: &str) -> Self {
+        let normalized = tag.to_ascii_lowercase().replace('_', "-");
+        if normalized.starts_with("zh") {
+            Self::Chinese
+        } else {
+            Self::English
+        }
+    }
+}
+
 /// Visual / behavioral app settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
+    /// Display language for the desktop UI.
+    #[serde(default)]
+    pub language: AppLanguage,
     /// Monospace font family for the terminal.
     pub font_family: String,
     /// Font size in points.
@@ -169,6 +201,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            language: AppLanguage::default(),
             font_family: default_mono_font().to_string(),
             font_size: 13.0,
             theme: "default-dark".to_string(),
@@ -177,6 +210,31 @@ impl Default for AppSettings {
             use_ssh_config: true,
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn system_locale_language() -> Option<AppLanguage> {
+    let language_id = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
+    let primary_language_id = language_id & 0x03ff;
+    Some(if primary_language_id == 0x04 {
+        AppLanguage::Chinese
+    } else {
+        AppLanguage::English
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_locale_language() -> Option<AppLanguage> {
+    None
+}
+
+fn env_locale_language() -> AppLanguage {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.trim().is_empty())
+        .map(|value| AppLanguage::from_locale_tag(&value))
+        .unwrap_or(AppLanguage::English)
 }
 
 fn default_mono_font() -> &'static str {
@@ -294,6 +352,7 @@ mod tests {
     #[test]
     fn config_toml_roundtrip() {
         let mut cfg = Config::default();
+        cfg.settings.language = AppLanguage::Chinese;
         cfg.upsert_session(SessionProfile {
             name: "prod-web".into(),
             group: None,
@@ -309,8 +368,36 @@ mod tests {
         });
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(back.settings.language, AppLanguage::Chinese);
         assert_eq!(back.sessions.len(), 1);
         assert_eq!(back.session("prod-web").unwrap().params.port, 2222);
+    }
+
+    #[test]
+    fn language_parses_chinese_locale_tags() {
+        assert_eq!(AppLanguage::from_locale_tag("zh-CN"), AppLanguage::Chinese);
+        assert_eq!(
+            AppLanguage::from_locale_tag("zh_TW.UTF-8"),
+            AppLanguage::Chinese
+        );
+        assert_eq!(AppLanguage::from_locale_tag("en-US"), AppLanguage::English);
+    }
+
+    #[test]
+    fn app_settings_language_is_backward_compatible() {
+        let toml = r#"
+font_family = "Mono"
+font_size = 13.0
+theme = "default-dark"
+scrollback_lines = 10000
+cursor_style = "block"
+use_ssh_config = true
+"#;
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        assert!(matches!(
+            settings.language,
+            AppLanguage::Chinese | AppLanguage::English
+        ));
     }
 
     #[test]

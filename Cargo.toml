@@ -51,11 +51,17 @@ zeroize = { version = "1", features = ["derive"] }
 # --- UI framework ---
 dioxus = { version = "0.7", features = ["desktop"] }
 
+# --- macOS integration ---
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
 # --- error handling / logging / utils ---
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 
 # --- headless example helpers ---
 rpassword = "7"

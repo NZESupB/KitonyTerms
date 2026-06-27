@@ -1,13 +1,18 @@
 //! 资源监控面板组件。
 
 use dioxus::prelude::*;
+use kt_config::AppLanguage;
 use kt_core::monitor::MonitorStats;
 use kt_core::{SessionId, ToCore};
 
+use crate::components::icons::Icon;
+use crate::i18n::texts;
+
 #[component]
-pub fn MonitorPanel(session_id: SessionId) -> Element {
+pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
     let state = crate::components::app::get_state().clone();
     let state_for_start = state.clone();
+    let t = texts(language).monitor;
 
     let mut stats = use_signal(|| None::<MonitorStats>);
 
@@ -39,9 +44,9 @@ pub fn MonitorPanel(session_id: SessionId) -> Element {
 
             div {
                 class: "monitor-title",
-                span { "⌄" }
-                "系统监控"
-                button { class: "icon-button slim", title: "关闭", "×" }
+                Icon { name: "chevron-down" }
+                "{t.system_monitor}"
+                button { class: "icon-button slim", title: "{t.close}", Icon { name: "close" } }
             }
 
             if let Some(ref s) = stats() {
@@ -49,60 +54,76 @@ pub fn MonitorPanel(session_id: SessionId) -> Element {
                     class: "monitor-grid",
 
                     MetricCard {
+                        icon: "cpu",
                         tone: "blue",
                         label: "CPU",
                         value: format!("{:.1}%", s.cpu_percent),
-                        subvalue: "2 核心".to_string(),
+                        subvalue: t.cpu_cores.to_string(),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "memory",
                         tone: "amber",
-                        label: "内存",
+                        label: t.memory,
                         value: if s.mem_total > 0 {
                             format!("{:.0}%", (s.mem_used as f64 / s.mem_total as f64) * 100.0)
                         } else {
                             "--".to_string()
                         },
                         subvalue: format!("{} / {}", format_bytes(s.mem_used), format_bytes(s.mem_total)),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "load",
                         tone: "green",
-                        label: "负载",
+                        label: t.load,
                         value: format!("{:.2}", s.load1),
                         subvalue: format!("uptime {}", format_uptime(s.uptime_secs)),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "network",
                         tone: "purple",
-                        label: "网络",
+                        label: t.network,
                         value: format!("↓ {}", format_rate(s.net_rx_rate)),
                         subvalue: format!("↑ {}", format_rate(s.net_tx_rate)),
+                        trend: t.trend,
                     }
                 }
             } else {
                 div {
                     class: "monitor-grid",
                     MetricCard {
+                        icon: "cpu",
                         tone: "blue",
                         label: "CPU",
                         value: "--".to_string(),
-                        subvalue: "等待采样".to_string(),
+                        subvalue: t.waiting.to_string(),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "memory",
                         tone: "amber",
-                        label: "内存",
+                        label: t.memory,
                         value: "--".to_string(),
-                        subvalue: "等待采样".to_string(),
+                        subvalue: t.waiting.to_string(),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "load",
                         tone: "green",
-                        label: "负载",
+                        label: t.load,
                         value: "--".to_string(),
-                        subvalue: "等待采样".to_string(),
+                        subvalue: t.waiting.to_string(),
+                        trend: t.trend,
                     }
                     MetricCard {
+                        icon: "network",
                         tone: "purple",
-                        label: "网络",
+                        label: t.network,
                         value: "--".to_string(),
-                        subvalue: "等待采样".to_string(),
+                        subvalue: t.waiting.to_string(),
+                        trend: t.trend,
                     }
                 }
             }
@@ -111,17 +132,30 @@ pub fn MonitorPanel(session_id: SessionId) -> Element {
 }
 
 #[component]
-fn MetricCard(tone: &'static str, label: &'static str, value: String, subvalue: String) -> Element {
+fn MetricCard(
+    icon: &'static str,
+    tone: &'static str,
+    label: &'static str,
+    value: String,
+    subvalue: String,
+    trend: &'static str,
+) -> Element {
+    let trend_label = format!("{label} {trend}");
+
     rsx! {
         div {
             class: "metric-card {tone}",
-            span { class: "metric-label", "{label}" }
+            span {
+                class: "metric-label",
+                Icon { name: icon }
+                "{label}"
+            }
             div {
                 class: "metric-value-row",
                 strong { "{value}" }
                 small { "{subvalue}" }
             }
-            div { class: "sparkline {tone}", aria_label: "{label} 趋势" }
+            div { class: "sparkline {tone}", aria_label: "{trend_label}" }
         }
     }
 }

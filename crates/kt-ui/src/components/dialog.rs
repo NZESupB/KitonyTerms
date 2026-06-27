@@ -1,7 +1,9 @@
 //! 连接编辑对话框组件
 
 use dioxus::prelude::*;
-use kt_config::{AuthMethod, ConnectParams, SessionProfile};
+use kt_config::{AppLanguage, AuthMethod, ConnectParams, SessionProfile};
+
+use crate::i18n::texts;
 
 #[component]
 pub fn ConnectionDialog(
@@ -12,6 +14,7 @@ pub fn ConnectionDialog(
     port: Signal<String>,
     user: Signal<String>,
     password: Signal<String>,
+    language: AppLanguage,
     on_save: EventHandler<SessionProfile>,
 ) -> Element {
     if !show() {
@@ -19,7 +22,8 @@ pub fn ConnectionDialog(
     }
 
     let is_edit = mode() == "edit";
-    let title = if is_edit { "编辑连接" } else { "新建连接" };
+    let t = texts(language).dialog;
+    let title = if is_edit { t.edit_title } else { t.new_title };
 
     rsx! {
         // 模态背景遮罩
@@ -50,7 +54,7 @@ pub fn ConnectionDialog(
                     div {
                         label {
                             style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
-                            "连接名称"
+                            "{t.name}"
                         }
                         input {
                             style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
@@ -59,7 +63,7 @@ pub fn ConnectionDialog(
                             oninput: move |evt| {
                                 name.set(evt.value().clone());
                             },
-                            placeholder: "例如: 生产服务器"
+                            placeholder: "{t.name_placeholder}"
                         }
                     }
 
@@ -67,7 +71,7 @@ pub fn ConnectionDialog(
                     div {
                         label {
                             style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
-                            "主机地址"
+                            "{t.host}"
                         }
                         input {
                             style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
@@ -76,7 +80,7 @@ pub fn ConnectionDialog(
                             oninput: move |evt| {
                                 host.set(evt.value().clone());
                             },
-                            placeholder: "例如: 192.168.1.100"
+                            placeholder: "{t.host_placeholder}"
                         }
                     }
 
@@ -87,7 +91,7 @@ pub fn ConnectionDialog(
                             style: "flex: 1;",
                             label {
                                 style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
-                                "端口"
+                                "{t.port}"
                             }
                             input {
                                 style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
@@ -103,7 +107,7 @@ pub fn ConnectionDialog(
                             style: "flex: 2;",
                             label {
                                 style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
-                                "用户名"
+                                "{t.user}"
                             }
                             input {
                                 style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
@@ -121,7 +125,7 @@ pub fn ConnectionDialog(
                     div {
                         label {
                             style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
-                            "密码（可选）"
+                            "{t.password}"
                         }
                         input {
                             style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
@@ -130,7 +134,7 @@ pub fn ConnectionDialog(
                             oninput: move |evt| {
                                 password.set(evt.value().clone());
                             },
-                            placeholder: "留空则连接时提示"
+                            placeholder: "{t.password_placeholder}"
                         }
                     }
                 }
@@ -144,7 +148,7 @@ pub fn ConnectionDialog(
                         onclick: move |_| {
                             show.set(false);
                         },
-                        "取消"
+                        "{t.cancel}"
                     }
 
                     button {
@@ -157,7 +161,7 @@ pub fn ConnectionDialog(
                             let user_val = user();
 
                             if name_val.is_empty() || host_val.is_empty() || user_val.is_empty() {
-                                tracing::warn!("请填写所有必填字段");
+                                tracing::warn!("{}", t.required_warning);
                                 return;
                             }
 
@@ -182,7 +186,7 @@ pub fn ConnectionDialog(
                             // 关闭对话框
                             show.set(false);
                         },
-                        "保存"
+                        "{t.save}"
                     }
                 }
             }

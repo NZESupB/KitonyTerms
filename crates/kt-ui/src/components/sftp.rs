@@ -1,15 +1,18 @@
 //! SFTP 文件管理面板组件。
 
 use dioxus::prelude::*;
+use kt_config::AppLanguage;
 use kt_core::{SessionId, SftpEntry, SftpRequest, ToCore};
 use std::sync::{Arc, Mutex};
 
+use crate::components::icons::Icon;
+use crate::i18n::{sftp_timeout_message, texts};
 use crate::state::AppState;
 
 const UI_SFTP_TIMEOUT_SECS: u64 = 15;
 
 #[component]
-pub fn SftpPanel(session_id: SessionId) -> Element {
+pub fn SftpPanel(session_id: SessionId, language: AppLanguage) -> Element {
     let state = crate::components::app::get_state().clone();
     let state_for_load = state.clone();
     let state_for_sync = state.clone();
@@ -21,6 +24,7 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
     let mut loading = use_signal(|| false);
     let mut error_message = use_signal(|| None::<String>);
     let mut did_initial_load = use_signal(|| false);
+    let t = texts(language).sftp;
 
     use_effect(move || {
         if !did_initial_load() {
@@ -32,6 +36,7 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                 loading,
                 entries,
                 error_message,
+                language,
             );
         }
     });
@@ -67,15 +72,18 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
 
             div {
                 class: "sftp-titlebar",
-                strong { "SFTP" }
-                button { class: "icon-button slim", title: "关闭", "×" }
+                strong {
+                    Icon { name: "folder" }
+                    "SFTP"
+                }
+                button { class: "icon-button slim", title: "{t.close}", Icon { name: "close" } }
             }
 
             div {
                 class: "sftp-toolbar",
                 button {
                     class: "icon-button slim",
-                    title: "返回上级",
+                    title: "{t.back}",
                     disabled: current_path() == "/" || current_path() == ".",
                     onclick: move |_| {
                         let path = current_path();
@@ -89,15 +97,16 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                                 loading,
                                 entries,
                                 error_message,
+                                language,
                             );
                         }
                     },
-                    "←"
+                    Icon { name: "back" }
                 }
 
                 button {
                     class: "icon-button slim",
-                    title: "刷新",
+                    title: "{t.refresh}",
                     onclick: move |_| {
                         load_directory(
                             state_for_refresh.clone(),
@@ -106,9 +115,10 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                             loading,
                             entries,
                             error_message,
+                            language,
                         );
                     },
-                    "↻"
+                    Icon { name: "refresh" }
                 }
 
                 div {
@@ -116,7 +126,7 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                     "{display_path(&current_path())}"
                 }
 
-                button { class: "icon-button slim", title: "更多", "…" }
+                button { class: "icon-button slim", title: "{t.more}", Icon { name: "more" } }
             }
 
             div {
@@ -124,15 +134,15 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
 
                 div {
                     class: "sftp-table-head",
-                    span { "名称" }
-                    span { "大小" }
-                    span { "修改时间" }
+                    span { "{t.name}" }
+                    span { "{t.size}" }
+                    span { "{t.modified}" }
                 }
 
                 if loading() {
-                    div { class: "sftp-message", "正在读取远端目录..." }
+                    div { class: "sftp-message", "{t.loading}" }
                 } else if let Some(err) = error_message() {
-                    div { class: "sftp-message error", "SFTP 错误: {err}" }
+                    div { class: "sftp-message error", "{t.error_prefix}: {err}" }
                 } else {
                     div {
                         class: "sftp-row is-parent",
@@ -148,10 +158,15 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                                     loading,
                                     entries,
                                     error_message,
+                                    language,
                                 );
                             }
                         },
-                        span { class: "file-name", span { class: "file-icon folder", "■" } ".." }
+                        span {
+                            class: "file-name",
+                            span { class: "file-icon folder", Icon { name: "folder" } }
+                            ".."
+                        }
                         span {}
                         span {}
                     }
@@ -175,6 +190,7 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
                                         loading,
                                         entries,
                                         error_message,
+                                        language,
                                     );
                                 }
                             },
@@ -185,12 +201,12 @@ pub fn SftpPanel(session_id: SessionId) -> Element {
 
             div {
                 class: "sftp-footer",
-                span { "{entries().len()} 个项目" }
+                span { "{entries().len()} {t.items}" }
                 div { class: "footer-actions" }
-                button { title: "上传", "⇧" }
-                button { title: "下载", "⇩" }
-                button { title: "列表视图", "☷" }
-                button { title: "删除", "⌫" }
+                button { title: "{t.upload}", Icon { name: "upload" } }
+                button { title: "{t.download}", Icon { name: "download" } }
+                button { title: "{t.list_view}", Icon { name: "list" } }
+                button { title: "{t.delete}", Icon { name: "trash" } }
             }
         }
     }
@@ -211,6 +227,12 @@ fn SftpRow(
         format_size(size)
     };
     let modified = modified.map(format_time).unwrap_or_default();
+    let file_icon = if is_dir { "folder" } else { "file" };
+    let file_icon_class = if is_dir {
+        "file-icon folder"
+    } else {
+        "file-icon document"
+    };
 
     rsx! {
         div {
@@ -224,8 +246,8 @@ fn SftpRow(
             span {
                 class: "file-name",
                 span {
-                    class: if is_dir { "file-icon folder" } else { "file-icon document" },
-                    if is_dir { "■" } else { "□" }
+                    class: file_icon_class,
+                    Icon { name: file_icon }
                 }
                 "{name}"
             }
@@ -242,6 +264,7 @@ fn load_directory(
     mut loading: Signal<bool>,
     mut entries: Signal<Vec<SftpEntry>>,
     mut error_message: Signal<Option<String>>,
+    language: AppLanguage,
 ) {
     let requested_path = path.clone();
     loading.set(true);
@@ -262,7 +285,7 @@ fn load_directory(
             request_sent = true;
         } else {
             loading.set(false);
-            error_message.set(Some("会话不存在或已关闭，无法读取 SFTP".to_string()));
+            error_message.set(Some(texts(language).sftp.session_missing.to_string()));
         }
         if request_sent {
             app_state.manager.send(ToCore::Sftp {
@@ -272,7 +295,7 @@ fn load_directory(
         }
     } else {
         loading.set(false);
-        error_message.set(Some("无法访问应用状态，SFTP 请求未发送".to_string()));
+        error_message.set(Some(texts(language).sftp.state_unavailable.to_string()));
     }
 
     if request_sent {
@@ -283,7 +306,7 @@ fn load_directory(
                 if let Some(sess) = app_state.sessions.get_mut(&session_id) {
                     if sess.sftp_loading && sess.sftp_path == requested_path {
                         sess.sftp_loading = false;
-                        sess.sftp_error = Some(ui_timeout_message(&requested_path));
+                        sess.sftp_error = Some(ui_timeout_message(&requested_path, language));
                     }
                 }
             }
@@ -326,8 +349,8 @@ fn display_path(path: &str) -> String {
     }
 }
 
-fn ui_timeout_message(path: &str) -> String {
-    format!("读取远端目录 {path} 超时({UI_SFTP_TIMEOUT_SECS} 秒)，请刷新重试")
+fn ui_timeout_message(path: &str, language: AppLanguage) -> String {
+    sftp_timeout_message(language, path, UI_SFTP_TIMEOUT_SECS)
 }
 
 fn should_skip_duplicate_request(sess: &crate::state::SessionState, path: &str) -> bool {
@@ -399,7 +422,7 @@ mod tests {
 
     #[test]
     fn ui_timeout_message_includes_path_and_limit() {
-        let message = ui_timeout_message("/root");
+        let message = ui_timeout_message("/root", AppLanguage::Chinese);
         assert!(message.contains("/root"));
         assert!(message.contains("15 秒"));
     }

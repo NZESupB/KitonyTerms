@@ -9,14 +9,16 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use dioxus::prelude::*;
-use kt_config::{ConnectParams, SessionProfile};
+use kt_config::{AppLanguage, ConnectParams, SessionProfile};
 use kt_core::ssh::HostKeyDecision;
 use kt_core::{AuthProvider, HostKeyVerifier, PtySize, SessionId, SessionManager, ToCore};
 
 use crate::components::dialog::ConnectionDialog;
+use crate::components::icons::{AppLogo, Icon};
 use crate::components::monitor::MonitorPanel;
 use crate::components::sftp::SftpPanel;
 use crate::components::terminal::{SnapshotWrapper, Terminal};
+use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
 use crate::store::Store;
 
@@ -135,6 +137,8 @@ pub fn App() -> Element {
     let mut edit_user = use_signal(String::new);
     let mut edit_password = use_signal(String::new);
 
+    let mut settings = use_signal(|| store.settings());
+    let mut show_settings = use_signal(|| false);
     let mut active_session_id = use_signal(|| None::<SessionId>);
     let mut all_sessions = use_signal(Vec::<SessionState>::new);
     let mut show_sftp = use_signal(|| true);
@@ -179,7 +183,9 @@ pub fn App() -> Element {
 
     let active_title = active_session()
         .map(|s| s.title)
-        .unwrap_or_else(|| "未选择会话".to_string());
+        .unwrap_or_else(|| texts(settings().language).app.no_session.to_string());
+    let language = settings().language;
+    let t = texts(language).app;
     let resource_panel_style = format!(
         "width: {:.0}px; flex-basis: {:.0}px;",
         resource_width(),
@@ -237,27 +243,33 @@ pub fn App() -> Element {
                 nav {
                     class: "nav-rail",
 
-                    div { class: "nav-logo", "KT" }
+                    div { class: "nav-logo", AppLogo { size: "nav" } }
 
-                    button { class: "nav-item is-active", title: "连接", span { "⌘" } small { "连接" } }
-                    button { class: "nav-item", title: "会话", span { "▣" } small { "会话" } }
+                    button { class: "nav-item is-active", title: "{t.connect}", Icon { name: "connect" } small { "{t.connect}" } }
+                    button { class: "nav-item", title: "{t.sessions}", Icon { name: "sessions" } small { "{t.sessions}" } }
                     button {
                         class: if show_sftp() { "nav-item is-active-subtle" } else { "nav-item" },
                         title: "SFTP",
                         onclick: move |_| show_sftp.set(!show_sftp()),
-                        span { "□" }
+                        Icon { name: "folder" }
                         small { "SFTP" }
                     }
                     button {
                         class: if show_monitor() { "nav-item is-active-subtle" } else { "nav-item" },
-                        title: "监控",
+                        title: "{t.monitor}",
                         onclick: move |_| show_monitor.set(!show_monitor()),
-                        span { "▱" }
-                        small { "监控" }
+                        Icon { name: "monitor" }
+                        small { "{t.monitor}" }
                     }
 
                     div { class: "nav-grow" }
-                    button { class: "nav-item", title: "设置", span { "⚙" } small { "设置" } }
+                    button {
+                        class: if show_settings() { "nav-item is-active-subtle" } else { "nav-item" },
+                        title: "{t.settings}",
+                        onclick: move |_| show_settings.set(true),
+                        Icon { name: "settings" }
+                        small { "{t.settings}" }
+                    }
                 }
 
                 div {
@@ -275,7 +287,7 @@ pub fn App() -> Element {
                                 span { "{sess.title}" }
                             } else {
                                 span { class: "status-dot idle" }
-                                span { "未选择会话" }
+                                span { "{t.no_session}" }
                             }
                         }
 
@@ -283,17 +295,22 @@ pub fn App() -> Element {
 
                         div {
                             class: "global-search compact",
-                            span { class: "search-symbol", "⌕" }
+                            Icon { name: "search" }
                             input {
                                 class: "global-search-input",
-                                placeholder: "搜索",
+                                placeholder: "{t.search}",
                             }
-                            span { class: "search-shortcut", "⌘K" }
+                            span { class: "search-shortcut", "Ctrl K" }
                         }
 
-                        button { class: "icon-button slim", title: "通知", "⌁" }
-                        button { class: "icon-button slim", title: "设置", "⚙" }
-                        button { class: "avatar-button compact", title: "账户", "K" }
+                        button { class: "icon-button slim", title: "{t.notifications}", Icon { name: "bell" } }
+                        button {
+                            class: "icon-button slim",
+                            title: "{t.settings}",
+                            onclick: move |_| show_settings.set(true),
+                            Icon { name: "settings" }
+                        }
+                        button { class: "avatar-button compact", title: "{t.account}", "K" }
                     }
 
                     div {
@@ -305,9 +322,10 @@ pub fn App() -> Element {
 
                             div {
                                 class: "resource-header",
+                                AppLogo { size: "header" }
                                 div {
                                     h1 { "KitonyTerms" }
-                                    p { "全端 SSH 客户端" }
+                                    p { "{t.product_subtitle}" }
                                 }
                             }
 
@@ -316,10 +334,10 @@ pub fn App() -> Element {
 
                                 div {
                                     class: "resource-card-head",
-                                    strong { "资源管理器" }
+                                    strong { "{t.explorer}" }
                                     button {
                                         class: "tiny-pill",
-                                        title: "新建连接",
+                                        title: "{t.new_connection}",
                                         onclick: move |_| {
                                             dialog_mode.set("new".to_string());
                                             edit_name.set(String::new());
@@ -329,15 +347,15 @@ pub fn App() -> Element {
                                             edit_password.set(String::new());
                                             show_dialog.set(true);
                                         },
-                                        "＋"
+                                        Icon { name: "add" }
                                     }
                                 }
 
                                 div {
                                     class: "panel-search",
-                                    span { "⌕" }
+                                    Icon { name: "search" }
                                     input {
-                                        placeholder: "搜索主机、标签",
+                                        placeholder: "{t.search_hosts}",
                                     }
                                 }
 
@@ -348,16 +366,16 @@ pub fn App() -> Element {
                                         class: "tree-group",
                                         div {
                                             class: "tree-group-title",
-                                            span { "⌄" }
-                                            "我的连接"
-                                            button { class: "ghost-more", title: "更多", "…" }
+                                            Icon { name: "chevron-down" }
+                                            "{t.my_connections}"
+                                            button { class: "ghost-more", title: "{t.more}", Icon { name: "more" } }
                                         }
 
                                         if saved_profiles.is_empty() {
                                             div {
                                                 class: "empty-resource",
-                                                strong { "暂无保存连接" }
-                                                p { "新建连接后会显示在这里。" }
+                                                strong { "{t.no_saved_connections}" }
+                                                p { "{t.saved_connections_hint}" }
                                             }
                                         }
 
@@ -366,6 +384,7 @@ pub fn App() -> Element {
                                                 key: "saved-{profile.name}",
                                                 profile: profile.clone(),
                                                 active: active_title == profile.name,
+                                                language,
                                                 on_connect: {
                                                     let profile = profile.clone();
                                                     move |_| {
@@ -413,8 +432,12 @@ pub fn App() -> Element {
 
                                 div {
                                     class: "resource-footer",
-                                    button { title: "筛选", "≡" }
-                                    button { title: "连接设置", "⚙" }
+                                    button { title: "{t.filter}", Icon { name: "filter" } }
+                                    button {
+                                        title: "{t.connection_settings}",
+                                        onclick: move |_| show_settings.set(true),
+                                        Icon { name: "settings" }
+                                    }
                                 }
                             }
                         }
@@ -425,7 +448,7 @@ pub fn App() -> Element {
                             } else {
                                 "splitter"
                             },
-                            title: "拖动调整资源管理器宽度",
+                            title: "{t.resize_explorer}",
                             onmousedown: move |evt| {
                                 evt.stop_propagation();
                                 evt.prevent_default();
@@ -464,7 +487,7 @@ pub fn App() -> Element {
                                                 span { class: "tab-title", "{sess.title}" }
                                                 button {
                                                     class: "tab-close",
-                                                    title: "关闭会话",
+                                                    title: "{t.close_session}",
                                                     onclick: {
                                                         let id = sess.id;
                                                         move |evt| {
@@ -479,24 +502,24 @@ pub fn App() -> Element {
                                                             }
                                                         }
                                                     },
-                                                    "×"
+                                                    Icon { name: "close" }
                                                 }
                                             }
                                         }
 
                                         button {
                                             class: "new-tab-button",
-                                            title: "新建连接",
+                                            title: "{t.new_connection}",
                                             onclick: move |_| {
                                                 dialog_mode.set("new".to_string());
                                                 edit_name.set(String::new());
                                                 edit_host.set(String::new());
                                                 edit_port.set("22".to_string());
-                                                edit_user.set(String::new());
-                                                edit_password.set(String::new());
-                                                show_dialog.set(true);
-                                            },
-                                            "+"
+                                            edit_user.set(String::new());
+                                            edit_password.set(String::new());
+                                            show_dialog.set(true);
+                                        },
+                                            Icon { name: "add" }
                                         }
                                     }
 
@@ -514,16 +537,16 @@ pub fn App() -> Element {
                                                     "{sess.title}"
                                                 }
                                             } else {
-                                                span { class: "host-pill muted", "未连接" }
+                                                span { class: "host-pill muted", "{t.disconnected}" }
                                             }
                                         }
 
                                         div { class: "toolbar-spacer" }
-                                        button { class: "icon-button slim", title: "分屏", "＋" }
-                                        button { class: "icon-button slim", title: "水平分屏", "▣" }
-                                        button { class: "icon-button slim", title: "垂直分屏", "▦" }
-                                        button { class: "icon-button slim", title: "清空", "⌫" }
-                                        button { class: "icon-button slim", title: "更多", "…" }
+                                        button { class: "icon-button slim", title: "{t.split}", Icon { name: "split" } }
+                                        button { class: "icon-button slim", title: "{t.split_horizontal}", Icon { name: "split-horizontal" } }
+                                        button { class: "icon-button slim", title: "{t.split_vertical}", Icon { name: "split-vertical" } }
+                                        button { class: "icon-button slim", title: "{t.clear}", Icon { name: "clear" } }
+                                        button { class: "icon-button slim", title: "{t.more}", Icon { name: "more" } }
                                     }
 
                                     div {
@@ -539,10 +562,11 @@ pub fn App() -> Element {
                                                 TerminalPlaceholder {
                                                     connected: sess.connected,
                                                     title: sess.title.clone(),
+                                                    language,
                                                 }
                                             }
                                         } else {
-                                            EmptyWorkbench {}
+                                            EmptyWorkbench { language }
                                         }
                                     }
                                 }
@@ -555,7 +579,7 @@ pub fn App() -> Element {
                                             } else {
                                                 "splitter splitter-right"
                                             },
-                                            title: "拖动调整 SFTP 宽度",
+                                            title: "{t.resize_sftp}",
                                             onmousedown: move |evt| {
                                                 evt.stop_propagation();
                                                 evt.prevent_default();
@@ -573,6 +597,7 @@ pub fn App() -> Element {
                                             SftpPanel {
                                                 key: "sftp-{sess.id.0}",
                                                 session_id: sess.id,
+                                                language,
                                             }
                                         }
                                     }
@@ -588,9 +613,10 @@ pub fn App() -> Element {
                                 MonitorPanel {
                                     key: "monitor-{sess.id.0}",
                                     session_id: sess.id,
+                                    language,
                                 }
                             } else {
-                                MonitorPlaceholder {}
+                                MonitorPlaceholder { language }
                             }
                         }
                     }
@@ -600,18 +626,18 @@ pub fn App() -> Element {
             footer {
                 class: "status-bar",
                 if let Some(sess) = active_session() {
-                    span { class: if sess.connected { "status-pill connected" } else { "status-pill pending" }, if sess.connected { "已连接" } else { "连接中" } }
+                    span { class: if sess.connected { "status-pill connected" } else { "status-pill pending" }, if sess.connected { "{t.connected}" } else { "{t.connecting}" } }
                     span { "{sess.title}" }
                     span { class: "status-separator" }
-                    span { "SSH 连接" }
+                    span { "{t.ssh_connection}" }
                     span { class: "status-grow" }
                     span { "UTF-8" }
                     span { class: "status-separator" }
                     span { "100x30" }
                     span { class: "latency", "28ms" }
                 } else {
-                    span { class: "status-pill pending", "就绪" }
-                    span { "选择或新建连接以开始" }
+                    span { class: "status-pill pending", "{t.ready}" }
+                    span { "{t.ready_hint}" }
                 }
             }
         }
@@ -624,6 +650,7 @@ pub fn App() -> Element {
             port: edit_port,
             user: edit_user,
             password: edit_password,
+            language,
             on_save: move |profile: SessionProfile| {
                 if let Err(e) = store.save_session(profile.clone()) {
                     tracing::error!("保存连接失败: {}", e);
@@ -636,6 +663,19 @@ pub fn App() -> Element {
                         }
                     }
                     saved_tick.set(saved_tick() + 1);
+                }
+            },
+        }
+
+        SettingsPanel {
+            show: show_settings,
+            language,
+            on_language_change: move |language| {
+                let mut next = settings();
+                next.language = language;
+                match store.update_settings(next.clone()) {
+                    Ok(()) => settings.set(next),
+                    Err(e) => tracing::error!("保存设置失败: {}", e),
                 }
             },
         }
@@ -688,6 +728,7 @@ fn is_resizing_target(drag: Option<ResizeDrag>, target: ResizeTarget) -> bool {
 fn ConnectionCard(
     profile: SessionProfile,
     active: bool,
+    language: AppLanguage,
     on_connect: EventHandler<()>,
     on_edit: EventHandler<()>,
     on_delete: EventHandler<()>,
@@ -701,6 +742,7 @@ fn ConnectionCard(
             format!("{}:{}", profile.params.host, profile.params.port)
         }
     );
+    let t = texts(language).app;
 
     rsx! {
         div {
@@ -721,20 +763,20 @@ fn ConnectionCard(
             div {
                 class: "connection-actions",
                 button {
-                    title: "编辑",
+                    title: "{t.edit}",
                     onclick: move |evt| {
                         evt.stop_propagation();
                         on_edit.call(());
                     },
-                    "✎"
+                    Icon { name: "edit" }
                 }
                 button {
-                    title: "删除",
+                    title: "{t.delete}",
                     onclick: move |evt| {
                         evt.stop_propagation();
                         on_delete.call(());
                     },
-                    "×"
+                    Icon { name: "trash" }
                 }
             }
         }
@@ -742,11 +784,70 @@ fn ConnectionCard(
 }
 
 #[component]
-fn TerminalPlaceholder(connected: bool, title: String) -> Element {
+fn SettingsPanel(
+    show: Signal<bool>,
+    language: AppLanguage,
+    on_language_change: EventHandler<AppLanguage>,
+) -> Element {
+    if !show() {
+        return rsx! {};
+    }
+
+    let t = texts(language).app;
+
+    rsx! {
+        div {
+            class: "settings-overlay",
+            onclick: move |_| show.set(false),
+
+            section {
+                class: "settings-panel",
+                onclick: move |evt| evt.stop_propagation(),
+
+                div {
+                    class: "settings-head",
+                    h2 { "{t.settings}" }
+                    button {
+                        class: "icon-button slim",
+                        title: "{t.close}",
+                        onclick: move |_| show.set(false),
+                        Icon { name: "close" }
+                    }
+                }
+
+                div {
+                    class: "settings-row",
+                    div {
+                        strong { "{t.language}" }
+                        p { "{t.language_hint}" }
+                    }
+
+                    div {
+                        class: "segmented-control",
+                        button {
+                            class: if language == AppLanguage::Chinese { "is-selected" } else { "" },
+                            onclick: move |_| on_language_change.call(AppLanguage::Chinese),
+                            "{t.chinese}"
+                        }
+                        button {
+                            class: if language == AppLanguage::English { "is-selected" } else { "" },
+                            onclick: move |_| on_language_change.call(AppLanguage::English),
+                            "{t.english}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn TerminalPlaceholder(connected: bool, title: String, language: AppLanguage) -> Element {
+    let t = texts(language).app;
     let state_line = if connected {
-        "正在等待终端输出"
+        t.terminal_waiting
     } else {
-        "正在建立 SSH 连接"
+        t.terminal_connecting
     };
 
     rsx! {
@@ -764,7 +865,7 @@ fn TerminalPlaceholder(connected: bool, title: String) -> Element {
                         |___/
 "#
             }
-            p { "会话: {title}" }
+            p { "{t.session_label}: {title}" }
             p { "{state_line}" }
             span { class: "terminal-caret" }
         }
@@ -772,26 +873,35 @@ fn TerminalPlaceholder(connected: bool, title: String) -> Element {
 }
 
 #[component]
-fn EmptyWorkbench() -> Element {
+fn EmptyWorkbench(language: AppLanguage) -> Element {
+    let t = texts(language).app;
+
     rsx! {
         div {
             class: "empty-workbench",
-            div { class: "empty-logo", "KT" }
-            h2 { "选择一个连接" }
-            p { "左侧资源管理器会打开 SSH 会话、SFTP 与监控视图。" }
+            div { class: "empty-logo", AppLogo { size: "empty" } }
+            h2 { "{t.empty_title}" }
+            p { "{t.empty_hint}" }
         }
     }
 }
 
 #[component]
-fn MonitorPlaceholder() -> Element {
+fn MonitorPlaceholder(language: AppLanguage) -> Element {
+    let t = texts(language).app;
+    let labels = ["CPU", t.memory, t.load, t.network];
+
     rsx! {
         div {
             class: "monitor-panel compact",
-            div { class: "monitor-title", "系统监控" }
+            div {
+                class: "monitor-title",
+                Icon { name: "monitor" }
+                "{t.system_monitor}"
+            }
             div {
                 class: "monitor-grid",
-                for label in ["CPU", "内存", "负载", "网络"] {
+                for label in labels {
                     div {
                         class: "metric-card",
                         span { class: "metric-label", "{label}" }

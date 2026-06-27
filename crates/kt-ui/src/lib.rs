@@ -3,6 +3,7 @@
 //! 提供所有 UI 组件，包括终端渲染、会话列表、SFTP 面板、资源监控等。
 
 pub mod components;
+pub mod i18n;
 pub mod state;
 pub mod store;
 

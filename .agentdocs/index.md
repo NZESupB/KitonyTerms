@@ -33,6 +33,8 @@
 - **界面压缩与 SFTP 修复(2026-06-26)**: 资源管理器与底部监控区收紧；SFTP 读取链路补齐投递失败错误、打开超时、独立 SSH fallback、目录读取超时与 UI 本地看门狗。详见 [`workflow/done/260626-tighten-ui-fix-sftp.md`](workflow/done/260626-tighten-ui-fix-sftp.md)。
 - **SFTP 反复重连修复(2026-06-26)**: 修正 Dioxus effect 订阅路径导致的重复 `List` 投递；SFTP 自动加载只执行一次，全局状态同步前先比较差异，同一路径 loading 时跳过重复请求。
 - **工作台布局调整(2026-06-26)**: 保留系统原生标题栏，移除应用内重复标题栏；资源管理器与 SFTP 默认更窄，并支持拖动分隔条调整宽度；监控、渲染和键盘输入等高频日志降为 `debug`。
+- **Windows 语言与启动体验(2026-06-27)**: Windows 二进制声明 GUI 子系统以隐藏运行时 cmd 窗口；Inno Setup 安装包配置中英文语言并按系统 UI 语言检测；应用新增 `AppSettings.language` 与设置面板语言切换。详见 [`workflow/done/260627-windows-language-settings.md`](workflow/done/260627-windows-language-settings.md)。
+- **集中 i18n 重构(2026-06-27)**: UI 多语言文案集中到 `crates/kt-ui/src/i18n/`，由 `mod.rs` 定义结构与语言选择入口，`zh_cn.rs`、`en.rs` 按语言维护完整文案。详见 [`workflow/done/260627-centralize-i18n.md`](workflow/done/260627-centralize-i18n.md)。
 
 ## 全局重要记忆
 
@@ -43,5 +45,8 @@
 - **机密与会话分离**:机密(密码/口令)只存 `kt-secrets` 加密 vault;会话(host/port/user/auth)明文存 `config.toml`。
 - **布局设计**:参考 FinalShell + WindTerm,左侧会话列表 + 中央终端/SFTP + 右侧监控(可折叠)。
 - **Dioxus UI 样式集中管理**:主界面长期采用深色工作台风格,新增视觉结构优先复用 `crates/kt-ui/src/assets/app.css` 的 class,避免在组件内继续扩散大段 inline style。
+- **UI 图标统一入口**:界面内品牌标识与常用线性图标统一复用 `crates/kt-ui/src/components/icons.rs` 的 `AppLogo` / `Icon` 组件,样式集中在 `app.css`;新增图标按钮必须保留 `title` 说明。
+- **外部应用图标统一资产目录**:应用窗口与平台外壳图标统一放在 `crates/kt-app/assets/`;运行时读取 `app-icon.png`,macOS 复制 `macos/KitonyTerms.icns`,Windows 使用 `windows/kitonyterms.ico`,Linux 使用 `linux/hicolor/` 与 `linux/kitonyterms.desktop`。release/debug 都必须直接引用这些入仓资产,不得在 CI 中重新绘制或临时生成品牌图形；外部图标视觉必须从 `kt-ui` 的 `AppLogo` 派生，避免应用内外品牌标识不一致。
 - **默认日志不落盘**:`kt-app` 只配置 `tracing_subscriber::fmt()` 输出到启动终端,没有文件 appender;监控/渲染/输入等高频日志应保持 `debug` 级别。
+- **应用语言配置**:`AppSettings.language` 持久化 UI 语言，默认按系统环境推断；新增可见 UI 文案时必须接入 `crates/kt-ui/src/i18n/`，按语言文件维护，避免在组件内硬编码多语言文本。
 - **主机密钥目前 TOFU**:`AcceptAllVerifier` 信任所有主机密钥。

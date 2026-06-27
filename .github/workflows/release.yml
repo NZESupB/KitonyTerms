@@ -8,7 +8,7 @@
 # 二进制名为 kitonyterms(来自 kt-app crate)。
 #
 # 打包格式:
-#   - Linux  → .tar.gz(仅可执行文件)
+#   - Linux  → .tar.gz(可执行文件 + .desktop + hicolor 图标)
 #   - macOS  → .zip 与 .dmg(均内含 KitonyTerms.app 应用包)
 #   - Windows→ .zip(便携版)与 -setup.exe(Inno Setup 安装包)
 #
@@ -95,15 +95,18 @@ jobs:
       # ---- 打包 / Packaging ----
       # 各平台产物统一输出到 dist/ 目录,最后整目录上传。
 
-      # Linux:仅打包可执行文件为 .tar.gz。
+      # Linux:打包可执行文件、桌面入口与 hicolor 图标为 .tar.gz。
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           version="${GITHUB_REF_NAME:-dev}"
           staging="kitonyterms-${version}-${{ matrix.name }}"
-          mkdir -p dist "$staging"
+          mkdir -p dist "$staging/bin" "$staging/share/applications" "$staging/share/icons"
           cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/bin/"
+          cp "crates/kt-app/assets/linux/kitonyterms.desktop" "$staging/share/applications/"
+          cp -R "crates/kt-app/assets/linux/hicolor" "$staging/share/icons/"
           tar -czf "dist/${staging}.tar.gz" "$staging"
 
       # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
@@ -115,9 +118,10 @@ jobs:
           version_clean="${version#v}"
           base="kitonyterms-${version}-${{ matrix.name }}"
           app="KitonyTerms.app"
-          mkdir -p dist "$app/Contents/MacOS"
+          mkdir -p dist "$app/Contents/MacOS" "$app/Contents/Resources"
           cp "target/${{ matrix.target }}/release/kitonyterms" "$app/Contents/MacOS/"
           chmod +x "$app/Contents/MacOS/kitonyterms"
+          cp "crates/kt-app/assets/macos/KitonyTerms.icns" "$app/Contents/Resources/KitonyTerms.icns"
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -127,6 +131,7 @@ jobs:
             <key>CFBundleDisplayName</key><string>KitonyTerms</string>
             <key>CFBundleIdentifier</key><string>com.kitonyterms.app</string>
             <key>CFBundleExecutable</key><string>kitonyterms</string>
+            <key>CFBundleIconFile</key><string>KitonyTerms</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleVersion</key><string>${version_clean}</string>
             <key>CFBundleShortVersionString</key><string>${version_clean}</string>
@@ -170,18 +175,27 @@ jobs:
           AppVersion=$appVersion
           DefaultDirName={autopf}\KitonyTerms
           DefaultGroupName=KitonyTerms
+          LanguageDetectionMethod=uilanguage
           UninstallDisplayName=KitonyTerms
+          UninstallDisplayIcon={app}\kitonyterms.exe
+          SetupIconFile=crates\kt-app\assets\windows\kitonyterms.ico
           OutputDir=dist
           OutputBaseFilename=$base-setup
           Compression=lzma2
           SolidCompression=yes
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          [CustomMessages]
+          english.LaunchProgram=Launch KitonyTerms
+          chinesesimplified.LaunchProgram=启动 KitonyTerms
           [Files]
           Source: "staging\kitonyterms.exe"; DestDir: "{app}"; Flags: ignoreversion
           [Icons]
           Name: "{group}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
           Name: "{autodesktop}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
           [Run]
-          Filename: "{app}\kitonyterms.exe"; Description: "Launch KitonyTerms"; Flags: nowait postinstall skipifsilent
+          Filename: "{app}\kitonyterms.exe"; Description: "{cm:LaunchProgram}"; Flags: nowait postinstall skipifsilent
           "@
           $iss | Out-File -FilePath app.iss -Encoding utf8
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -231,4 +245,3 @@ jobs:
             安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
 
             ---
-

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KitonyTerms
+Comment=SSH terminal and SFTP desktop client
+Exec=kitonyterms
+Icon=kitonyterms
+Terminal=false
+Categories=Network;RemoteAccess;TerminalEmulator;
