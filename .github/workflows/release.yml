@@ -169,6 +169,28 @@ jobs:
           # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
           choco install innosetup -y --no-progress
           $appVersion = $version -replace '^v', ''
+          $languageDir = "installer-languages"
+          $chineseLanguageFile = Join-Path $languageDir "ChineseSimplified.isl"
+          New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
+          try {
+            Invoke-WebRequest `
+              -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl" `
+              -OutFile $chineseLanguageFile `
+              -UseBasicParsing
+          } catch {
+            Write-Warning "下载 Inno Setup 简体中文语言文件失败,改用最小兜底语言文件: $_"
+          }
+          $hasChineseLanguageFile = (Test-Path $chineseLanguageFile) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern '^\[LangOptions\]' -Quiet) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern 'LanguageID=\$0804' -Quiet)
+          if (-not $hasChineseLanguageFile) {
+            @(
+              "[LangOptions]"
+              "LanguageName=简体中文"
+              "LanguageID=`$0804"
+              "LanguageCodePage=936"
+            ) | Set-Content -Path $chineseLanguageFile -Encoding utf8
+          }
           $iss = @"
           [Setup]
           AppName=KitonyTerms
@@ -185,7 +207,7 @@ jobs:
           SolidCompression=yes
           [Languages]
           Name: "english"; MessagesFile: "compiler:Default.isl"
-          Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl,installer-languages\ChineseSimplified.isl"
           [CustomMessages]
           english.LaunchProgram=Launch KitonyTerms
           chinesesimplified.LaunchProgram=启动 KitonyTerms

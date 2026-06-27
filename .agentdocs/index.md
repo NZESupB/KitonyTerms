@@ -47,6 +47,7 @@
 - **Dioxus UI 样式集中管理**:主界面长期采用深色工作台风格,新增视觉结构优先复用 `crates/kt-ui/src/assets/app.css` 的 class,避免在组件内继续扩散大段 inline style。
 - **UI 图标统一入口**:界面内品牌标识与常用线性图标统一复用 `crates/kt-ui/src/components/icons.rs` 的 `AppLogo` / `Icon` 组件,样式集中在 `app.css`;新增图标按钮必须保留 `title` 说明。
 - **外部应用图标统一资产目录**:应用窗口与平台外壳图标统一放在 `crates/kt-app/assets/`;运行时读取 `app-icon.png`,macOS 复制 `macos/KitonyTerms.icns`,Windows 使用 `windows/kitonyterms.ico`,Linux 使用 `linux/hicolor/` 与 `linux/kitonyterms.desktop`。release/debug 都必须直接引用这些入仓资产,不得在 CI 中重新绘制或临时生成品牌图形；外部图标视觉必须从 `kt-ui` 的 `AppLogo` 派生，避免应用内外品牌标识不一致。
+- **Windows 安装包语言文件**:GitHub Actions 的 Chocolatey Inno Setup 环境不保证预装 `Languages\ChineseSimplified.isl`;release workflow 必须自行准备简体中文 `.isl`,并通过 `compiler:Default.isl,<repo-file>.isl` 兜底,避免 Windows 打包因缺少本机语言文件失败。
 - **默认日志不落盘**:`kt-app` 只配置 `tracing_subscriber::fmt()` 输出到启动终端,没有文件 appender;监控/渲染/输入等高频日志应保持 `debug` 级别。
 - **应用语言配置**:`AppSettings.language` 持久化 UI 语言，默认按系统环境推断；新增可见 UI 文案时必须接入 `crates/kt-ui/src/i18n/`，按语言文件维护，避免在组件内硬编码多语言文本。
 - **主机密钥目前 TOFU**:`AcceptAllVerifier` 信任所有主机密钥。
