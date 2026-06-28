@@ -31,14 +31,15 @@ pub async fn sftp_task(
     session: SftpSession,
     _connection_guard: Option<SshConnectionGuard>,
     mut rx: mpsc::UnboundedReceiver<SftpRequest>,
-    out: mpsc::UnboundedSender<FromCore>,
+    out: mpsc::Sender<FromCore>,
 ) {
     while let Some(req) = rx.recv().await {
         if let Err(message) = handle(&session, id, &req, &out).await {
-            let _ = out.send(FromCore::SftpError { id, message });
+            let _ = out.send(FromCore::SftpError { id, message }).await;
         }
     }
     let _ = session.close().await;
+    let _ = out.send(FromCore::SftpStopped { id }).await;
 }
 
 /// 处理单个请求。返回 `Err(message)` 时由调用方上报 [`FromCore::SftpError`]。
@@ -47,7 +48,7 @@ async fn handle(
     session: &SftpSession,
     id: SessionId,
     req: &SftpRequest,
-    out: &mpsc::UnboundedSender<FromCore>,
+    out: &mpsc::Sender<FromCore>,
 ) -> Result<(), String> {
     match req {
         SftpRequest::List { path } => {
@@ -102,11 +103,13 @@ async fn handle(
                     .cmp(&a.is_dir)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
-            let _ = out.send(FromCore::SftpListing {
-                id,
-                path: abs,
-                entries,
-            });
+            let _ = out
+                .send(FromCore::SftpListing {
+                    id,
+                    path: abs,
+                    entries,
+                })
+                .await;
             Ok(())
         }
 
@@ -122,11 +125,13 @@ async fn handle(
                 .map_err(|e| e.to_string())?;
             copy_with_progress(&mut src, &mut dst, id, &name, total, out).await?;
             dst.flush().await.map_err(|e| e.to_string())?;
-            let _ = out.send(FromCore::SftpDone {
-                id,
-                op: SftpOp::Download,
-                path: remote.clone(),
-            });
+            let _ = out
+                .send(FromCore::SftpDone {
+                    id,
+                    op: SftpOp::Download,
+                    path: remote.clone(),
+                })
+                .await;
             Ok(())
         }
 
@@ -144,11 +149,13 @@ async fn handle(
             // 关闭远端文件以刷新并提交写入。
             // Shut down the remote file to flush and commit the write.
             dst.shutdown().await.map_err(|e| e.to_string())?;
-            let _ = out.send(FromCore::SftpDone {
-                id,
-                op: SftpOp::Upload,
-                path: remote.clone(),
-            });
+            let _ = out
+                .send(FromCore::SftpDone {
+                    id,
+                    op: SftpOp::Upload,
+                    path: remote.clone(),
+                })
+                .await;
             Ok(())
         }
 
@@ -157,11 +164,13 @@ async fn handle(
                 .create_dir(path.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            let _ = out.send(FromCore::SftpDone {
-                id,
-                op: SftpOp::Mkdir,
-                path: path.clone(),
-            });
+            let _ = out
+                .send(FromCore::SftpDone {
+                    id,
+                    op: SftpOp::Mkdir,
+                    path: path.clone(),
+                })
+                .await;
             Ok(())
         }
 
@@ -177,11 +186,13 @@ async fn handle(
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            let _ = out.send(FromCore::SftpDone {
-                id,
-                op: SftpOp::Remove,
-                path: path.clone(),
-            });
+            let _ = out
+                .send(FromCore::SftpDone {
+                    id,
+                    op: SftpOp::Remove,
+                    path: path.clone(),
+                })
+                .await;
             Ok(())
         }
 
@@ -190,11 +201,13 @@ async fn handle(
                 .rename(from.clone(), to.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            let _ = out.send(FromCore::SftpDone {
-                id,
-                op: SftpOp::Rename,
-                path: to.clone(),
-            });
+            let _ = out
+                .send(FromCore::SftpDone {
+                    id,
+                    op: SftpOp::Rename,
+                    path: to.clone(),
+                })
+                .await;
             Ok(())
         }
     }
@@ -208,7 +221,7 @@ async fn copy_with_progress<R, W>(
     id: SessionId,
     name: &str,
     total: u64,
-    out: &mpsc::UnboundedSender<FromCore>,
+    out: &mpsc::Sender<FromCore>,
 ) -> Result<(), String>
 where
     R: AsyncReadExt + Unpin,
@@ -226,20 +239,24 @@ where
         transferred += n as u64;
         if transferred - last_emit >= PROGRESS_STEP {
             last_emit = transferred;
-            let _ = out.send(FromCore::SftpProgress {
-                id,
-                name: name.to_string(),
-                transferred,
-                total,
-            });
+            let _ = out
+                .send(FromCore::SftpProgress {
+                    id,
+                    name: name.to_string(),
+                    transferred,
+                    total,
+                })
+                .await;
         }
     }
-    let _ = out.send(FromCore::SftpProgress {
-        id,
-        name: name.to_string(),
-        transferred,
-        total,
-    });
+    let _ = out
+        .send(FromCore::SftpProgress {
+            id,
+            name: name.to_string(),
+            transferred,
+            total,
+        })
+        .await;
     Ok(())
 }
 

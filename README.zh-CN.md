@@ -8,36 +8,38 @@
 
 ## 当前状态
 
-**功能完成** —— 核心 SSH 引擎、终端模拟、系统监控和 SFTP 文件传输均已实现。UI 基于 Dioxus 0.7 desktop 构建。
+**功能可用** —— 核心 SSH 引擎、终端模拟、远端系统监控、SFTP 文件管理、主机密钥确认和交互式认证提示均已实现。UI 基于 Dioxus 0.7 desktop 构建。
 
 | Crate | 职责 | 测试 |
 |-------|------|------|
 | `kt-secrets` | 主密码保险库：Argon2id + XChaCha20-Poly1305 加密存储机密（SSH 密码、私钥口令） | 6 ✅ |
-| `kt-config` | TOML 会话配置与应用设置 + `~/.ssh/config` 解析/合并 | 9 ✅ |
-| `kt-core` | SSH 客户端 (`russh`) + 终端引擎 (`alacritty_terminal`) + 会话编排 + SFTP 支持 + 系统监控。**无 UI 依赖。** | 13 ✅ |
-| `kt-ui` | Dioxus 组件：终端视图、连接对话框、SFTP 面板、系统监控 | — |
-| `kt-app` | 主二进制：通过异步消息通道整合 `kt-ui` 与 `kt-core` | — |
+| `kt-config` | TOML 会话配置与应用设置 + `~/.ssh/config` 解析/合并 | 20 ✅ |
+| `kt-core` | SSH 客户端 (`russh`) + 终端引擎 (`alacritty_terminal`) + 会话编排 + SFTP 支持 + 远端系统监控。**无 UI 依赖。** | 29 ✅ |
+| `kt-ui` | Dioxus 组件与 UI 状态：终端工作台、对话框、SFTP 树/操作、系统监控、selector 驱动的主界面 | 45 ✅ |
+| `kt-app` | 主二进制：GUI-only Dioxus desktop 入口、CLI 参数校验、应用图标集成 | 8 ✅ |
 
-**28 个测试通过；`clippy` 干净。** 核心验证是一个**进程内往返集成测试**（[`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)）：在回环地址上启动真实的 `russh` SSH 服务端，驱动完整的 `SessionManager` 路径：`连接 → 密码认证 → PTY → shell → 通道数据 → TermEngine → GridSnapshot`，断言服务端输出和回显的按键确实落入渲染网格。
+**108 个测试通过；`clippy` 干净。** 核心验证是一个**进程内往返集成测试**（[`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)）：在回环地址上启动真实的 `russh` SSH 服务端，驱动完整的 `SessionManager` 路径：`连接 → 密码认证 → PTY → shell → 通道数据 → TermEngine → GridSnapshot`，断言服务端输出和回显的按键确实落入渲染网格。
 
 ### 当前功能
 
 - **SSH 终端**：通过密码 / 公钥 / 交互式键盘认证连接
 - **多会话与分屏**：标签页界面，每个会话独立 scrollback 和 resize，终端区支持水平/垂直双视图
 - **终端特性**：真彩色、加粗/斜体/下划线/删除线、块状/竖线/下划线光标
-- **会话持久化**：保存连接到 `config.toml`；密码加密存入主密码保险库
-- **主密码**：首次运行设置，后续启动时提示（可跳过）
-- **SFTP 面板**：浏览远程文件系统、上传/下载文件、创建目录、删除/重命名
-- **系统监控**：实时 CPU、内存、网络和磁盘使用情况（本地系统）
+- **交互式认证提示**：保存的机密缺失时，可在握手过程中采集密码、私钥口令和 keyboard-interactive 输入
+- **会话持久化**：保存连接到 `config.toml`；密码和私钥口令加密存入主密码保险库
+- **主密码保险库**：保险库解锁是显式操作；跳过解锁仍可连接，但禁用已保存机密的读写
+- **SFTP 面板**：浏览远程文件系统、上传/下载文件、创建目录、删除/重命名，并支持通过本地编辑器编辑远端文件后回传
+- **系统监控**：实时展示远端 CPU、内存、网络、磁盘、负载、运行时长和延迟摘要
 - **SSH 配置集成**：读取 `~/.ssh/config` 获取主机别名、默认设置和单跳 `ProxyJump`
-- **主机密钥信任库**：持久化 `known_hosts.toml`，未知主机首次信任，指纹变化时拒绝连接
+- **主机密钥信任库**：持久化 `known_hosts.toml`；未知或变化的指纹需要用户确认，可选择“仅允许一次”或“信任此主机”
 - **ssh-agent**：支持本机 ssh-agent/Pageant 公钥认证，并可在 shell 会话中请求 agent forwarding
 - **触发器高亮**：终端行文本按内置触发器规则进行高亮
 
 ### 尚未实现
 
-- 握手过程中的认证提示（密码在连接对话框中预先收集）
-- 多跳 ProxyJump 链、可编辑触发器规则、完整语法高亮
+- 多跳 ProxyJump 链
+- 可编辑触发器规则和完整语法高亮
+- 当前二进制不提供 `--safe`、`--system-ssh`、`--show-log`、`--list` 等非 GUI 降级入口
 
 ## 架构
 
@@ -48,7 +50,7 @@ kt-app (Dioxus desktop 二进制)
    └─ kt-core (tokio 运行时，后台)
        ├─ ssh/      russh：连接、认证、PTY shell、SFTP 子系统
        ├─ term/     alacritty_terminal 封装 → GridSnapshot（已解析 RGB）
-       ├─ monitor/  系统资源监控（CPU、内存、磁盘、网络）
+       ├─ monitor/  远端系统资源监控（CPU、内存、磁盘、网络）
        ├─ sftp/     SFTP 任务：列表/上传/下载/创建目录/删除/重命名
        └─ session/  SessionManager：每会话一个 task，UI⇄core 消息协议
             │                         │
@@ -63,7 +65,7 @@ kt-app (Dioxus desktop 二进制)
 - **会话**（`SessionProfile`：host/port/user/auth/…）为**非机密**，明文存储在 `config.toml` 中。
 - **机密**（密码、私钥口令）按 vault id（`user@host:port`）索引并加密存入保险库，永不明文落盘。
 - **主机密钥**（host/port/fingerprint）存储在 `known_hosts.toml`，用于检测远端主机密钥变化。
-- 启动时保险库处于**锁定**状态，直到在解锁对话框输入主密码；跳过解锁仍可连接，但禁用已保存密码的读写。
+- 启动时保险库处于**锁定**状态，直到在解锁对话框输入主密码；跳过解锁仍可连接，但禁用已保存机密的读写。
 
 ## 技术栈
 
@@ -98,13 +100,20 @@ sudo apt install libwebkit2gtk-4.1-dev \
 ### 构建与运行
 ```bash
 # 运行全部测试
-cargo test
+cargo test --workspace
+
+# 维护者使用的质量门禁
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 
 # 启动 GUI
 cargo run -p kt-app
 # 或显式指定 GUI 入口 / 查看当前入口用法
 cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
+# 已移除入口会明确失败：--safe、--system-ssh、--show-log、--list
 #   首次运行：设置主密码（可跳过）
 #   点击 ➕ 新建 → 输入 host / user / 认证 → 连接
 #   勾选"保存会话"以持久化；密码加密存入保险库
@@ -123,6 +132,9 @@ cargo run -p kt-core --example headless -- user@host
 - [x] **阶段二** —— Dioxus desktop UI：终端渲染、输入、连接对话框、多标签
 - [x] **阶段三** —— 会话持久化（TOML + 保险库）、主密码、SFTP 面板、系统监控
 - [x] **阶段四** —— `known_hosts` 信任库、分屏、ssh-agent 转发、ProxyJump、触发器/高亮
+- [x] **阶段五** —— UI 模块化：状态控制器、主界面拆分、selector 驱动的 SFTP/监控/状态栏视图
+- [x] **阶段六** —— 文档与工程收敛：README/架构/QA 路径/release note
+- [x] **阶段七** —— 维护治理：影响清单、回归套件、季度架构核对
 
 ## 许可证
 

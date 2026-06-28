@@ -57,6 +57,10 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M6 9A6 6 0 0 1 18 9C18 16 21 17 21 17H3S6 16 6 9" }
             path { d: "M10 21H14" }
         },
+        "shield" => rsx! {
+            path { d: "M12 3L20 6V12C20 17 16.5 20 12 21C7.5 20 4 17 4 12V6z" }
+            path { d: "M9 12L11 14L15 10" }
+        },
         "add" => rsx! {
             path { d: "M12 5V19" }
             path { d: "M5 12H19" }

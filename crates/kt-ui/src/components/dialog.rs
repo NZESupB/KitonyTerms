@@ -1,8 +1,9 @@
 //! 连接编辑对话框组件
 
 use dioxus::prelude::*;
-use kt_config::{AppLanguage, AuthMethod, ConnectParams, SessionProfile};
+use kt_config::{normalize_group_name, AppLanguage, AuthMethod, ConnectParams, SessionProfile};
 
+use crate::components::icons::Icon;
 use crate::i18n::texts;
 
 #[component]
@@ -287,6 +288,151 @@ pub fn ConnectionDialog(
                             show.set(false);
                         },
                         "{t.save}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn GroupDialog(
+    show: Signal<bool>,
+    mode: Signal<String>,
+    name: Signal<String>,
+    language: AppLanguage,
+    on_save: EventHandler<String>,
+) -> Element {
+    if !show() {
+        return rsx! {};
+    }
+
+    let t = texts(language).app;
+    let title = if mode() == "rename" {
+        t.rename_group
+    } else {
+        t.new_group
+    };
+
+    rsx! {
+        div {
+            class: "settings-overlay",
+            onclick: move |_| show.set(false),
+
+            section {
+                class: "settings-panel group-dialog",
+                onclick: move |evt| evt.stop_propagation(),
+
+                div {
+                    class: "settings-head",
+                    h2 { "{title}" }
+                    button {
+                        class: "icon-button slim",
+                        title: "{t.close}",
+                        onclick: move |_| show.set(false),
+                        Icon { name: "close" }
+                    }
+                }
+
+                div {
+                    class: "group-form",
+                    input {
+                        r#type: "text",
+                        value: "{name()}",
+                        oninput: move |evt| name.set(evt.value().clone()),
+                        placeholder: "{texts(language).dialog.group_placeholder}",
+                    }
+                }
+
+                div {
+                    class: "group-actions",
+                    button {
+                        onclick: move |_| show.set(false),
+                        "{texts(language).dialog.cancel}"
+                    }
+                    button {
+                        class: "primary",
+                        onclick: move |_| {
+                            let value = name();
+                            if normalize_group_name(&value).is_some() {
+                                on_save.call(value);
+                                show.set(false);
+                            }
+                        },
+                        "{texts(language).dialog.save}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn SftpNameDialog(
+    show: Signal<bool>,
+    mode: Signal<String>,
+    value: Signal<String>,
+    language: AppLanguage,
+    on_save: EventHandler<String>,
+) -> Element {
+    if !show() {
+        return rsx! {};
+    }
+
+    let t = texts(language).sftp;
+    let dialog_t = texts(language).dialog;
+    let title = if mode() == "rename" {
+        t.rename
+    } else {
+        t.new_folder
+    };
+
+    rsx! {
+        div {
+            class: "settings-overlay",
+            onclick: move |_| show.set(false),
+
+            section {
+                class: "settings-panel group-dialog",
+                onclick: move |evt| evt.stop_propagation(),
+
+                div {
+                    class: "settings-head",
+                    h2 { "{title}" }
+                    button {
+                        class: "icon-button slim",
+                        title: "{t.close}",
+                        onclick: move |_| show.set(false),
+                        Icon { name: "close" }
+                    }
+                }
+
+                div {
+                    class: "group-form",
+                    input {
+                        r#type: "text",
+                        value: "{value()}",
+                        oninput: move |evt| value.set(evt.value().clone()),
+                        placeholder: "{t.name}",
+                    }
+                }
+
+                div {
+                    class: "group-actions",
+                    button {
+                        onclick: move |_| show.set(false),
+                        "{dialog_t.cancel}"
+                    }
+                    button {
+                        class: "primary",
+                        onclick: move |_| {
+                            let next = value();
+                            if !next.trim().is_empty() {
+                                on_save.call(next);
+                                show.set(false);
+                            }
+                        },
+                        "{dialog_t.save}"
                     }
                 }
             }

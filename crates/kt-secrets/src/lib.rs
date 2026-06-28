@@ -99,11 +99,7 @@ impl Vault {
             Some(KEY_LEN),
         )
         .expect("static Argon2 params are valid");
-        Argon2::new(
-            argon2::Algorithm::Argon2id,
-            argon2::Version::V0x13,
-            params,
-        )
+        Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
     }
 
     fn derive_key(password: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; KEY_LEN]>> {
@@ -194,7 +190,8 @@ impl Vault {
 
     /// Insert or replace a secret. Marks the vault dirty.
     pub fn set(&mut self, id: impl Into<String>, secret: impl Into<String>) {
-        self.entries.insert(id.into(), Zeroizing::new(secret.into()));
+        self.entries
+            .insert(id.into(), Zeroizing::new(secret.into()));
         self.dirty = true;
     }
 
@@ -298,7 +295,10 @@ mod tests {
         }
         let v = Vault::open(&path, "correct horse battery staple").unwrap();
         assert_eq!(v.get("host:example.com:alice"), Some("s3cr3t-pw"));
-        assert_eq!(v.get("key:/home/alice/.ssh/id_ed25519"), Some("passphrase-123"));
+        assert_eq!(
+            v.get("key:/home/alice/.ssh/id_ed25519"),
+            Some("passphrase-123")
+        );
         assert_eq!(v.get("missing"), None);
     }
 

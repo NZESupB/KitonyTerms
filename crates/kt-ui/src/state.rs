@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use kt_core::monitor::MonitorStats;
 use kt_core::term::GridSnapshot;
-use kt_core::{FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest, ToCore};
+use kt_core::{
+    AuthChallenge, FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest, ToCore,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SftpCompletion {
@@ -29,6 +31,8 @@ pub struct SessionState {
     pub connected: bool,
     /// 最近一次连接错误。None 表示仍在连接或已连接。
     pub connection_error: Option<String>,
+    /// 当前等待用户输入的认证挑战。
+    pub auth_challenge: Option<AuthChallenge>,
 
     // SFTP 状态
     pub sftp_path: String,
@@ -92,6 +96,7 @@ impl AppState {
                     if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.connected = true;
                         sess.connection_error = None;
+                        sess.auth_challenge = None;
                         sess.monitor_loading = true;
                         sess.monitor_error = None;
                         if should_auto_load_sftp(sess) {
@@ -129,10 +134,12 @@ impl AppState {
                     sess.title = title;
                 }
             }
+            FromCore::Bell { .. } => {}
             FromCore::Closed { id, error } => {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.connected = false;
                     sess.connection_error = error.clone();
+                    sess.auth_challenge = None;
                     sess.monitor_loading = false;
                     sess.monitor_error = None;
                     sess.sftp_loading = false;
@@ -160,6 +167,12 @@ impl AppState {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.sftp_loading = false;
                     sess.sftp_error = Some(message);
+                    sess.sftp_progress = None;
+                }
+            }
+            FromCore::SftpStopped { id } => {
+                if let Some(sess) = self.sessions.get_mut(&id) {
+                    sess.sftp_loading = false;
                     sess.sftp_progress = None;
                 }
             }
@@ -222,8 +235,11 @@ impl AppState {
                     sess.monitor_error = Some(message);
                 }
             }
-            _ => {
-                // 暂时忽略其他事件
+            FromCore::AuthChallenge { id, challenge } => {
+                if let Some(sess) = self.sessions.get_mut(&id) {
+                    sess.auth_challenge = Some(challenge);
+                    sess.connection_error = None;
+                }
             }
         }
     }
@@ -298,6 +314,7 @@ mod tests {
             snapshot: None,
             connected,
             connection_error: None,
+            auth_challenge: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: false,
@@ -411,6 +428,27 @@ mod tests {
     }
 
     #[test]
+    fn auth_challenge_is_recorded_and_cleared_on_close() {
+        let mut app_state = app_state();
+        let sess = session_state(false);
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::AuthChallenge {
+            id,
+            challenge: AuthChallenge::Password {
+                user: "root".to_string(),
+                host: "example.com".to_string(),
+                port: 22,
+            },
+        });
+        assert!(app_state.sessions[&id].auth_challenge.is_some());
+
+        app_state.handle_event(FromCore::Closed { id, error: None });
+        assert!(app_state.sessions[&id].auth_challenge.is_none());
+    }
+
+    #[test]
     fn monitor_stopped_clears_loading_without_overwriting_error() {
         let mut app_state = app_state();
         let mut sess = session_state(true);
@@ -424,5 +462,27 @@ mod tests {
         let sess = app_state.sessions.get(&id).unwrap();
         assert!(!sess.monitor_loading);
         assert_eq!(sess.monitor_error.as_deref(), Some("旧错误"));
+    }
+
+    #[test]
+    fn sftp_stopped_clears_loading_and_progress_without_overwriting_error() {
+        let mut app_state = app_state();
+        let mut sess = session_state(true);
+        sess.sftp_loading = true;
+        sess.sftp_error = Some("旧错误".to_string());
+        sess.sftp_progress = Some(SftpProgressState {
+            name: "demo.bin".to_string(),
+            transferred: 10,
+            total: 20,
+        });
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::SftpStopped { id });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert!(!sess.sftp_loading);
+        assert!(sess.sftp_progress.is_none());
+        assert_eq!(sess.sftp_error.as_deref(), Some("旧错误"));
     }
 }

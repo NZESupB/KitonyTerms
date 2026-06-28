@@ -465,6 +465,7 @@ mod tests {
             snapshot: None,
             connected: true,
             connection_error: None,
+            auth_challenge: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: true,

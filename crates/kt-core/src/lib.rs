@@ -18,8 +18,8 @@ pub mod term;
 
 pub use monitor::{DiskUsage, MonitorStats, ProcInfo};
 pub use session::{
-    AuthProviderFactory, FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest,
-    ToCore,
+    AuthChallenge, AuthPrompt, AuthProviderFactory, AuthResponse, FromCore, SessionId,
+    SessionManager, SftpEntry, SftpOp, SftpRequest, ToCore,
 };
 pub use ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};
 pub use term::{GridSnapshot, TermEngine, TermEvent};

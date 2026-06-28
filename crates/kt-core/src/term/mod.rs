@@ -273,7 +273,9 @@ impl TermEngine {
 /// Linear blend of two colors: `a*(1-t) + b*t`.
 fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let lerp = |x: u8, y: u8| -> u8 {
-        (x as f32 * (1.0 - t) + y as f32 * t).round().clamp(0.0, 255.0) as u8
+        (x as f32 * (1.0 - t) + y as f32 * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
     Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
 }

@@ -8,36 +8,38 @@ A lightweight, cross-platform SSH terminal client built in **Rust** with [Dioxus
 
 ## Status
 
-**Functional** — core SSH engine, terminal emulation, system monitoring, and SFTP file transfer are working. The UI is built with Dioxus 0.7 desktop.
+**Functional** — core SSH engine, terminal emulation, remote system monitoring, SFTP file management, host-key confirmation, and interactive auth prompts are working. The UI is built with Dioxus 0.7 desktop.
 
 | Crate | Responsibility | Tests |
 |-------|---------------|-------|
 | `kt-secrets` | Master-password vault: Argon2id + XChaCha20-Poly1305 for encrypted-at-rest secrets (SSH passwords, key passphrases) | 6 ✅ |
-| `kt-config` | TOML session profiles & app settings + `~/.ssh/config` parsing/merging | 9 ✅ |
-| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration + SFTP support + system monitoring. **No UI dependencies.** | 13 ✅ |
-| `kt-ui` | Dioxus components: terminal view, connection dialog, SFTP panel, system monitor | — |
-| `kt-app` | Main binary: integrates `kt-ui` with `kt-core` via async message channels | — |
+| `kt-config` | TOML session profiles & app settings + `~/.ssh/config` parsing/merging | 20 ✅ |
+| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration + SFTP support + remote system monitoring. **No UI dependencies.** | 29 ✅ |
+| `kt-ui` | Dioxus components and UI state: terminal workbench, dialogs, SFTP tree/actions, system monitor, selector-driven main shell | 45 ✅ |
+| `kt-app` | Main binary: GUI-only Dioxus desktop entry, CLI argument validation, app icon integration | 8 ✅ |
 
-**28 tests pass; `clippy` is clean.** The core validation is an **in-process round-trip integration test** ([`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)) that spins up a real `russh` SSH server on loopback and drives the full `SessionManager` path: `connect → password auth → PTY → shell → channel data → TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes actually land in the rendered grid.
+**108 tests pass; `clippy` is clean.** The core validation is an **in-process round-trip integration test** ([`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)) that spins up a real `russh` SSH server on loopback and drives the full `SessionManager` path: `connect → password auth → PTY → shell → channel data → TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes actually land in the rendered grid.
 
 ### What works today
 
 - **SSH Terminal**: Connect via password / public-key / keyboard-interactive auth
 - **Multiple Sessions & Split Panes**: Tabbed interface with per-session scrollback and resize, plus horizontal/vertical terminal split views
 - **Terminal Features**: True color, bold/italic/underline/strikethrough, block/bar/underline cursor
-- **Session Persistence**: Save connections to `config.toml`; passwords encrypted in master-password vault
-- **Master Password**: Set on first run, prompted on later launches (skippable)
-- **SFTP Panel**: Browse remote filesystem, upload/download files, create directories, delete/rename
-- **System Monitoring**: Real-time CPU, memory, network, and disk usage (local system)
+- **Interactive Auth Prompts**: Password, private-key passphrase, and keyboard-interactive prompts can be collected mid-handshake when saved secrets are missing
+- **Session Persistence**: Save connections to `config.toml`; passwords and key passphrases are encrypted in the master-password vault
+- **Master Password Vault**: Vault unlock is explicit; skipping unlock allows connections but disables saved-secret read/write
+- **SFTP Panel**: Browse remote filesystem, upload/download files, create directories, delete/rename, and edit remote files via a local editor upload flow
+- **System Monitoring**: Real-time remote CPU, memory, network, disk, load, uptime, and latency summary
 - **SSH Config Integration**: Reads `~/.ssh/config` for host aliases, defaults, and single-hop `ProxyJump`
-- **Host-Key Trust Store**: Persists `known_hosts.toml`, trusts unknown hosts on first use, and rejects changed fingerprints
+- **Host-Key Trust Store**: Persists `known_hosts.toml`; unknown or changed fingerprints require user confirmation with "allow once" or "trust host" choices
 - **ssh-agent**: Supports local ssh-agent/Pageant public-key auth and can request agent forwarding for shell sessions
 - **Trigger Highlighting**: Highlights terminal rows matching built-in trigger rules
 
 ### Not yet implemented
 
-- Mid-handshake auth prompts (password collected upfront in connect dialog)
-- Multi-hop ProxyJump chains, editable trigger rules, full syntax highlighting
+- Multi-hop ProxyJump chains
+- Editable trigger rules and full syntax highlighting
+- Non-GUI fallback entries such as `--safe`, `--system-ssh`, `--show-log`, and `--list` are intentionally not provided by the current binary
 
 ## Architecture
 
@@ -48,7 +50,7 @@ kt-app (Dioxus desktop binary)
    └─ kt-core (tokio runtime, background)
        ├─ ssh/      russh: connect, auth, PTY shell, SFTP subsystem
        ├─ term/     alacritty_terminal wrapper → GridSnapshot (resolved RGB)
-       ├─ monitor/  System resource monitoring (CPU, memory, disk, network)
+       ├─ monitor/  Remote system resource monitoring (CPU, memory, disk, network)
        ├─ sftp/     SFTP task: list/upload/download/mkdir/remove/rename
        └─ session/  SessionManager: one task per session, UI⇄core message protocol
             │                         │
@@ -98,13 +100,20 @@ No extra dependencies.
 ### Build & run
 ```bash
 # Run all tests
-cargo test
+cargo test --workspace
+
+# Quality gate used by maintainers
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Launch the GUI
 cargo run -p kt-app
 # Or explicitly select the GUI entry / print current entry usage
 cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
+# Removed entries fail clearly: --safe, --system-ssh, --show-log, --list
 #   First run: set a master password (skippable)
 #   Click ➕ New → enter host / user / auth → Connect
 #   Tick "Save session" to persist it; password encrypted in vault
@@ -123,6 +132,9 @@ cargo run -p kt-core --example headless -- user@host
 - [x] **Phase 2** — Dioxus desktop UI: terminal rendering, input, connect dialog, multi-tab
 - [x] **Phase 3** — Session persistence (TOML + vault), master password, SFTP panel, system monitor
 - [x] **Phase 4** — `known_hosts` trust store, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting
+- [x] **Phase 5** — UI modularization: state controller, main shell split, selector-driven SFTP/monitor/status views
+- [x] **Phase 6** — Documentation and engineering convergence: README/architecture/QA paths/release notes
+- [x] **Phase 7** — Maintenance governance: impact checklist, regression suite, quarterly architecture review
 
 ## License
 

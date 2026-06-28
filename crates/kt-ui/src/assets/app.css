@@ -1493,6 +1493,32 @@ button:disabled {
     white-space: nowrap;
 }
 
+.dialog-field {
+    display: grid;
+    gap: 6px;
+    margin-top: 14px;
+}
+
+.dialog-field span {
+    color: #dce7f6;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.dialog-field input {
+    width: min(340px, 100%);
+    min-height: 34px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: rgba(8, 13, 19, 0.64);
+    color: #f4f8ff;
+    font-size: 13px;
+}
+
+.external-edit-dialog-body p.dialog-error {
+    color: #ffb0a8;
+}
+
 .external-edit-dialog-actions {
     display: flex;
     flex-wrap: wrap;

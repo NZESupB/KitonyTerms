@@ -3168,6 +3168,7 @@ dependencies = [
  "kt-core",
  "kt-secrets",
  "russh",
+ "tempfile",
  "tokio",
  "tracing",
 ]

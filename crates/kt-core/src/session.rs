@@ -11,9 +11,9 @@
 //! This keeps all blocking/async SSH I/O off the UI thread. The UI just pumps
 //! messages and repaints from [`GridSnapshot`]s.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -24,10 +24,13 @@ use crate::monitor::MonitorStats;
 use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
+const AUTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
 const SFTP_REUSE_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SFTP_STANDALONE_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 const MONITOR_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SSH_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+const TO_CORE_CAPACITY: usize = 2_048;
+const FROM_CORE_CAPACITY: usize = 2_048;
 
 /// Opaque session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -89,6 +92,41 @@ pub enum SftpRequest {
     Rename { from: String, to: String },
 }
 
+/// 认证交互提示。`echo=false` 表示应以密码输入框展示。
+/// An authentication prompt. `echo=false` means the answer should be hidden.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPrompt {
+    pub text: String,
+    pub echo: bool,
+}
+
+/// core 发给 UI 的认证挑战。
+/// Authentication challenge emitted by the core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthChallenge {
+    Password {
+        user: String,
+        host: String,
+        port: u16,
+    },
+    KeyPassphrase {
+        key_path: String,
+    },
+    KeyboardInteractive {
+        name: String,
+        instructions: String,
+        prompts: Vec<AuthPrompt>,
+    },
+}
+
+/// UI 回给 core 的认证答案。
+/// Authentication response returned by the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthResponse {
+    Answers(Vec<String>),
+    Cancel,
+}
+
 /// Commands sent from the UI into the core.
 #[derive(Debug)]
 pub enum ToCore {
@@ -109,6 +147,11 @@ pub enum ToCore {
     /// 启动该会话的资源监控(首次惰性开启,之后持续到断开)。
     /// Start resource monitoring (lazy on first use, runs until disconnect).
     StartMonitor { id: SessionId },
+    /// Answer or cancel an authentication challenge.
+    AuthResponse {
+        id: SessionId,
+        response: AuthResponse,
+    },
     /// Close / disconnect a session.
     Disconnect { id: SessionId },
 }
@@ -148,6 +191,8 @@ pub enum FromCore {
     },
     /// SFTP 操作失败。An SFTP operation failed.
     SftpError { id: SessionId, message: String },
+    /// SFTP 子任务正常停止。SFTP subtask stopped without a per-operation error.
+    SftpStopped { id: SessionId },
     /// 资源监控采样。A resource-monitor sample.
     Monitor {
         id: SessionId,
@@ -157,6 +202,11 @@ pub enum FromCore {
     MonitorStopped { id: SessionId },
     /// 资源监控启动或采样失败。Resource monitoring failed to start or sample.
     MonitorError { id: SessionId, message: String },
+    /// 需要 UI 提供认证输入。Authentication input is required from the UI.
+    AuthChallenge {
+        id: SessionId,
+        challenge: AuthChallenge,
+    },
     /// Session ended. `error` is `None` for a clean exit.
     Closed {
         id: SessionId,
@@ -174,8 +224,10 @@ pub trait AuthProviderFactory: Send + Sync {
 
 /// Owns the runtime and live sessions.
 pub struct SessionManager {
-    to_core_tx: mpsc::UnboundedSender<ToCore>,
-    from_core_rx: mpsc::UnboundedReceiver<FromCore>,
+    to_core_tx: mpsc::Sender<ToCore>,
+    from_core_rx: mpsc::Receiver<FromCore>,
+    event_buffer: VecDeque<FromCore>,
+    pending_renders: HashMap<SessionId, Box<GridSnapshot>>,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -191,45 +243,87 @@ impl SessionManager {
             .thread_name("kt-core")
             .build()?;
 
-        let (to_core_tx, to_core_rx) = mpsc::unbounded_channel::<ToCore>();
-        let (from_core_tx, from_core_rx) = mpsc::unbounded_channel::<FromCore>();
+        let (to_core_tx, to_core_rx) = mpsc::channel::<ToCore>(TO_CORE_CAPACITY);
+        let (from_core_tx, from_core_rx) = mpsc::channel::<FromCore>(FROM_CORE_CAPACITY);
 
         runtime.spawn(core_loop(to_core_rx, from_core_tx, verifier, auth_factory));
 
         Ok(Self {
             to_core_tx,
             from_core_rx,
+            event_buffer: VecDeque::new(),
+            pending_renders: HashMap::new(),
             _runtime: runtime,
         })
     }
 
     /// Send a command into the core.
-    pub fn send(&self, msg: ToCore) {
-        // Errors only occur if the core loop has stopped; ignore for now.
-        let _ = self.to_core_tx.send(msg);
+    pub fn send(&self, msg: ToCore) -> bool {
+        match self.to_core_tx.try_send(msg) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(msg)) => {
+                tracing::warn!("core 命令队列已满，丢弃命令: {msg:?}");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(msg)) => {
+                tracing::warn!("core 命令队列已关闭，丢弃命令: {msg:?}");
+                false
+            }
+        }
     }
 
     /// Clone the raw command sender. Useful for forwarding input from a
     /// separate thread (e.g. a stdin reader) without borrowing the manager.
-    pub fn raw_sender(&self) -> mpsc::UnboundedSender<ToCore> {
+    pub fn raw_sender(&self) -> mpsc::Sender<ToCore> {
         self.to_core_tx.clone()
     }
 
     /// Non-blocking poll for the next event from the core.
     pub fn try_recv(&mut self) -> Option<FromCore> {
-        self.from_core_rx.try_recv().ok()
+        if let Some(event) = self.event_buffer.pop_front() {
+            return Some(event);
+        }
+
+        self.drain_available_events();
+
+        self.event_buffer
+            .pop_front()
+            .or_else(|| self.pop_pending_render())
     }
 
     /// Blocking receive (used by the headless example).
     pub fn blocking_recv(&mut self) -> Option<FromCore> {
+        if let Some(event) = self.event_buffer.pop_front() {
+            return Some(event);
+        }
+        if let Some(event) = self.pop_pending_render() {
+            return Some(event);
+        }
         self.from_core_rx.blocking_recv()
+    }
+
+    fn drain_available_events(&mut self) {
+        while let Ok(event) = self.from_core_rx.try_recv() {
+            match event {
+                FromCore::Render { id, snapshot } => {
+                    self.pending_renders.insert(id, snapshot);
+                }
+                other => self.event_buffer.push_back(other),
+            }
+        }
+    }
+
+    fn pop_pending_render(&mut self) -> Option<FromCore> {
+        let id = self.pending_renders.keys().copied().min()?;
+        let snapshot = self.pending_renders.remove(&id)?;
+        Some(FromCore::Render { id, snapshot })
     }
 }
 
 /// Top-level core dispatch loop: routes [`ToCore`] commands to per-session tasks.
 async fn core_loop(
-    mut rx: mpsc::UnboundedReceiver<ToCore>,
-    tx: mpsc::UnboundedSender<FromCore>,
+    mut rx: mpsc::Receiver<ToCore>,
+    tx: mpsc::Sender<FromCore>,
     verifier: Arc<dyn HostKeyVerifier>,
     auth_factory: Arc<dyn AuthProviderFactory>,
 ) {
@@ -240,9 +334,22 @@ async fn core_loop(
         match cmd {
             ToCore::Connect { id, params, pty } => {
                 let (input_tx, input_rx) = mpsc::unbounded_channel::<SessionCmd>();
-                sessions.insert(id, SessionHandles { cmd_tx: input_tx });
+                let (auth_response_tx, auth_response_rx) = std_mpsc::channel::<AuthResponse>();
+                sessions.insert(
+                    id,
+                    SessionHandles {
+                        cmd_tx: input_tx,
+                        auth_response_tx,
+                    },
+                );
 
                 let provider = auth_factory.create(id, &params);
+                let provider = Box::new(InteractiveAuthProvider {
+                    id,
+                    inner: provider,
+                    out: tx.clone(),
+                    responses: auth_response_rx,
+                });
                 let task = SessionTask {
                     id,
                     params: *params,
@@ -272,31 +379,44 @@ async fn core_loop(
             ToCore::Sftp { id, req } => {
                 if let Some(h) = sessions.get(&id) {
                     if h.cmd_tx.send(SessionCmd::Sftp(req)).is_err() {
-                        let _ = tx.send(FromCore::SftpError {
-                            id,
-                            message: "SFTP 请求无法投递，会话任务已结束".to_string(),
-                        });
+                        let _ = tx
+                            .send(FromCore::SftpError {
+                                id,
+                                message: "SFTP 请求无法投递，会话任务已结束".to_string(),
+                            })
+                            .await;
                     }
                 } else {
-                    let _ = tx.send(FromCore::SftpError {
-                        id,
-                        message: "SFTP 请求失败：会话不存在或已关闭".to_string(),
-                    });
+                    let _ = tx
+                        .send(FromCore::SftpError {
+                            id,
+                            message: "SFTP 请求失败：会话不存在或已关闭".to_string(),
+                        })
+                        .await;
                 }
             }
             ToCore::StartMonitor { id } => {
                 if let Some(h) = sessions.get(&id) {
                     if h.cmd_tx.send(SessionCmd::StartMonitor).is_err() {
-                        let _ = tx.send(FromCore::MonitorError {
-                            id,
-                            message: "资源监控请求无法投递，会话任务已结束".to_string(),
-                        });
+                        let _ = tx
+                            .send(FromCore::MonitorError {
+                                id,
+                                message: "资源监控请求无法投递，会话任务已结束".to_string(),
+                            })
+                            .await;
                     }
                 } else {
-                    let _ = tx.send(FromCore::MonitorError {
-                        id,
-                        message: "资源监控启动失败：会话不存在或已关闭".to_string(),
-                    });
+                    let _ = tx
+                        .send(FromCore::MonitorError {
+                            id,
+                            message: "资源监控启动失败：会话不存在或已关闭".to_string(),
+                        })
+                        .await;
+                }
+            }
+            ToCore::AuthResponse { id, response } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h.auth_response_tx.send(response);
                 }
             }
             ToCore::Disconnect { id } => {
@@ -324,6 +444,101 @@ enum SessionInternal {
 
 struct SessionHandles {
     cmd_tx: mpsc::UnboundedSender<SessionCmd>,
+    auth_response_tx: std_mpsc::Sender<AuthResponse>,
+}
+
+struct InteractiveAuthProvider {
+    id: SessionId,
+    inner: Box<dyn AuthProvider>,
+    out: mpsc::Sender<FromCore>,
+    responses: std_mpsc::Receiver<AuthResponse>,
+}
+
+impl InteractiveAuthProvider {
+    fn request_answers(&mut self, challenge: AuthChallenge) -> Option<Vec<String>> {
+        if self
+            .out
+            .try_send(FromCore::AuthChallenge {
+                id: self.id,
+                challenge,
+            })
+            .is_err()
+        {
+            tracing::warn!("认证挑战无法投递，取消认证: {:?}", self.id);
+            return None;
+        }
+
+        match self.responses.recv_timeout(AUTH_RESPONSE_TIMEOUT) {
+            Ok(AuthResponse::Answers(answers)) => Some(answers),
+            Ok(AuthResponse::Cancel) => None,
+            Err(err) => {
+                tracing::warn!("等待认证响应超时或中断: {:?} {}", self.id, err);
+                None
+            }
+        }
+    }
+
+    fn request_single_answer(&mut self, challenge: AuthChallenge) -> Option<String> {
+        self.request_answers(challenge)
+            .and_then(|answers| answers.into_iter().next())
+    }
+}
+
+impl AuthProvider for InteractiveAuthProvider {
+    fn password(&mut self, user: &str, host: &str, port: u16) -> Option<String> {
+        if let Some(password) = self.inner.password(user, host, port) {
+            return Some(password);
+        }
+        self.request_single_answer(AuthChallenge::Password {
+            user: user.to_string(),
+            host: host.to_string(),
+            port,
+        })
+    }
+
+    fn key_passphrase(&mut self, key_path: &str) -> Option<String> {
+        if let Some(passphrase) = self.inner.key_passphrase(key_path) {
+            return Some(passphrase);
+        }
+        self.request_single_answer(AuthChallenge::KeyPassphrase {
+            key_path: key_path.to_string(),
+        })
+    }
+
+    fn keyboard_interactive(
+        &mut self,
+        name: &str,
+        instructions: &str,
+        prompts: &[(String, bool)],
+    ) -> Option<Vec<String>> {
+        if let Some(answers) = self.inner.keyboard_interactive(name, instructions, prompts) {
+            return Some(answers);
+        }
+
+        let prompt_count = prompts.len();
+        let answers = self.request_answers(AuthChallenge::KeyboardInteractive {
+            name: name.to_string(),
+            instructions: instructions.to_string(),
+            prompts: prompts
+                .iter()
+                .map(|(text, echo)| AuthPrompt {
+                    text: text.clone(),
+                    echo: *echo,
+                })
+                .collect(),
+        })?;
+
+        if answers.len() == prompt_count {
+            Some(answers)
+        } else {
+            tracing::warn!(
+                "keyboard-interactive 响应数量不匹配: expected={}, actual={}",
+                prompt_count,
+                answers.len()
+            );
+            None
+        }
+    }
 }
 
 /// All state for one session's task.
@@ -333,7 +548,7 @@ struct SessionTask {
     pty: PtySize,
     verifier: Arc<dyn HostKeyVerifier>,
     provider: Box<dyn AuthProvider>,
-    out: mpsc::UnboundedSender<FromCore>,
+    out: mpsc::Sender<FromCore>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCmd>,
 }
 
@@ -354,15 +569,18 @@ impl SessionTask {
         {
             Ok(s) => s,
             Err(error) => {
-                let _ = self.out.send(FromCore::Closed {
-                    id,
-                    error: Some(error),
-                });
+                let _ = self
+                    .out
+                    .send(FromCore::Closed {
+                        id,
+                        error: Some(error),
+                    })
+                    .await;
                 return;
             }
         };
 
-        let _ = self.out.send(FromCore::Connected { id });
+        let _ = self.out.send(FromCore::Connected { id }).await;
 
         // Build the terminal engine at the negotiated size.
         let scrollback = 10_000;
@@ -389,7 +607,7 @@ impl SessionTask {
                         Some(SessionInternal::MonitorExited(exit)) => {
                             monitor_started = false;
                             if matches!(exit, crate::monitor::MonitorExit::Stopped) {
-                                let _ = self.out.send(FromCore::MonitorStopped { id });
+                                let _ = self.out.send(FromCore::MonitorStopped { id }).await;
                             }
                         }
                         None => {}
@@ -474,7 +692,7 @@ impl SessionTask {
                                                 message: format!(
                                                     "打开 SFTP 子系统失败：{prefix}；独立连接也失败：{e}"
                                                 ),
-                                            });
+                                            }).await;
                                         }
                                         Err(_) => {
                                             let prefix = primary_error
@@ -486,7 +704,7 @@ impl SessionTask {
                                                     "打开 SFTP 子系统失败：{prefix}；独立连接超时({} 秒)",
                                                     SFTP_STANDALONE_OPEN_TIMEOUT.as_secs()
                                                 ),
-                                            });
+                                            }).await;
                                         }
                                     }
                                 }
@@ -497,7 +715,7 @@ impl SessionTask {
                                     let _ = self.out.send(FromCore::SftpError {
                                         id,
                                         message: "SFTP 子任务已退出，请刷新后重试".to_string(),
-                                    });
+                                    }).await;
                                 }
                             }
                         }
@@ -526,7 +744,7 @@ impl SessionTask {
                                         let _ = self.out.send(FromCore::MonitorError {
                                             id,
                                             message: format!("资源监控启动失败：{e}"),
-                                        });
+                                        }).await;
                                     }
                                     Err(_) => {
                                         let _ = self.out.send(FromCore::MonitorError {
@@ -535,7 +753,7 @@ impl SessionTask {
                                                 "资源监控启动超时({} 秒)",
                                                 MONITOR_OPEN_TIMEOUT.as_secs()
                                             ),
-                                        });
+                                        }).await;
                                     }
                                 }
                             }
@@ -552,7 +770,7 @@ impl SessionTask {
                     match msg {
                         Some(russh::ChannelMsg::Data { data }) => {
                             term.advance(&data);
-                            self.handle_term_events(&term);
+                            handle_term_events(self.id, self.out.clone(), term.take_events()).await;
                             self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
@@ -576,35 +794,45 @@ impl SessionTask {
             }
         }
 
-        let _ = self.out.send(FromCore::Closed {
-            id,
-            error: close_error,
-        });
-    }
-
-    /// Forward terminal events (bell/title/pty-write) to the UI / back to PTY.
-    fn handle_term_events(&self, term: &TermEngine) {
-        for ev in term.take_events() {
-            match ev {
-                TermEvent::Bell => {
-                    let _ = self.out.send(FromCore::Bell { id: self.id });
-                }
-                TermEvent::Title(title) => {
-                    let _ = self.out.send(FromCore::Title { id: self.id, title });
-                }
-                // PtyWrite would be written back to the shell; deferred until
-                // needed (device-status responses etc.).
-                TermEvent::PtyWrite(_) | TermEvent::Wakeup => {}
-            }
-        }
+        let _ = self
+            .out
+            .send(FromCore::Closed {
+                id,
+                error: close_error,
+            })
+            .await;
     }
 
     fn emit_render(&self, term: &TermEngine) {
         let snapshot = Box::new(term.snapshot());
-        let _ = self.out.send(FromCore::Render {
+        if let Err(err) = self.out.try_send(FromCore::Render {
             id: self.id,
             snapshot,
-        });
+        }) {
+            match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::debug!("core 输出队列已满，丢弃一帧终端渲染");
+                }
+                mpsc::error::TrySendError::Closed(_) => {}
+            }
+        }
+    }
+}
+
+/// Forward terminal events (bell/title/pty-write) to the UI / back to PTY.
+async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: Vec<TermEvent>) {
+    for ev in events {
+        match ev {
+            TermEvent::Bell => {
+                let _ = out.send(FromCore::Bell { id }).await;
+            }
+            TermEvent::Title(title) => {
+                let _ = out.send(FromCore::Title { id, title }).await;
+            }
+            // PtyWrite would be written back to the shell; deferred until
+            // needed (device-status responses etc.).
+            TermEvent::PtyWrite(_) | TermEvent::Wakeup => {}
+        }
     }
 }
 
@@ -630,6 +858,7 @@ where
 mod tests {
     use super::*;
     use crate::ssh::{AcceptAllVerifier, AuthProvider};
+    use crate::term::{Cursor, CursorShape, SnapshotCell};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -654,12 +883,233 @@ mod tests {
         }
     }
 
+    struct PasswordAuth(&'static str);
+
+    impl AuthProvider for PasswordAuth {
+        fn password(&mut self, _user: &str, _host: &str, _port: u16) -> Option<String> {
+            Some(self.0.to_string())
+        }
+
+        fn key_passphrase(&mut self, _key_path: &str) -> Option<String> {
+            None
+        }
+
+        fn keyboard_interactive(
+            &mut self,
+            _name: &str,
+            _instructions: &str,
+            _prompts: &[(String, bool)],
+        ) -> Option<Vec<String>> {
+            None
+        }
+    }
+
     struct NoopFactory;
 
     impl AuthProviderFactory for NoopFactory {
         fn create(&self, _id: SessionId, _params: &ConnectParams) -> Box<dyn AuthProvider> {
             Box::new(NoopAuth)
         }
+    }
+
+    fn test_snapshot(revision: u64) -> Box<GridSnapshot> {
+        Box::new(GridSnapshot {
+            rows: 1,
+            cols: 1,
+            cells: vec![SnapshotCell::default()],
+            cursor: Cursor {
+                line: 0,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision,
+            display_offset: 0,
+        })
+    }
+
+    #[test]
+    fn interactive_auth_provider_uses_inner_password_without_prompt() {
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let (_response_tx, response_rx) = std_mpsc::channel();
+        let mut provider = InteractiveAuthProvider {
+            id: SessionId(7),
+            inner: Box::new(PasswordAuth("secret")),
+            out: out_tx,
+            responses: response_rx,
+        };
+
+        assert_eq!(
+            provider.password("root", "example.com", 22),
+            Some("secret".to_string())
+        );
+        assert!(out_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn interactive_auth_provider_sends_keyboard_interactive_challenge() {
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let (response_tx, response_rx) = std_mpsc::channel();
+        let mut provider = InteractiveAuthProvider {
+            id: SessionId(7),
+            inner: Box::new(NoopAuth),
+            out: out_tx,
+            responses: response_rx,
+        };
+
+        let join = std::thread::spawn(move || {
+            provider.keyboard_interactive(
+                "otp",
+                "Enter one-time code",
+                &[("Code: ".to_string(), false)],
+            )
+        });
+
+        match out_rx.blocking_recv() {
+            Some(FromCore::AuthChallenge { id, challenge }) => {
+                assert_eq!(id, SessionId(7));
+                assert_eq!(
+                    challenge,
+                    AuthChallenge::KeyboardInteractive {
+                        name: "otp".to_string(),
+                        instructions: "Enter one-time code".to_string(),
+                        prompts: vec![AuthPrompt {
+                            text: "Code: ".to_string(),
+                            echo: false,
+                        }],
+                    }
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        response_tx
+            .send(AuthResponse::Answers(vec!["123456".to_string()]))
+            .unwrap();
+        assert_eq!(join.join().unwrap(), Some(vec!["123456".to_string()]));
+    }
+
+    #[test]
+    fn try_recv_coalesces_render_events_per_session() {
+        let (to_core_tx, _to_core_rx) = mpsc::channel(16);
+        let (from_core_tx, from_core_rx) = mpsc::channel(16);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut manager = SessionManager {
+            to_core_tx,
+            from_core_rx,
+            event_buffer: VecDeque::new(),
+            pending_renders: HashMap::new(),
+            _runtime: runtime,
+        };
+
+        from_core_tx
+            .try_send(FromCore::Connected { id: SessionId(1) })
+            .unwrap();
+        from_core_tx
+            .try_send(FromCore::Render {
+                id: SessionId(1),
+                snapshot: test_snapshot(1),
+            })
+            .unwrap();
+        from_core_tx
+            .try_send(FromCore::Render {
+                id: SessionId(1),
+                snapshot: test_snapshot(2),
+            })
+            .unwrap();
+        from_core_tx
+            .try_send(FromCore::Title {
+                id: SessionId(1),
+                title: "demo".to_string(),
+            })
+            .unwrap();
+        from_core_tx
+            .try_send(FromCore::Render {
+                id: SessionId(1),
+                snapshot: test_snapshot(3),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            manager.try_recv(),
+            Some(FromCore::Connected { id }) if id == SessionId(1)
+        ));
+        assert!(matches!(
+            manager.try_recv(),
+            Some(FromCore::Title { id, title }) if id == SessionId(1) && title == "demo"
+        ));
+        match manager.try_recv() {
+            Some(FromCore::Render { id, snapshot }) => {
+                assert_eq!(id, SessionId(1));
+                assert_eq!(snapshot.revision, 3);
+            }
+            other => panic!("期望合并后的 Render，实际收到 {other:?}"),
+        }
+        assert!(manager.try_recv().is_none());
+    }
+
+    #[test]
+    fn try_recv_coalesces_large_render_burst() {
+        let (to_core_tx, _to_core_rx) = mpsc::channel(16);
+        let (from_core_tx, from_core_rx) = mpsc::channel(1_100);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut manager = SessionManager {
+            to_core_tx,
+            from_core_rx,
+            event_buffer: VecDeque::new(),
+            pending_renders: HashMap::new(),
+            _runtime: runtime,
+        };
+
+        for revision in 1..=1_000 {
+            from_core_tx
+                .try_send(FromCore::Render {
+                    id: SessionId(1),
+                    snapshot: test_snapshot(revision),
+                })
+                .unwrap();
+        }
+        from_core_tx
+            .try_send(FromCore::Bell { id: SessionId(1) })
+            .unwrap();
+
+        assert!(matches!(
+            manager.try_recv(),
+            Some(FromCore::Bell { id }) if id == SessionId(1)
+        ));
+        match manager.try_recv() {
+            Some(FromCore::Render { id, snapshot }) => {
+                assert_eq!(id, SessionId(1));
+                assert_eq!(snapshot.revision, 1_000);
+            }
+            other => panic!("期望合并后的高频 Render，实际收到 {other:?}"),
+        }
+        assert!(manager.try_recv().is_none());
+    }
+
+    #[test]
+    fn send_reports_full_core_command_queue() {
+        let (to_core_tx, _to_core_rx) = mpsc::channel(1);
+        let (_from_core_tx, from_core_rx) = mpsc::channel(1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let manager = SessionManager {
+            to_core_tx,
+            from_core_rx,
+            event_buffer: VecDeque::new(),
+            pending_renders: HashMap::new(),
+            _runtime: runtime,
+        };
+
+        assert!(manager.send(ToCore::Disconnect { id: SessionId(1) }));
+        assert!(!manager.send(ToCore::Disconnect { id: SessionId(2) }));
     }
 
     #[test]

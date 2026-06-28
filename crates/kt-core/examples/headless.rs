@@ -249,11 +249,11 @@ fn spawn_stdin_forwarder(
 /// A cheap clone of the core's input sender for the stdin thread.
 #[derive(Clone)]
 struct SessionSender {
-    tx: tokio::sync::mpsc::UnboundedSender<ToCore>,
+    tx: tokio::sync::mpsc::Sender<ToCore>,
 }
 impl SessionSender {
     fn send(&self, msg: ToCore) {
-        let _ = self.tx.send(msg);
+        let _ = self.tx.blocking_send(msg);
     }
 }
 

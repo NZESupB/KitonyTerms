@@ -99,7 +99,7 @@ struct NetSample {
 pub(crate) async fn monitor_task(
     id: SessionId,
     mut channel: russh::Channel<russh::client::Msg>,
-    out: mpsc::UnboundedSender<FromCore>,
+    out: mpsc::Sender<FromCore>,
 ) -> MonitorExit {
     let mut prev_cpu: Option<CpuSample> = None;
     let mut prev_net: Option<NetSample> = None;
@@ -110,10 +110,12 @@ pub(crate) async fn monitor_task(
         let sample_started = Instant::now();
         // 写入命令包。Write the command bundle.
         if channel.data(CMD.as_bytes()).await.is_err() {
-            let _ = out.send(FromCore::MonitorError {
-                id,
-                message: "资源监控命令发送失败".to_string(),
-            });
+            let _ = out
+                .send(FromCore::MonitorError {
+                    id,
+                    message: "资源监控命令发送失败".to_string(),
+                })
+                .await;
             break MonitorExit::ErrorReported;
         }
 
@@ -153,7 +155,7 @@ pub(crate) async fn monitor_task(
         }
         if closed {
             if let Some(message) = failure_message {
-                let _ = out.send(FromCore::MonitorError { id, message });
+                let _ = out.send(FromCore::MonitorError { id, message }).await;
                 break MonitorExit::ErrorReported;
             }
             break MonitorExit::Stopped;
@@ -172,15 +174,18 @@ pub(crate) async fn monitor_task(
                     id,
                     stats: Box::new(stats),
                 })
+                .await
                 .is_err()
             {
                 break MonitorExit::ReceiverDropped;
             }
         } else {
-            let _ = out.send(FromCore::MonitorError {
-                id,
-                message: "资源监控采样解析失败".to_string(),
-            });
+            let _ = out
+                .send(FromCore::MonitorError {
+                    id,
+                    message: "资源监控采样解析失败".to_string(),
+                })
+                .await;
             break MonitorExit::ErrorReported;
         }
 

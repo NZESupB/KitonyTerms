@@ -1,6 +1,7 @@
 # KitonyTerms 整体架构
 
 修改任意模块前必读。本文沉淀 crate 职责、UI⇄core 消息协议、SSH/SFTP 层与 GUI 结构。
+进行功能更新前还必须阅读 [maintenance.md](maintenance.md)，先填写影响清单并选择对应轻量回归套件。
 
 ## crate 划分与依赖方向
 
@@ -12,7 +13,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
 - **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`KnownHosts`、`SessionProfile`、`AppSettings`、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
-- **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。空密码可正常派生(无长度校验)。
+- **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。空密码可正常派生(无长度校验),但 UI Store 不再用空密码静默解锁。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
 - **kt-app**:Dioxus Desktop 启动入口,二进制 `kitonyterms`,见下。当前入口能力为 GUI-only:无参数或 `--gui` 启动 GUI,`--help` 输出用法;`--safe`、`--system-ssh`、`--show-log`、`--list` 等历史稳定终端/降级入口不在当前代码中提供。
@@ -23,24 +24,27 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 `SessionManager` 持有一个多线程 tokio 运行时,每个会话一个 task。调用方(GUI / headless 示例)**只**通过两条 channel 通信:
 
-- `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,req}`、`StartMonitor{id}`、`Disconnect{id}`。
-- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`Closed{error}`。
+- `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,req}`、`StartMonitor{id}`、`AuthResponse{id,response}`、`Disconnect{id}`。
+- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`Closed{error}`。
 
 要点:
 - `SessionManager::spawn(verifier, auth_factory)` 启动 `core_loop`,后者按 `id` 把命令路由到各 `SessionTask`。
 - `SessionTask::run` 是一个 `select!` 循环:一边收 `SessionCmd`(由 `ToCore` 转来),一边 `shell.next_message()` 取远端输出喂给 `TermEngine`,变化时发 `Render`。
+- `ToCore` 与 `FromCore` 边界通道为有界队列(当前容量各 2048)。GUI 侧 `SessionManager::send` 使用 `try_send`,饱和时返回 `false` 并记录日志;headless stdin 线程使用 `blocking_send`,避免交互输入被轻易丢弃。
+- `SessionManager::try_recv` 会在 UI 接收侧合并 `Render` 事件:普通事件 FIFO 保留,同一 session 的多帧 `Render` 只保留最新 `GridSnapshot`。UI 应通过 `try_recv` 泵事件,不要绕过 manager 直接消费 core 输出通道。
+- core→UI 普通事件使用有界通道的 async `send().await` 形成背压;`Render` 使用 `try_send`,队列满时允许丢弃当前帧,因为下一帧会覆盖显示状态。
 - **扩展能力的标准做法**:加 `ToCore`/`FromCore` 变体 + `SessionCmd` 变体 + `core_loop` 路由 + `SessionTask` 处理。新增 `FromCore` 变体后,记得给 UI 的 `pump_core_events`(穷举匹配)和 headless 示例(有 `Some(_)=>{}` 兜底)补齐。
-- **辅助能力闭环原则**:SFTP、Monitor 等辅助能力必须在成功、失败、超时或会话关闭时收敛;core 路由失败和子通道打开失败要返回对应 `*Error` 事件,UI state 保存 `loading/error/data`。
+- **辅助能力闭环原则**:SFTP、Monitor 等辅助能力必须在成功、失败、超时或会话关闭时收敛;core 路由失败和子通道打开失败要返回对应 `*Error` 事件,子任务正常停止返回 `*Stopped` 事件,UI state 保存 `loading/error/data`。
 - **SSH 建连闭环原则**:初始连接不能只给 TCP/握手设超时,完整 `connect→auth→request_pty→request_shell` 链路必须有总超时;失败或超时必须返回 `Closed{error}`,不得让 UI 长期停留在连接中。
-- `AuthProvider`(密码/口令/keyboard-interactive)由工厂按会话创建;GUI 实现读预先填好的机密,不做握手期阻塞弹窗。
+- `AuthProvider`(密码/口令/keyboard-interactive)由工厂按会话创建;session 层会用 `InteractiveAuthProvider` 包装 GUI provider。GUI provider 先读 vault 中已有密码或 `key:{key_path}` 私钥口令;缺失时 core 发 `AuthChallenge` 给 UI,UI 弹窗采集后用 `AuthResponse` 回传。认证等待期间 `SessionState.auth_challenge` 非空,状态栏显示“等待认证”。认证挑战通过独立响应通道回到认证流程,不要把认证答案混入终端 `Input`。
 
 ## kt-core:SSH 层
 
 文件:[crates/kt-core/src/ssh/mod.rs](../crates/kt-core/src/ssh/mod.rs)、`ssh/handler.rs`
 
 - `SshShell`(持有 `russh::client::Handle` 与 PTY shell `Channel`):`open()`(connect→auth→request_pty→request_shell)、`write/resize/next_message/disconnect`。
-- 认证:按 `params.auth` 顺序尝试 password / publickey / keyboard-interactive / agent。ssh-agent 不可用、公钥文件不可用或 key 认证失败时应继续后续认证方式,避免 `~/.ssh/config` 中的默认 `IdentityFile` 或 agent 环境破坏密码 fallback。`AuthProvider::password` 必须按实际 `user@host:port` 请求密码,以支持 ProxyJump 和非 22 端口。
-- 主机密钥:GUI 使用持久化 `KnownHostsVerifier`,未知主机首次写入 `known_hosts.toml`,已知主机指纹变化时拒绝连接;测试和显式 opt-in 才使用 `AcceptAllVerifier`。
+- 认证:按 `params.auth` 顺序尝试 password / publickey / keyboard-interactive / agent。ssh-agent 不可用、公钥文件不可用或 key 认证失败时应继续后续认证方式,避免 `~/.ssh/config` 中的默认 `IdentityFile` 或 agent 环境破坏密码 fallback。`AuthProvider::password` 必须按实际 `user@host:port` 请求密码,以支持 ProxyJump 和非 22 端口。GUI 认证缺口统一走 `AuthChallenge`/`AuthResponse`:password 返回单个隐藏输入,加密私钥返回私钥口令输入,keyboard-interactive 按服务端 prompts 逐项采集。
+- 主机密钥:GUI 使用持久化 `KnownHostsVerifier`。未知主机或已知主机指纹变化时,verifier 记录 `PendingHostKey` 并拒绝本次握手;UI 弹窗展示主机、已保存指纹与本次指纹,用户可选择“仅允许一次”(内存态,下次连接消费后失效,不写入 `known_hosts.toml`)或“信任此主机”(持久写入/更新 `known_hosts.toml`)。由于 russh 主机密钥 verifier 为同步回调,确认后需要用户重新发起连接。测试和显式 opt-in 才使用 `AcceptAllVerifier`。`Trusted` 与 `NewlyTrusted` 都要保存 `known_hosts.toml`,确保 `last_seen_unix` 可追踪。
 - ProxyJump: `ConnectParams.proxy_jump` 支持单跳 `[user@]host[:port]`;core 先认证跳板,再通过 `channel_open_direct_tcpip` 建立目标 SSH 握手,并保留跳板 handle 直到目标连接结束。
 - ssh-agent: `AuthMethod::Agent` 会读取本机 ssh-agent/Pageant identities 逐个尝试公钥认证;`ConnectParams.forward_agent` 会在 shell channel 上请求 agent forwarding。
 - `open_sftp(&self) -> SftpSession`:在**同一 handle** 上 `channel_open_session` → `request_subsystem(true,"sftp")` → `russh_sftp::client::SftpSession::new(channel.into_stream())`。返回独立拥有通道流的会话,可 move 进子任务;底层 TCP 由 `SshShell` 的 handle 维持。
@@ -68,10 +72,12 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 - `kt-app` 负责解析最小入口参数、初始化日志、创建 Dioxus Desktop 窗口并 `launch(App)`；业务界面在 `kt-ui`。当前支持无参数或 `--gui` 启动 GUI、`--help` 查看用法；旧 `--safe`、`--system-ssh`、`--show-log`、`--list` 会明确报错，避免文档中曾存在但代码不存在的能力被误用。
 - `App` 通过全局 `Store` 与 `AppState` 懒初始化 `SessionManager`。UI 每 16ms 泵送 `FromCore`，每 100ms 从 `AppState.sessions` 同步会话列表。
-- **主界面结构**:系统原生标题栏 + 左侧边栏(分组连接树、SFTP 表格、设置入口) + 中央终端工作区 + 底部系统监控横条 + 状态栏。样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。
+- **主界面结构**:系统原生标题栏 + 左侧边栏(分组连接树、SFTP 表格、设置入口) + 中央终端工作区 + 底部系统监控横条 + 状态栏。样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。[app.rs](../crates/kt-ui/src/components/app.rs) 是主编排组件,保留全局信号、上下文菜单、弹窗和跨模块动作;[state_controller.rs](../crates/kt-ui/src/components/state_controller.rs) 负责事件泵、会话列表同步、主机密钥提示同步与外部编辑副作用;[main_shell.rs](../crates/kt-ui/src/components/main_shell.rs) 负责主工作台外层调度,其子模块 `main_shell/sidebar_panel.rs`、`main_shell/workbench_panel.rs`、`main_shell/status_bar.rs` 分别承接连接/SFTP 侧边栏、终端与监控工作区、底部状态栏;安全认证对话框、外部编辑状态机、侧边栏/SFTP 右键菜单、连接/分组/命名对话框已拆到独立模块;[app_logic.rs](../crates/kt-ui/src/components/app_logic.rs) 保存分组归并、会话状态初始化、SSH config 合并、连接状态 selector 等纯逻辑;[app_runtime.rs](../crates/kt-ui/src/components/app_runtime.rs) 保存 Store-backed AuthProvider 与 KnownHostsVerifier。后续深拆目标是更细粒度 selector 与 `state_controller` 集成断言。
+- **selector 边界**:`app_logic.rs` 中的 `SessionTabView / ActiveSftpView / ActiveMonitorView / StatusBarSessionView / ActiveTerminalView` 是主工作台的轻量视图模型。SFTP、Monitor、状态栏和会话标签不应直接依赖完整 `SessionState`;终端区域可以通过 `ActiveTerminalView` 持有 `GridSnapshot`,但不要为了比较或 memo 强行给大快照引入伪等价语义。`state_controller::resolve_active_session_id` 统一处理 active session 缺失、过期和空列表,会话列表同步时按 `SessionId` 排序以保持 UI 顺序稳定。
+- **UI 抽离约定**:接收 `Arc<Mutex<AppState>>`、`Arc<Store>`、大量 `Signal` 或闭包的重状态入口优先使用普通函数返回 `Element`,不要默认写成 Dioxus `#[component]`;只有 props 天然适合 `PartialEq`、边界清晰且可复用的展示单元才使用组件。这样避免为了通过 props 派生而给运行时对象引入伪等价语义。
 - **终端渲染**:[terminal.rs](../crates/kt-ui/src/components/terminal.rs) 使用 `GridSnapshot` 渲染 HTML 行列，并把键盘、滚轮输入转成 `ToCore::Input`/`Scroll`。
 - **分屏与触发器高亮**:终端工具栏可切换水平/垂直双视图,当前为同一 session 的本地双视图;`AppSettings.trigger_highlights` 提供行级文本触发器,由 [terminal.rs](../crates/kt-ui/src/components/terminal.rs) 做大小写不敏感匹配并加高亮 class。
-- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。外部编辑器流程在 [app.rs](../crates/kt-ui/src/components/app.rs) 中处理，必须下载完成后打开本地临时文件，监听本地保存后弹窗选择回传策略，回传进度放到底部状态栏。
+- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；`SftpStopped` 清理 loading/progress 但不覆盖已有错误。同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。侧边栏 SFTP 树、条目格式化和右键菜单在 [sidebar.rs](../crates/kt-ui/src/components/sidebar.rs)。外部编辑器状态机、临时文件命名、打开本地编辑器与状态栏文案在 [external_edit.rs](../crates/kt-ui/src/components/external_edit.rs);App 只负责触发下载/上传和弹出保存确认。
 - **资源监控**:[state.rs](../crates/kt-ui/src/state.rs) 收到 `Connected` 后自动发送 `StartMonitor` 并进入 `monitor_loading`;core 成功采样返回 `Monitor`,失败/超时返回 `MonitorError`;正常通道关闭返回 `MonitorStopped` 清理等待态,不展示为错误。监控子任务退出后会通知会话重置启动状态,允许后续重新 `StartMonitor`。[monitor.rs](../crates/kt-ui/src/components/monitor.rs) 只展示 `monitor_loading`、`monitor_error` 与 `monitor` 三态。
 - **连接失败展示**:`FromCore::Closed{error}` 必须写入 `SessionState.connection_error`;终端占位、状态栏和会话状态点都要把错误会话显示为失败/断开,不得继续使用 connecting 文案或黄色连接中状态。
-- **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。保存连接后按 `effective_vault_id()` 写入 vault 中的密码。
+- **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。Store 使用 `VaultState::{Missing,Locked,Unlocked}` 管理机密状态;未创建或锁定时读取/写入机密必须返回明确结果,不得静默吞掉保存失败。保存连接后按 `effective_vault_id()` 写入 vault 中的密码;若 vault 缺失或锁定,UI 保留本次待保存密码并弹出主密码解锁/创建对话框,解锁成功后自动重试写入,成功/取消/失败都通过状态栏提示。

@@ -150,6 +150,8 @@ impl ConnectParams {
 pub enum KnownHostCheck {
     /// Host key matches the stored fingerprint.
     Trusted,
+    /// Host is unknown and should be confirmed before it is persisted.
+    Unknown { fingerprint: String },
     /// Host was unknown and has just been persisted with this fingerprint.
     NewlyTrusted,
     /// Host key changed and must be rejected.
@@ -204,6 +206,20 @@ impl KnownHosts {
         port: u16,
         fingerprint: impl Into<String>,
     ) -> KnownHostCheck {
+        let host = host.as_ref().to_string();
+        let fingerprint = fingerprint.into();
+        match self.check(&host, port, fingerprint.clone()) {
+            KnownHostCheck::Unknown { .. } => self.trust(host, port, fingerprint),
+            other => other,
+        }
+    }
+
+    pub fn check(
+        &mut self,
+        host: impl AsRef<str>,
+        port: u16,
+        fingerprint: impl Into<String>,
+    ) -> KnownHostCheck {
         let host = normalize_known_host(host.as_ref());
         let fingerprint = fingerprint.into();
         let now = unix_now();
@@ -223,6 +239,31 @@ impl KnownHosts {
                 }
             }
         } else {
+            KnownHostCheck::Unknown { fingerprint }
+        }
+    }
+
+    pub fn trust(
+        &mut self,
+        host: impl AsRef<str>,
+        port: u16,
+        fingerprint: impl Into<String>,
+    ) -> KnownHostCheck {
+        let host = normalize_known_host(host.as_ref());
+        let fingerprint = fingerprint.into();
+        let now = unix_now();
+
+        if let Some(entry) = self
+            .hosts
+            .iter_mut()
+            .find(|entry| entry.host == host && entry.port == port)
+        {
+            entry.fingerprint = fingerprint;
+            entry.last_seen_unix = now;
+            if entry.first_seen_unix == 0 {
+                entry.first_seen_unix = now;
+            }
+        } else {
             self.hosts.push(KnownHostEntry {
                 host,
                 port,
@@ -230,14 +271,14 @@ impl KnownHosts {
                 first_seen_unix: now,
                 last_seen_unix: now,
             });
-            self.hosts.sort_by(|a, b| {
-                a.host
-                    .cmp(&b.host)
-                    .then_with(|| a.port.cmp(&b.port))
-                    .then_with(|| a.fingerprint.cmp(&b.fingerprint))
-            });
-            KnownHostCheck::NewlyTrusted
         }
+        self.hosts.sort_by(|a, b| {
+            a.host
+                .cmp(&b.host)
+                .then_with(|| a.port.cmp(&b.port))
+                .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+        });
+        KnownHostCheck::NewlyTrusted
     }
 }
 
@@ -751,6 +792,35 @@ use_ssh_config = true
         );
         assert_eq!(
             known_hosts.check_or_trust("example.com", 22, "SHA256:second"),
+            KnownHostCheck::Changed {
+                expected: "SHA256:first".to_string(),
+                actual: "SHA256:second".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn known_hosts_check_requires_explicit_trust_for_unknown_host() {
+        let mut known_hosts = KnownHosts::default();
+
+        assert_eq!(
+            known_hosts.check("example.com", 22, "SHA256:first"),
+            KnownHostCheck::Unknown {
+                fingerprint: "SHA256:first".to_string()
+            }
+        );
+        assert!(known_hosts.hosts.is_empty());
+
+        assert_eq!(
+            known_hosts.trust("example.com", 22, "SHA256:first"),
+            KnownHostCheck::NewlyTrusted
+        );
+        assert_eq!(
+            known_hosts.check("example.com", 22, "SHA256:first"),
+            KnownHostCheck::Trusted
+        );
+        assert_eq!(
+            known_hosts.check("example.com", 22, "SHA256:second"),
             KnownHostCheck::Changed {
                 expected: "SHA256:first".to_string(),
                 actual: "SHA256:second".to_string()
