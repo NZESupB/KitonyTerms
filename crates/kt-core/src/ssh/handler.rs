@@ -27,8 +27,7 @@ pub trait HostKeyVerifier: Send + Sync {
     /// Called once during the handshake with the server's public key and the
     /// `host:port` we connected to. `fingerprint` is the SHA256 fingerprint
     /// string (e.g. `SHA256:abc...`) for display.
-    fn verify(&self, host: &str, port: u16, key: &PublicKey, fingerprint: &str)
-        -> HostKeyDecision;
+    fn verify(&self, host: &str, port: u16, key: &PublicKey, fingerprint: &str) -> HostKeyDecision;
 }
 
 /// A verifier that accepts everything. **Insecure** — only for tests / opt-in.

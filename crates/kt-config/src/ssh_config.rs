@@ -18,7 +18,7 @@ pub struct SshConfigHost {
     pub user: Option<String>,
     /// `IdentityFile` entries (may be several).
     pub identity_files: Vec<PathBuf>,
-    /// `ProxyJump` target (used in a later phase).
+    /// `ProxyJump` target.
     pub proxy_jump: Option<String>,
 }
 
@@ -89,6 +89,19 @@ Host myserver
             got.identity_files,
             vec![PathBuf::from("/home/me/.ssh/id_ed25519")]
         );
+    }
+
+    #[test]
+    fn parses_proxy_jump() {
+        let (_dir, path) = write_config(
+            "\
+Host prod
+    HostName 10.0.0.8
+    ProxyJump ops@bastion:2222
+",
+        );
+        let got = lookup_ssh_config(&path, "prod").unwrap().unwrap();
+        assert_eq!(got.proxy_jump.as_deref(), Some("ops@bastion:2222"));
     }
 
     #[test]

@@ -12,6 +12,7 @@
 //! messages and repaints from [`GridSnapshot`]s.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,8 @@ use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
 const SFTP_REUSE_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SFTP_STANDALONE_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
+const MONITOR_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+const SSH_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Opaque session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,6 +153,10 @@ pub enum FromCore {
         id: SessionId,
         stats: Box<MonitorStats>,
     },
+    /// 资源监控正常停止。Resource monitoring stopped without an error.
+    MonitorStopped { id: SessionId },
+    /// 资源监控启动或采样失败。Resource monitoring failed to start or sample.
+    MonitorError { id: SessionId, message: String },
     /// Session ended. `error` is `None` for a clean exit.
     Closed {
         id: SessionId,
@@ -279,7 +286,17 @@ async fn core_loop(
             }
             ToCore::StartMonitor { id } => {
                 if let Some(h) = sessions.get(&id) {
-                    let _ = h.cmd_tx.send(SessionCmd::StartMonitor);
+                    if h.cmd_tx.send(SessionCmd::StartMonitor).is_err() {
+                        let _ = tx.send(FromCore::MonitorError {
+                            id,
+                            message: "资源监控请求无法投递，会话任务已结束".to_string(),
+                        });
+                    }
+                } else {
+                    let _ = tx.send(FromCore::MonitorError {
+                        id,
+                        message: "资源监控启动失败：会话不存在或已关闭".to_string(),
+                    });
                 }
             }
             ToCore::Disconnect { id } => {
@@ -301,6 +318,10 @@ enum SessionCmd {
     Disconnect,
 }
 
+enum SessionInternal {
+    MonitorExited(crate::monitor::MonitorExit),
+}
+
 struct SessionHandles {
     cmd_tx: mpsc::UnboundedSender<SessionCmd>,
 }
@@ -320,20 +341,22 @@ impl SessionTask {
     async fn run(mut self) {
         let id = self.id;
 
-        // Connect + authenticate + open shell.
-        let mut shell = match SshShell::open(
-            &self.params,
-            self.pty,
-            self.verifier.clone(),
-            self.provider.as_mut(),
+        let mut shell = match open_ssh_shell_with_timeout(
+            SSH_OPEN_TIMEOUT,
+            SshShell::open(
+                &self.params,
+                self.pty,
+                self.verifier.clone(),
+                self.provider.as_mut(),
+            ),
         )
         .await
         {
             Ok(s) => s,
-            Err(e) => {
+            Err(error) => {
                 let _ = self.out.send(FromCore::Closed {
                     id,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                 });
                 return;
             }
@@ -357,9 +380,22 @@ impl SessionTask {
         // 资源监控子任务是否已启动(惰性,首次请求时开启)。
         // Whether the monitor subtask has been started (lazy on first request).
         let mut monitor_started = false;
+        let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<SessionInternal>();
 
         loop {
             tokio::select! {
+                internal = internal_rx.recv() => {
+                    match internal {
+                        Some(SessionInternal::MonitorExited(exit)) => {
+                            monitor_started = false;
+                            if matches!(exit, crate::monitor::MonitorExit::Stopped) {
+                                let _ = self.out.send(FromCore::MonitorStopped { id });
+                            }
+                        }
+                        None => {}
+                    }
+                }
+
                 // Control messages from the UI.
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
@@ -469,17 +505,37 @@ impl SessionTask {
                             // 首次请求时在同一会话上开监控通道,并 move 进独立子任务。
                             // Open the monitor channel lazily and move it into a subtask.
                             if !monitor_started {
-                                match shell.open_monitor_channel().await {
-                                    Ok(session) => {
-                                        tokio::spawn(crate::monitor::monitor_task(
-                                            id,
-                                            session,
-                                            self.out.clone(),
-                                        ));
+                                match tokio::time::timeout(
+                                    MONITOR_OPEN_TIMEOUT,
+                                    shell.open_monitor_channel(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(session)) => {
+                                        let out = self.out.clone();
+                                        let internal_tx = internal_tx.clone();
+                                        tokio::spawn(async move {
+                                            let exit =
+                                                crate::monitor::monitor_task(id, session, out).await;
+                                            let _ = internal_tx.send(SessionInternal::MonitorExited(exit));
+                                        });
                                         monitor_started = true;
                                     }
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         tracing::warn!("failed to start monitor: {e}");
+                                        let _ = self.out.send(FromCore::MonitorError {
+                                            id,
+                                            message: format!("资源监控启动失败：{e}"),
+                                        });
+                                    }
+                                    Err(_) => {
+                                        let _ = self.out.send(FromCore::MonitorError {
+                                            id,
+                                            message: format!(
+                                                "资源监控启动超时({} 秒)",
+                                                MONITOR_OPEN_TIMEOUT.as_secs()
+                                            ),
+                                        });
                                     }
                                 }
                             }
@@ -552,6 +608,24 @@ impl SessionTask {
     }
 }
 
+async fn open_ssh_shell_with_timeout<T, E, F>(
+    timeout: Duration,
+    open_fut: F,
+) -> std::result::Result<T, String>
+where
+    E: ToString,
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    match tokio::time::timeout(timeout, open_fut).await {
+        Ok(Ok(shell)) => Ok(shell),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!(
+            "SSH 连接超时({} 秒)，连接流程未在限定时间内完成。请检查网络、ProxyJump、认证方式或远端 shell。",
+            timeout.as_secs()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,7 +636,7 @@ mod tests {
     struct NoopAuth;
 
     impl AuthProvider for NoopAuth {
-        fn password(&mut self, _user: &str, _host: &str) -> Option<String> {
+        fn password(&mut self, _user: &str, _host: &str, _port: u16) -> Option<String> {
             None
         }
 
@@ -616,5 +690,42 @@ mod tests {
             }
             other => panic!("期望 SftpError，实际收到 {other:?}"),
         }
+    }
+
+    #[test]
+    fn monitor_request_for_missing_session_returns_error() {
+        let mut manager =
+            SessionManager::spawn(Arc::new(AcceptAllVerifier), Arc::new(NoopFactory)).unwrap();
+
+        manager.send(ToCore::StartMonitor { id: SessionId(404) });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            if let Some(event) = manager.try_recv() {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "等待监控错误事件超时");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        match event {
+            FromCore::MonitorError { id, message } => {
+                assert_eq!(id, SessionId(404));
+                assert!(message.contains("会话不存在"));
+            }
+            other => panic!("期望 MonitorError，实际收到 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ssh_open_timeout_turns_pending_connect_into_error() {
+        let result: std::result::Result<(), String> = open_ssh_shell_with_timeout(
+            Duration::from_millis(1),
+            std::future::pending::<std::result::Result<(), &'static str>>(),
+        )
+        .await;
+
+        let err = result.expect_err("pending 连接应当被超时打断");
+        assert!(err.contains("SSH 连接超时"));
     }
 }

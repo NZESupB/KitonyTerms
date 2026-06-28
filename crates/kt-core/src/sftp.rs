@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::session::{FromCore, SessionId, SftpEntry, SftpOp, SftpRequest};
-use crate::ssh::ClientHandler;
+use crate::ssh::SshConnectionGuard;
 
 /// 传输分块大小;同时作为进度上报的步长基准。
 /// Transfer chunk size; also the basis for progress-reporting cadence.
@@ -29,7 +29,7 @@ const QUICK_OP_TIMEOUT: Duration = Duration::from_secs(12);
 pub async fn sftp_task(
     id: SessionId,
     session: SftpSession,
-    _connection_guard: Option<russh::client::Handle<ClientHandler>>,
+    _connection_guard: Option<SshConnectionGuard>,
     mut rx: mpsc::UnboundedReceiver<SftpRequest>,
     out: mpsc::UnboundedSender<FromCore>,
 ) {

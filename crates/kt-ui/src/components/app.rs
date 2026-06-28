@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::prelude::*;
-use kt_config::{normalize_group_name, AppLanguage, ConnectParams, SessionProfile};
+use kt_config::{
+    lookup_ssh_config, normalize_group_name, AppLanguage, ConnectParams, KnownHostCheck,
+    SessionProfile,
+};
 use kt_core::ssh::HostKeyDecision;
 use kt_core::{
     AuthProvider, HostKeyVerifier, PtySize, SessionId, SessionManager, SftpEntry, SftpRequest,
@@ -45,6 +48,12 @@ const DEFAULT_GROUP_NAME: &str = "NoBrand";
 enum ResizeDrag {
     SidebarWidth { start_x: f64, start_width: f64 },
     SftpHeight { start_y: f64, start_height: f64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SplitMode {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,7 +133,9 @@ pub fn get_state() -> &'static Arc<Mutex<AppState>> {
 
         let store = get_store();
         let manager = SessionManager::spawn(
-            Arc::new(AcceptAllVerifier),
+            Arc::new(KnownHostsVerifier {
+                store: store.clone(),
+            }),
             Arc::new(StoreAuthFactory {
                 store: store.clone(),
             }),
@@ -154,8 +165,11 @@ struct StoreAuthProvider {
 }
 
 impl AuthProvider for StoreAuthProvider {
-    fn password(&mut self, _user: &str, _host: &str) -> Option<String> {
-        self.store.get_secret(&self.vault_id)
+    fn password(&mut self, user: &str, host: &str, port: u16) -> Option<String> {
+        let scoped_vault_id = format!("{user}@{host}:{port}");
+        self.store
+            .get_secret(&scoped_vault_id)
+            .or_else(|| self.store.get_secret(&self.vault_id))
     }
 
     fn key_passphrase(&mut self, _key_path: &str) -> Option<String> {
@@ -186,18 +200,36 @@ impl kt_core::session::AuthProviderFactory for StoreAuthFactory {
     }
 }
 
-/// 简单的 HostKeyVerifier(接受所有主机密钥, TOFU)。
-struct AcceptAllVerifier;
+/// 持久化 known_hosts 校验器。
+struct KnownHostsVerifier {
+    store: Arc<Store>,
+}
 
-impl HostKeyVerifier for AcceptAllVerifier {
+impl HostKeyVerifier for KnownHostsVerifier {
     fn verify(
         &self,
-        _host: &str,
-        _port: u16,
+        host: &str,
+        port: u16,
         _key: &russh::keys::PublicKey,
-        _fingerprint: &str,
+        fingerprint: &str,
     ) -> HostKeyDecision {
-        HostKeyDecision::Accept
+        match self.store.check_or_trust_host_key(host, port, fingerprint) {
+            Ok(KnownHostCheck::Trusted | KnownHostCheck::NewlyTrusted) => HostKeyDecision::Accept,
+            Ok(KnownHostCheck::Changed { expected, actual }) => {
+                tracing::error!(
+                    "主机密钥已变化: {}:{}, stored={}, received={}",
+                    host,
+                    port,
+                    expected,
+                    actual
+                );
+                HostKeyDecision::Reject
+            }
+            Err(err) => {
+                tracing::error!("known_hosts 校验失败: {}:{} {}", host, port, err);
+                HostKeyDecision::Reject
+            }
+        }
     }
 }
 
@@ -215,6 +247,9 @@ pub fn App() -> Element {
     let mut edit_user = use_signal(String::new);
     let mut edit_group = use_signal(String::new);
     let mut edit_password = use_signal(String::new);
+    let mut edit_proxy_jump = use_signal(String::new);
+    let mut edit_use_agent = use_signal(|| false);
+    let mut edit_forward_agent = use_signal(|| false);
 
     let mut settings = use_signal(|| store.settings());
     let mut show_settings = use_signal(|| false);
@@ -239,6 +274,7 @@ pub fn App() -> Element {
     let mut sftp_height = use_signal(|| None::<f64>);
     let mut active_resize = use_signal(|| None::<ResizeDrag>);
     let mut context_menu = use_signal(|| None::<ContextMenuState>);
+    let mut split_mode = use_signal(|| None::<SplitMode>);
 
     use_future(move || async move {
         loop {
@@ -455,6 +491,9 @@ pub fn App() -> Element {
                                     edit_user.set(String::new());
                                     edit_group.set(String::new());
                                     edit_password.set(String::new());
+                                    edit_proxy_jump.set(String::new());
+                                    edit_use_agent.set(false);
+                                    edit_forward_agent.set(false);
                                     show_dialog.set(true);
                                 },
                                 Icon { name: "add" }
@@ -502,6 +541,10 @@ pub fn App() -> Element {
                                             on_connect: {
                                                 let profile = profile.clone();
                                                 move |_| {
+                                                    let params = params_with_ssh_config(
+                                                        profile.params.clone(),
+                                                        settings.peek().use_ssh_config,
+                                                    );
                                                     if let Ok(mut app_state) = state.lock() {
                                                         let id = app_state.next_session_id();
                                                         app_state.sessions.insert(
@@ -510,7 +553,7 @@ pub fn App() -> Element {
                                                         );
                                                         app_state.manager.send(ToCore::Connect {
                                                             id,
-                                                            params: Box::new(profile.params.clone()),
+                                                            params: Box::new(params),
                                                             pty: PtySize { cols: 100, rows: 30 },
                                                         });
                                                         active_session_id.set(Some(id));
@@ -528,6 +571,9 @@ pub fn App() -> Element {
                                                     edit_user.set(profile.params.user.clone());
                                                     edit_group.set(profile.group.clone().unwrap_or_default());
                                                     edit_password.set(String::new());
+                                                    edit_proxy_jump.set(profile.params.proxy_jump.clone().unwrap_or_default());
+                                                    edit_use_agent.set(profile.params.auth.contains(&kt_config::AuthMethod::Agent));
+                                                    edit_forward_agent.set(profile.params.forward_agent);
                                                     show_dialog.set(true);
                                                 }
                                             },
@@ -683,7 +729,7 @@ pub fn App() -> Element {
                                     },
 
                                     span {
-                                        class: if sess.connected { "status-dot online" } else { "status-dot connecting" },
+                                        class: session_dot_class(&sess),
                                     }
                                     span { class: "tab-title", "{sess.title}" }
                                     button {
@@ -720,6 +766,9 @@ pub fn App() -> Element {
                                     edit_user.set(String::new());
                                     edit_group.set(String::new());
                                     edit_password.set(String::new());
+                                    edit_proxy_jump.set(String::new());
+                                    edit_use_agent.set(false);
+                                    edit_forward_agent.set(false);
                                     show_dialog.set(true);
                                 },
                                 Icon { name: "add" }
@@ -737,7 +786,7 @@ pub fn App() -> Element {
                                 if let Some(sess) = active_session() {
                                     span {
                                         class: "host-pill",
-                                        span { class: if sess.connected { "status-dot online" } else { "status-dot connecting" } }
+                                        span { class: session_dot_class(&sess) }
                                         "{sess.title}"
                                     }
                                 } else {
@@ -746,27 +795,63 @@ pub fn App() -> Element {
                             }
 
                             div { class: "toolbar-spacer" }
-                            button { class: "icon-button slim", title: "{t.split}", Icon { name: "split" } }
-                            button { class: "icon-button slim", title: "{t.split_horizontal}", Icon { name: "split-horizontal" } }
-                            button { class: "icon-button slim", title: "{t.split_vertical}", Icon { name: "split-vertical" } }
+                            button {
+                                class: "icon-button slim",
+                                title: "{t.split}",
+                                onclick: move |_| split_mode.set(None),
+                                Icon { name: "split" }
+                            }
+                            button {
+                                class: "icon-button slim",
+                                title: "{t.split_horizontal}",
+                                onclick: move |_| split_mode.set(Some(SplitMode::Horizontal)),
+                                Icon { name: "split-horizontal" }
+                            }
+                            button {
+                                class: "icon-button slim",
+                                title: "{t.split_vertical}",
+                                onclick: move |_| split_mode.set(Some(SplitMode::Vertical)),
+                                Icon { name: "split-vertical" }
+                            }
                             button { class: "icon-button slim", title: "{t.clear}", Icon { name: "clear" } }
                             button { class: "icon-button slim", title: "{t.more}", Icon { name: "more" } }
                         }
 
                         // 终端内容
                         div {
-                            class: "terminal-body",
+                            class: match split_mode() {
+                                Some(SplitMode::Horizontal) => "terminal-body is-split-horizontal",
+                                Some(SplitMode::Vertical) => "terminal-body is-split-vertical",
+                                None => "terminal-body",
+                            },
 
                             if let Some(sess) = active_session() {
                                 if let Some(snapshot) = sess.snapshot.clone() {
-                                    Terminal {
-                                        snapshot: SnapshotWrapper(snapshot),
-                                        session_id: sess.id,
+                                    div {
+                                        class: "terminal-pane",
+                                        Terminal {
+                                            snapshot: SnapshotWrapper(snapshot.clone()),
+                                            session_id: sess.id,
+                                            pane_id: "primary".to_string(),
+                                            trigger_highlights: settings().trigger_highlights,
+                                        }
+                                    }
+                                    if split_mode().is_some() {
+                                        div {
+                                            class: "terminal-pane",
+                                            Terminal {
+                                                snapshot: SnapshotWrapper(snapshot),
+                                                session_id: sess.id,
+                                                pane_id: "secondary".to_string(),
+                                                trigger_highlights: settings().trigger_highlights,
+                                            }
+                                        }
                                     }
                                 } else {
                                     TerminalPlaceholder {
                                         connected: sess.connected,
                                         title: sess.title.clone(),
+                                        error: sess.connection_error.clone(),
                                         language,
                                     }
                                 }
@@ -796,7 +881,16 @@ pub fn App() -> Element {
             footer {
                 class: "status-bar",
                 if let Some(sess) = active_session() {
-                    span { class: if sess.connected { "status-pill connected" } else { "status-pill pending" }, if sess.connected { "{t.connected}" } else { "{t.connecting}" } }
+                    span {
+                        class: if sess.connected { "status-pill connected" } else { "status-pill pending" },
+                        if sess.connected {
+                            "{t.connected}"
+                        } else if sess.connection_error.is_some() {
+                            "{t.disconnected}"
+                        } else {
+                            "{t.connecting}"
+                        }
+                    }
                     span { "{sess.title}" }
                     if let Some(status) = external_edit_status.clone() {
                         span { class: "status-detail", "{status}" }
@@ -826,6 +920,9 @@ pub fn App() -> Element {
                                 edit_user.set(profile.params.user.clone());
                                 edit_group.set(profile.group.clone().unwrap_or_default());
                                 edit_password.set(String::new());
+                                edit_proxy_jump.set(profile.params.proxy_jump.clone().unwrap_or_default());
+                                edit_use_agent.set(profile.params.auth.contains(&kt_config::AuthMethod::Agent));
+                                edit_forward_agent.set(profile.params.forward_agent);
                                 show_dialog.set(true);
                             }
                             context_menu.set(None);
@@ -1072,6 +1169,9 @@ pub fn App() -> Element {
             user: edit_user,
             group: edit_group,
             password: edit_password,
+            proxy_jump: edit_proxy_jump,
+            use_agent: edit_use_agent,
+            forward_agent: edit_forward_agent,
             groups: saved_groups.clone(),
             language,
             on_save: move |profile: SessionProfile| {
@@ -1204,6 +1304,7 @@ fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Sessio
         title: profile.name.clone(),
         snapshot: None,
         connected: false,
+        connection_error: None,
         sftp_path: ".".to_string(),
         sftp_entries: Vec::new(),
         sftp_loading: false,
@@ -1211,7 +1312,51 @@ fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Sessio
         sftp_last_done: None,
         sftp_progress: None,
         monitor: None,
+        monitor_loading: false,
+        monitor_error: None,
     }
+}
+
+fn session_dot_class(sess: &SessionState) -> &'static str {
+    if sess.connected {
+        "status-dot online"
+    } else if sess.connection_error.is_some() {
+        "status-dot idle"
+    } else {
+        "status-dot connecting"
+    }
+}
+
+fn params_with_ssh_config(params: ConnectParams, use_ssh_config: bool) -> ConnectParams {
+    let Some(config_path) = home_ssh_config_file() else {
+        return params;
+    };
+    merge_ssh_config_from_path(params, use_ssh_config, &config_path)
+}
+
+fn merge_ssh_config_from_path(
+    mut params: ConnectParams,
+    use_ssh_config: bool,
+    config_path: &Path,
+) -> ConnectParams {
+    let original_vault_id = params.effective_vault_id();
+    if use_ssh_config {
+        let queried_host = params.host.clone();
+        if let Ok(Some(host_cfg)) = lookup_ssh_config(config_path, &queried_host) {
+            params.merge_ssh_config(&host_cfg);
+        }
+    }
+    if params.vault_id.is_none() {
+        params.vault_id = Some(original_vault_id);
+    }
+    params
+}
+
+fn home_ssh_config_file() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .map(|home| home.join(".ssh").join("config"))
 }
 
 fn clamp_dimension(value: f64, min: f64, max: f64) -> f64 {
@@ -1740,9 +1885,16 @@ fn SettingsPanel(
 }
 
 #[component]
-fn TerminalPlaceholder(connected: bool, title: String, language: AppLanguage) -> Element {
+fn TerminalPlaceholder(
+    connected: bool,
+    title: String,
+    error: Option<String>,
+    language: AppLanguage,
+) -> Element {
     let t = texts(language).app;
-    let state_line = if connected {
+    let state_line = if let Some(error) = error.as_deref() {
+        error
+    } else if connected {
         t.terminal_waiting
     } else {
         t.terminal_connecting
@@ -2437,6 +2589,7 @@ fn SftpNameDialog(
 mod tests {
     use super::*;
     use kt_config::{AuthMethod, ConnectParams, SessionProfile};
+    use std::io::Write;
 
     #[test]
     fn session_state_from_profile_initializes_ui_defaults() {
@@ -2449,6 +2602,8 @@ mod tests {
                 user: "root".to_string(),
                 auth: vec![AuthMethod::Password],
                 vault_id: None,
+                proxy_jump: None,
+                forward_agent: false,
             },
         };
 
@@ -2460,7 +2615,29 @@ mod tests {
         assert_eq!(state.sftp_path, ".");
         assert!(state.sftp_entries.is_empty());
         assert!(state.snapshot.is_none());
+        assert!(state.connection_error.is_none());
         assert!(state.monitor.is_none());
+        assert!(!state.monitor_loading);
+        assert!(state.monitor_error.is_none());
+    }
+
+    #[test]
+    fn session_dot_class_distinguishes_connecting_and_failed() {
+        let profile = SessionProfile {
+            name: "Web Server 01".to_string(),
+            group: None,
+            params: ConnectParams::new("10.0.1.10", "root"),
+        };
+        let mut state = session_state_from_profile(SessionId(7), &profile);
+
+        assert_eq!(session_dot_class(&state), "status-dot connecting");
+
+        state.connection_error = Some("连接失败".to_string());
+        assert_eq!(session_dot_class(&state), "status-dot idle");
+
+        state.connected = true;
+        state.connection_error = None;
+        assert_eq!(session_dot_class(&state), "status-dot online");
     }
 
     #[test]
@@ -2482,6 +2659,8 @@ mod tests {
                     user: "root".to_string(),
                     auth: vec![AuthMethod::Password],
                     vault_id: None,
+                    proxy_jump: None,
+                    forward_agent: false,
                 },
             },
             SessionProfile {
@@ -2493,6 +2672,8 @@ mod tests {
                     user: "root".to_string(),
                     auth: vec![AuthMethod::Password],
                     vault_id: None,
+                    proxy_jump: None,
+                    forward_agent: false,
                 },
             },
         ];
@@ -2505,6 +2686,32 @@ mod tests {
         assert_eq!(grouped[1].1.len(), 1);
         assert_eq!(grouped[2].0, "Web");
         assert_eq!(grouped[2].1.len(), 1);
+    }
+
+    #[test]
+    fn ui_connect_params_merge_ssh_config_proxy_jump() {
+        let dir = std::env::temp_dir().join(format!(
+            "kitonyterms-ui-ssh-config-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(
+            b"Host prod\n    HostName 10.0.0.8\n    User deploy\n    ProxyJump ops@bastion:2222\n",
+        )
+        .unwrap();
+
+        let params = merge_ssh_config_from_path(ConnectParams::new("prod", "root"), true, &path);
+
+        assert_eq!(params.host, "10.0.0.8");
+        assert_eq!(params.user, "root");
+        assert_eq!(params.proxy_jump.as_deref(), Some("ops@bastion:2222"));
+        assert_eq!(params.effective_vault_id(), "root@prod:22");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

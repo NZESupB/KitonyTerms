@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use crossterm::{
     cursor,
-    style::{Color as CtColor, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
+    style::{
+        Color as CtColor, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    },
     terminal::{self, ClearType},
     QueueableCommand,
 };
@@ -270,9 +272,7 @@ fn build_params(target: &str) -> anyhow::Result<ConnectParams> {
         None => (None, target.to_string()),
     };
     let (host, port) = match host_part.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => {
-            (h.to_string(), p.parse::<u16>().unwrap())
-        }
+        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.parse::<u16>().unwrap()),
         _ => (host_part, 22),
     };
 
@@ -286,6 +286,8 @@ fn build_params(target: &str) -> anyhow::Result<ConnectParams> {
         user,
         auth: Vec::new(),
         vault_id: None,
+        proxy_jump: None,
+        forward_agent: false,
     };
 
     // Merge ~/.ssh/config (best-effort).
@@ -362,7 +364,7 @@ impl AuthProviderFactory for PromptAuthFactory {
 
 struct PromptAuth;
 impl AuthProvider for PromptAuth {
-    fn password(&mut self, user: &str, host: &str) -> Option<String> {
+    fn password(&mut self, user: &str, host: &str, _port: u16) -> Option<String> {
         rpassword::prompt_password(format!("{user}@{host}'s password: ")).ok()
     }
 

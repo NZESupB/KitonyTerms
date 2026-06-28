@@ -15,7 +15,12 @@ impl PartialEq for SnapshotWrapper {
 }
 
 #[component]
-pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
+pub fn Terminal(
+    snapshot: SnapshotWrapper,
+    session_id: SessionId,
+    pane_id: String,
+    trigger_highlights: Vec<String>,
+) -> Element {
     let snapshot = &snapshot.0;
     let rows = snapshot.rows;
     let cols = snapshot.cols;
@@ -58,7 +63,7 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
 
     rsx! {
         div {
-            id: "terminal-{session_id.0}",
+            id: "terminal-{session_id.0}-{pane_id}",
             class: "terminal-surface",
             tabindex: "0",
             autofocus: true,
@@ -126,7 +131,11 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
             for row in 0..rows {
                 div {
                     key: "{row}",
-                    class: "terminal-row",
+                    class: if row_matches_trigger(snapshot, row, &trigger_highlights) {
+                        "terminal-row is-trigger-highlight"
+                    } else {
+                        "terminal-row"
+                    },
 
                     for col in 0..cols {
                         {
@@ -144,6 +153,28 @@ pub fn Terminal(snapshot: SnapshotWrapper, session_id: SessionId) -> Element {
             }
         }
     }
+}
+
+fn row_matches_trigger(snapshot: &GridSnapshot, row: usize, triggers: &[String]) -> bool {
+    if triggers.is_empty() {
+        return false;
+    }
+    let start = row * snapshot.cols;
+    let end = start + snapshot.cols;
+    let line = snapshot.cells[start..end]
+        .iter()
+        .map(|cell| cell.c)
+        .collect::<String>();
+    line_matches_trigger(&line, triggers)
+}
+
+fn line_matches_trigger(line: &str, triggers: &[String]) -> bool {
+    let line = line.to_ascii_lowercase();
+    triggers
+        .iter()
+        .map(|trigger| trigger.trim().to_ascii_lowercase())
+        .filter(|trigger| !trigger.is_empty())
+        .any(|trigger| line.contains(&trigger))
 }
 
 fn render_cell(cell: &SnapshotCell, idx: usize, is_cursor: bool) -> Element {
@@ -195,5 +226,17 @@ fn render_cell(cell: &SnapshotCell, idx: usize, is_cursor: bool) -> Element {
             class: if is_cursor { "terminal-cursor" } else { "" },
             dangerous_inner_html: "{char_to_display}"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_trigger_matching_is_case_insensitive_and_ignores_empty_rules() {
+        let triggers = vec![" error ".to_string(), String::new()];
+        assert!(line_matches_trigger("Build ERROR: failed", &triggers));
+        assert!(!line_matches_trigger("all good", &triggers));
     }
 }

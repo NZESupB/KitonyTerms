@@ -5,6 +5,7 @@
 //! the headless example, the core engine, and the GUI.
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,7 @@ pub enum AuthMethod {
     },
     /// Keyboard-interactive (server-driven prompts).
     KeyboardInteractive,
-    /// Use the system ssh-agent (later phase; declared now for forward-compat).
+    /// Use the system ssh-agent for public-key authentication.
     Agent,
 }
 
@@ -70,6 +71,12 @@ pub struct ConnectParams {
     /// Defaults to `user@host:port` when not set.
     #[serde(default)]
     pub vault_id: Option<String>,
+    /// Optional single-hop ProxyJump target, formatted as `[user@]host[:port]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_jump: Option<String>,
+    /// Request OpenSSH agent forwarding for the interactive shell.
+    #[serde(default)]
+    pub forward_agent: bool,
 }
 
 fn default_port() -> u16 {
@@ -85,6 +92,8 @@ impl ConnectParams {
             user: user.into(),
             auth: vec![AuthMethod::Password],
             vault_id: None,
+            proxy_jump: None,
+            forward_agent: false,
         }
     }
 
@@ -124,7 +133,126 @@ impl ConnectParams {
                 self.auth.insert(0, method);
             }
         }
+        if self.proxy_jump.is_none() {
+            self.proxy_jump = cfg
+                .proxy_jump
+                .as_deref()
+                .map(str::trim)
+                .filter(|proxy_jump| !proxy_jump.eq_ignore_ascii_case("none"))
+                .filter(|proxy_jump| !proxy_jump.is_empty())
+                .map(str::to_string);
+        }
     }
+}
+
+/// Result of checking a host key against the local trust store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KnownHostCheck {
+    /// Host key matches the stored fingerprint.
+    Trusted,
+    /// Host was unknown and has just been persisted with this fingerprint.
+    NewlyTrusted,
+    /// Host key changed and must be rejected.
+    Changed { expected: String, actual: String },
+}
+
+/// One persisted known-host entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownHostEntry {
+    pub host: String,
+    pub port: u16,
+    pub fingerprint: String,
+    #[serde(default)]
+    pub first_seen_unix: u64,
+    #[serde(default)]
+    pub last_seen_unix: u64,
+}
+
+/// Minimal known_hosts-style trust store.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownHosts {
+    #[serde(default)]
+    pub hosts: Vec<KnownHostEntry>,
+}
+
+impl KnownHosts {
+    pub fn load_from(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        match std::fs::read_to_string(path) {
+            Ok(s) => toml::from_str(&s).map_err(|e| ConfigError::Parse(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(ConfigError::Io(e)),
+        }
+    }
+
+    pub fn save_to(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let toml =
+            toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))?;
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, toml.as_bytes())?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub fn check_or_trust(
+        &mut self,
+        host: impl AsRef<str>,
+        port: u16,
+        fingerprint: impl Into<String>,
+    ) -> KnownHostCheck {
+        let host = normalize_known_host(host.as_ref());
+        let fingerprint = fingerprint.into();
+        let now = unix_now();
+
+        if let Some(entry) = self
+            .hosts
+            .iter_mut()
+            .find(|entry| entry.host == host && entry.port == port)
+        {
+            if entry.fingerprint == fingerprint {
+                entry.last_seen_unix = now;
+                KnownHostCheck::Trusted
+            } else {
+                KnownHostCheck::Changed {
+                    expected: entry.fingerprint.clone(),
+                    actual: fingerprint,
+                }
+            }
+        } else {
+            self.hosts.push(KnownHostEntry {
+                host,
+                port,
+                fingerprint,
+                first_seen_unix: now,
+                last_seen_unix: now,
+            });
+            self.hosts.sort_by(|a, b| {
+                a.host
+                    .cmp(&b.host)
+                    .then_with(|| a.port.cmp(&b.port))
+                    .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+            });
+            KnownHostCheck::NewlyTrusted
+        }
+    }
+}
+
+fn normalize_known_host(host: &str) -> String {
+    host.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 /// A saved, named connection the user can reconnect to.
@@ -196,6 +324,9 @@ pub struct AppSettings {
     pub cursor_style: CursorStyle,
     /// Whether to read `~/.ssh/config` when connecting.
     pub use_ssh_config: bool,
+    /// Case-insensitive row-level terminal highlight triggers.
+    #[serde(default)]
+    pub trigger_highlights: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -208,8 +339,16 @@ impl Default for AppSettings {
             scrollback_lines: 10_000,
             cursor_style: CursorStyle::Block,
             use_ssh_config: true,
+            trigger_highlights: default_trigger_highlights(),
         }
     }
+}
+
+fn default_trigger_highlights() -> Vec<String> {
+    ["error", "failed", "warning", "panic"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -444,6 +583,8 @@ mod tests {
                     key_path: PathBuf::from("/home/me/.ssh/id_ed25519"),
                 }],
                 vault_id: None,
+                proxy_jump: None,
+                forward_agent: false,
             },
         });
         let toml = toml::to_string_pretty(&cfg).unwrap();
@@ -557,6 +698,8 @@ use_ssh_config = true
             user: String::new(),
             auth: vec![AuthMethod::Password],
             vault_id: None,
+            proxy_jump: None,
+            forward_agent: false,
         };
         let cfg = SshConfigHost {
             alias: "myserver".into(),
@@ -564,12 +707,13 @@ use_ssh_config = true
             port: Some(2200),
             user: Some("root".into()),
             identity_files: vec![PathBuf::from("/home/me/.ssh/id_rsa")],
-            proxy_jump: None,
+            proxy_jump: Some("bastion".into()),
         };
         p.merge_ssh_config(&cfg);
         assert_eq!(p.host, "192.168.1.10");
         assert_eq!(p.port, 2200);
         assert_eq!(p.user, "root");
+        assert_eq!(p.proxy_jump.as_deref(), Some("bastion"));
         // key auth inserted ahead of password
         assert_eq!(
             p.auth[0],
@@ -577,5 +721,55 @@ use_ssh_config = true
                 key_path: PathBuf::from("/home/me/.ssh/id_rsa")
             }
         );
+    }
+
+    #[test]
+    fn merge_ssh_config_ignores_proxy_jump_none() {
+        let mut p = ConnectParams::new("myserver", "root");
+        let cfg = SshConfigHost {
+            alias: "myserver".into(),
+            proxy_jump: Some("none".into()),
+            ..SshConfigHost::default()
+        };
+
+        p.merge_ssh_config(&cfg);
+
+        assert_eq!(p.proxy_jump, None);
+    }
+
+    #[test]
+    fn known_hosts_trusts_first_seen_and_rejects_changed_key() {
+        let mut known_hosts = KnownHosts::default();
+
+        assert_eq!(
+            known_hosts.check_or_trust("Example.COM", 22, "SHA256:first"),
+            KnownHostCheck::NewlyTrusted
+        );
+        assert_eq!(
+            known_hosts.check_or_trust("example.com", 22, "SHA256:first"),
+            KnownHostCheck::Trusted
+        );
+        assert_eq!(
+            known_hosts.check_or_trust("example.com", 22, "SHA256:second"),
+            KnownHostCheck::Changed {
+                expected: "SHA256:first".to_string(),
+                actual: "SHA256:second".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn known_hosts_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts.toml");
+        let mut known_hosts = KnownHosts::default();
+        known_hosts.check_or_trust("[host.local]", 2200, "SHA256:key");
+        known_hosts.save_to(&path).unwrap();
+
+        let loaded = KnownHosts::load_from(&path).unwrap();
+        assert_eq!(loaded.hosts.len(), 1);
+        assert_eq!(loaded.hosts[0].host, "host.local");
+        assert_eq!(loaded.hosts[0].port, 2200);
+        assert_eq!(loaded.hosts[0].fingerprint, "SHA256:key");
     }
 }

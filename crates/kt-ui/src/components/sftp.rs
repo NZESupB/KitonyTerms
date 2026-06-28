@@ -464,6 +464,7 @@ mod tests {
             title: "demo".to_string(),
             snapshot: None,
             connected: true,
+            connection_error: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: true,
@@ -471,6 +472,8 @@ mod tests {
             sftp_last_done: None,
             sftp_progress: None,
             monitor: None,
+            monitor_loading: false,
+            monitor_error: None,
         };
 
         assert!(should_skip_duplicate_request(&sess, "/root"));

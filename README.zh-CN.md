@@ -23,19 +23,21 @@
 ### 当前功能
 
 - **SSH 终端**：通过密码 / 公钥 / 交互式键盘认证连接
-- **多会话**：标签页界面，每个会话独立 scrollback 和 resize
+- **多会话与分屏**：标签页界面，每个会话独立 scrollback 和 resize，终端区支持水平/垂直双视图
 - **终端特性**：真彩色、加粗/斜体/下划线/删除线、块状/竖线/下划线光标
 - **会话持久化**：保存连接到 `config.toml`；密码加密存入主密码保险库
 - **主密码**：首次运行设置，后续启动时提示（可跳过）
 - **SFTP 面板**：浏览远程文件系统、上传/下载文件、创建目录、删除/重命名
 - **系统监控**：实时 CPU、内存、网络和磁盘使用情况（本地系统）
-- **SSH 配置集成**：读取 `~/.ssh/config` 获取主机别名和默认设置
+- **SSH 配置集成**：读取 `~/.ssh/config` 获取主机别名、默认设置和单跳 `ProxyJump`
+- **主机密钥信任库**：持久化 `known_hosts.toml`，未知主机首次信任，指纹变化时拒绝连接
+- **ssh-agent**：支持本机 ssh-agent/Pageant 公钥认证，并可在 shell 会话中请求 agent forwarding
+- **触发器高亮**：终端行文本按内置触发器规则进行高亮
 
 ### 尚未实现
 
-- 真正的 `known_hosts` 信任库（当前首用即信任）
 - 握手过程中的认证提示（密码在连接对话框中预先收集）
-- SSH agent 转发、ProxyJump、分屏、触发器/语法高亮
+- 多跳 ProxyJump 链、可编辑触发器规则、完整语法高亮
 
 ## 架构
 
@@ -60,6 +62,7 @@ kt-app (Dioxus desktop 二进制)
 
 - **会话**（`SessionProfile`：host/port/user/auth/…）为**非机密**，明文存储在 `config.toml` 中。
 - **机密**（密码、私钥口令）按 vault id（`user@host:port`）索引并加密存入保险库，永不明文落盘。
+- **主机密钥**（host/port/fingerprint）存储在 `known_hosts.toml`，用于检测远端主机密钥变化。
 - 启动时保险库处于**锁定**状态，直到在解锁对话框输入主密码；跳过解锁仍可连接，但禁用已保存密码的读写。
 
 ## 技术栈
@@ -99,6 +102,9 @@ cargo test
 
 # 启动 GUI
 cargo run -p kt-app
+# 或显式指定 GUI 入口 / 查看当前入口用法
+cargo run -p kt-app -- --gui
+cargo run -p kt-app -- --help
 #   首次运行：设置主密码（可跳过）
 #   点击 ➕ 新建 → 输入 host / user / 认证 → 连接
 #   勾选"保存会话"以持久化；密码加密存入保险库
@@ -116,7 +122,7 @@ cargo run -p kt-core --example headless -- user@host
 - [x] **阶段一** —— 核心引擎（SSH + 终端 + 会话），端到端验证
 - [x] **阶段二** —— Dioxus desktop UI：终端渲染、输入、连接对话框、多标签
 - [x] **阶段三** —— 会话持久化（TOML + 保险库）、主密码、SFTP 面板、系统监控
-- [ ] **阶段四** —— `known_hosts` 信任库、分屏、ssh-agent 转发、ProxyJump、触发器/高亮
+- [x] **阶段四** —— `known_hosts` 信任库、分屏、ssh-agent 转发、ProxyJump、触发器/高亮
 
 ## 许可证
 

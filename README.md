@@ -23,19 +23,21 @@ A lightweight, cross-platform SSH terminal client built in **Rust** with [Dioxus
 ### What works today
 
 - **SSH Terminal**: Connect via password / public-key / keyboard-interactive auth
-- **Multiple Sessions**: Tabbed interface with per-session scrollback and resize
+- **Multiple Sessions & Split Panes**: Tabbed interface with per-session scrollback and resize, plus horizontal/vertical terminal split views
 - **Terminal Features**: True color, bold/italic/underline/strikethrough, block/bar/underline cursor
 - **Session Persistence**: Save connections to `config.toml`; passwords encrypted in master-password vault
 - **Master Password**: Set on first run, prompted on later launches (skippable)
 - **SFTP Panel**: Browse remote filesystem, upload/download files, create directories, delete/rename
 - **System Monitoring**: Real-time CPU, memory, network, and disk usage (local system)
-- **SSH Config Integration**: Reads `~/.ssh/config` for host aliases and default settings
+- **SSH Config Integration**: Reads `~/.ssh/config` for host aliases, defaults, and single-hop `ProxyJump`
+- **Host-Key Trust Store**: Persists `known_hosts.toml`, trusts unknown hosts on first use, and rejects changed fingerprints
+- **ssh-agent**: Supports local ssh-agent/Pageant public-key auth and can request agent forwarding for shell sessions
+- **Trigger Highlighting**: Highlights terminal rows matching built-in trigger rules
 
 ### Not yet implemented
 
-- Real `known_hosts` trust store (currently trust-on-first-use)
 - Mid-handshake auth prompts (password collected upfront in connect dialog)
-- SSH agent forwarding, ProxyJump, split panes, triggers/syntax highlighting
+- Multi-hop ProxyJump chains, editable trigger rules, full syntax highlighting
 
 ## Architecture
 
@@ -60,6 +62,7 @@ The terminal **engine** (VT parsing, grid, scrollback) is fully decoupled from *
 
 - **Sessions** (`SessionProfile`: host/port/user/auth/…) are **non-secret** and stored plaintext in `config.toml`.
 - **Secrets** (passwords, key passphrases) are indexed by vault id (`user@host:port`) and encrypted in the vault, never plaintext on disk.
+- **Host keys** (host/port/fingerprint) are stored in `known_hosts.toml` to detect changed remote host keys.
 - On startup the vault is **locked** until the master password is entered in the unlock dialog; skipping unlock allows connections but disables saved-password reading/writing.
 
 ## Tech stack
@@ -99,6 +102,9 @@ cargo test
 
 # Launch the GUI
 cargo run -p kt-app
+# Or explicitly select the GUI entry / print current entry usage
+cargo run -p kt-app -- --gui
+cargo run -p kt-app -- --help
 #   First run: set a master password (skippable)
 #   Click ➕ New → enter host / user / auth → Connect
 #   Tick "Save session" to persist it; password encrypted in vault
@@ -116,7 +122,7 @@ cargo run -p kt-core --example headless -- user@host
 - [x] **Phase 1** — Core engine (SSH + terminal + sessions), verified end-to-end
 - [x] **Phase 2** — Dioxus desktop UI: terminal rendering, input, connect dialog, multi-tab
 - [x] **Phase 3** — Session persistence (TOML + vault), master password, SFTP panel, system monitor
-- [ ] **Phase 4** — `known_hosts` trust store, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting
+- [x] **Phase 4** — `known_hosts` trust store, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting
 
 ## License
 

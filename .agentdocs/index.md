@@ -21,7 +21,7 @@
 
 ## 当前任务文档
 
-- [`workflow/260625-stable-connection-baseline.md`](workflow/260625-stable-connection-baseline.md) — 稳定连接基线排查与 CLI/GUI 降级路径，修改应用启动、连接、SFTP 或监控失败处理时必读。
+- [`workflow/260627-architecture-evolution.md`](workflow/260627-architecture-evolution.md) — 架构演进框架与分阶段计划，修改入口、core capability、UI 状态、安全策略或渲染背压时必读。
 
 ## 已完成任务摘要
 
@@ -40,12 +40,18 @@
 - **SFTP 文件管理器增强(2026-06-27)**: 左侧 SFTP 改为可横向/纵向滚动的表格，显示名称、修改时间、大小、权限、用户/用户组；连接成功后自动加载目录，SFTP 变更操作完成后自动刷新；条目与空白区域右键菜单按上下文提供打开目录、刷新、复制路径/名称、新建目录、重命名、删除等入口，暂未接平台文件选择器的上传/下载/外部编辑器项保持禁用。
 - **SFTP 编辑器回传与菜单布局(2026-06-27)**: 左侧分组区与 SFTP 区默认对半分；右键菜单渲染后按窗口空间自动向上/向左修正，并限制最大高度；SFTP 完成事件携带操作路径，外部编辑器流程支持下载到临时文件、系统默认编辑器打开、待回传条中选择回传/放弃/重新打开，上传完成后自动移除待回传项。
 - **SFTP 外部编辑保存检测(2026-06-27)**: macOS 默认编辑器打开改为下载完成后调用 `/usr/bin/open` 传入绝对路径；移除常驻外部编辑回传条；本地文件保存后弹窗选择仅本次回传、本次打开期间自动同步或不回传，回传状态与百分比显示在底部状态栏；SFTP 右键菜单清理无闭环占位项，并修复文件间连续右键菜单无法切换的问题。
+- **入口能力对齐(2026-06-27)**: `kt-app` 当前明确收敛为 GUI-only 入口：无参数或 `--gui` 启动 Dioxus GUI，`--help` 输出当前用法；`--safe`、`--system-ssh`、`--show-log`、`--list` 等旧稳定终端/降级入口不再作为当前能力记录。历史稳定连接任务已移动到 `workflow/done/260625-stable-connection-baseline.md`。
+- **README 阶段四(2026-06-27)**: 实现持久 `known_hosts.toml` 信任库、单跳 ProxyJump、ssh-agent 公钥认证、shell agent forwarding 请求、同会话水平/垂直双视图分屏与内置触发器行高亮。
+- **阶段四 SSH 回归修复(2026-06-27)**: 修复 agent 不可用或公钥文件不可用时阻断密码 fallback 的问题；`AuthProvider::password` 改为携带端口并优先按实际 `user@host:port` 取 vault secret；GUI 发起连接前重新合并 `~/.ssh/config`，并忽略 `ProxyJump none`。
+- **SSH 建连卡住修复(2026-06-27)**: 初始 SSH 打开流程增加完整 `connect→auth→request_pty→request_shell` 总超时；`Closed(error)` 写入 UI state 后,终端占位、状态栏与会话状态点必须显示失败/断开,避免继续伪装成连接中。
 
 ## 全局重要记忆
 
 - **UI 与 core 完全经 channel 通信**:所有阻塞/异步 SSH/SFTP I/O 都在 `kt-core` 的 tokio 运行时;UI 只发 `ToCore`、收 `FromCore`,并按 `GridSnapshot` 重绘。
 - **SFTP 复用 SSH 会话**:经 `SshShell::open_sftp` 在同一 russh 会话上开 `sftp` 子系统。
 - **SFTP 请求必须闭环**:UI 发起 SFTP 请求后必须在成功、失败或超时中收敛;core 需要对投递失败、打开失败、读取超时返回 `SftpError`,并保留独立 SSH fallback。
+- **辅助能力请求必须闭环**:SFTP、Monitor 等辅助能力都必须在成功、失败、超时或会话关闭时收敛;core 要返回对应 `*Error` 事件,UI state 保存 `loading/error/data`,组件只展示状态。
+- **Monitor 生命周期语义**:正常通道关闭不等同错误,应返回 `MonitorStopped` 收敛 UI 等待态;启动失败、投递失败、采样超时或解析失败才返回 `MonitorError`。监控子任务退出必须通知 session 重置启动状态,允许后续重新启动。
 - **SFTP UI 生命周期约束**:Dioxus `use_effect` 会订阅 effect 内读取的 Signal;SFTP 自动加载不得读取会被同步循环写入的 `current_path`,全局状态同步到本地 Signal 前必须先比较差异。
 - **SFTP 自动加载**:连接成功后由 `AppState` 触发初始 `SftpRequest::List`，不要只依赖组件挂载 effect；`Upload/Mkdir/Remove/Rename` 完成后应刷新当前目录。
 - **SFTP 外部编辑器流程**:外部编辑应走 `Download -> 本地临时文件 -> 系统默认编辑器 -> 监听本地保存 -> 用户选择回传策略 -> Upload`；不得在未收到 `SftpDone{op,path}` 前打开本地文件；不得使用常驻回传条，保存询问用弹窗，回传进度与结果放在底部状态栏。
@@ -56,5 +62,10 @@
 - **外部应用图标统一资产目录**:应用窗口与平台外壳图标统一放在 `crates/kt-app/assets/`;运行时读取 `app-icon.png`,macOS 复制 `macos/KitonyTerms.icns`,Windows 使用 `windows/kitonyterms.ico`,Linux 使用 `linux/hicolor/` 与 `linux/kitonyterms.desktop`。release/debug 都必须直接引用这些入仓资产,不得在 CI 中重新绘制或临时生成品牌图形；外部图标视觉必须从 `kt-ui` 的 `AppLogo` 派生，避免应用内外品牌标识不一致。
 - **Windows 安装包语言文件**:GitHub Actions 的 Chocolatey Inno Setup 环境不保证预装 `Languages\ChineseSimplified.isl`;release workflow 必须自行准备简体中文 `.isl`,并通过 `compiler:Default.isl,<repo-file>.isl` 兜底,避免 Windows 打包因缺少本机语言文件失败。
 - **默认日志不落盘**:`kt-app` 只配置 `tracing_subscriber::fmt()` 输出到启动终端,没有文件 appender;监控/渲染/输入等高频日志应保持 `debug` 级别。
+- **当前应用入口**:`kt-app` 只提供 Dioxus GUI 入口;无参数或 `--gui` 启动 GUI,`--help` 输出用法;`--safe`、`--system-ssh`、`--show-log`、`--list` 当前不作为产品入口能力。
 - **应用语言配置**:`AppSettings.language` 持久化 UI 语言，默认按系统环境推断；新增可见 UI 文案时必须接入 `crates/kt-ui/src/i18n/`，按语言文件维护，避免在组件内硬编码多语言文本。
-- **主机密钥目前 TOFU**:`AcceptAllVerifier` 信任所有主机密钥。
+- **主机密钥信任库**:GUI 默认使用 `known_hosts.toml` 持久信任库;未知主机首次信任并写入,指纹变化拒绝连接。`AcceptAllVerifier` 只用于测试或显式 opt-in。
+- **ProxyJump 支持边界**:当前支持单跳 `[user@]host[:port]`;跳板连接必须保活到目标连接结束。多跳链还未实现。
+- **SSH 认证 fallback**:ssh-agent 不可用、公钥文件不可用或 key 认证失败不能阻断后续密码认证；涉及 ProxyJump 或非 22 端口时,密码读取必须按实际 `user@host:port` 命名空间优先。
+- **SSH 建连必须闭环**:初始 `SshShell::open` 必须由 session 层设置总超时;任何连接、认证、打开 PTY/shell 的失败或超时都要返回 `Closed(error)` 并落到 UI 错误状态,不得让界面无限停留在“正在建立 SSH 连接”。
+- **终端分屏边界**:当前分屏是同一 session 的本地双视图,不是多个独立远端 pane;后续如引入独立 pane,必须扩展 UI 状态而不是复用同一个 DOM id。

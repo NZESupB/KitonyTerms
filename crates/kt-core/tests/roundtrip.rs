@@ -97,7 +97,7 @@ impl server::Handler for EchoHandler {
 /// Auth provider that always supplies the password "test".
 struct FixedPassword;
 impl AuthProvider for FixedPassword {
-    fn password(&mut self, _user: &str, _host: &str) -> Option<String> {
+    fn password(&mut self, _user: &str, _host: &str, _port: u16) -> Option<String> {
         Some("test".to_string())
     }
     fn key_passphrase(&mut self, _key_path: &str) -> Option<String> {
@@ -167,6 +167,8 @@ fn full_roundtrip_through_term_engine() {
         user: "tester".into(),
         auth: vec![AuthMethod::Password],
         vault_id: None,
+        proxy_jump: None,
+        forward_agent: false,
     };
     mgr.send(ToCore::Connect {
         id,
@@ -217,7 +219,10 @@ fn full_roundtrip_through_term_engine() {
             None => break,
         }
     }
-    assert!(saw_echo, "server echo 'HI' never appeared in the rendered grid");
+    assert!(
+        saw_echo,
+        "server echo 'HI' never appeared in the rendered grid"
+    );
 
     // 3) Clean disconnect.
     mgr.send(ToCore::Disconnect { id });

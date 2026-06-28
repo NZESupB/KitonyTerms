@@ -15,6 +15,9 @@ pub fn ConnectionDialog(
     user: Signal<String>,
     group: Signal<String>,
     password: Signal<String>,
+    proxy_jump: Signal<String>,
+    use_agent: Signal<bool>,
+    forward_agent: Signal<bool>,
     groups: Vec<String>,
     language: AppLanguage,
     on_save: EventHandler<SessionProfile>,
@@ -163,6 +166,52 @@ pub fn ConnectionDialog(
                             placeholder: "{t.password_placeholder}"
                         }
                     }
+
+                    div {
+                        label {
+                            style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
+                            "{t.proxy_jump}"
+                        }
+                        input {
+                            style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
+                            r#type: "text",
+                            value: "{proxy_jump()}",
+                            oninput: move |evt| {
+                                proxy_jump.set(evt.value().clone());
+                            },
+                            placeholder: "{t.proxy_jump_placeholder}"
+                        }
+                    }
+
+                    fieldset {
+                        style: "border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; margin: 0;",
+                        legend {
+                            style: "padding: 0 4px; font-size: 13px; color: #4b5563;",
+                            "{t.auth_options}"
+                        }
+                        label {
+                            style: "display: flex; align-items: center; gap: 8px; color: #374151; font-size: 14px; margin-bottom: 8px;",
+                            input {
+                                r#type: "checkbox",
+                                checked: use_agent(),
+                                onchange: move |evt| {
+                                    use_agent.set(evt.checked());
+                                }
+                            }
+                            "{t.use_agent}"
+                        }
+                        label {
+                            style: "display: flex; align-items: center; gap: 8px; color: #374151; font-size: 14px;",
+                            input {
+                                r#type: "checkbox",
+                                checked: forward_agent(),
+                                onchange: move |evt| {
+                                    forward_agent.set(evt.checked());
+                                }
+                            }
+                            "{t.forward_agent}"
+                        }
+                    }
                 }
 
                 // 按钮组
@@ -186,6 +235,9 @@ pub fn ConnectionDialog(
                             let port_str = port();
                             let user_val = user();
                             let group_val = group();
+                            let proxy_jump_val = proxy_jump();
+                            let use_agent_val = use_agent();
+                            let forward_agent_val = forward_agent();
 
                             if name_val.is_empty() || host_val.is_empty() || user_val.is_empty() {
                                 tracing::warn!("{}", t.required_warning);
@@ -193,6 +245,11 @@ pub fn ConnectionDialog(
                             }
 
                             let port_val: u16 = port_str.parse().unwrap_or(22);
+                            let mut auth = Vec::new();
+                            if use_agent_val {
+                                auth.push(AuthMethod::Agent);
+                            }
+                            auth.push(AuthMethod::Password);
 
                             // 创建 SessionProfile
                             let profile = SessionProfile {
@@ -209,8 +266,17 @@ pub fn ConnectionDialog(
                                     host: host_val.clone(),
                                     port: port_val,
                                     user: user_val.clone(),
-                                    auth: vec![AuthMethod::Password],
+                                    auth,
                                     vault_id: None,
+                                    proxy_jump: {
+                                        let trimmed = proxy_jump_val.trim();
+                                        if trimmed.is_empty() {
+                                            None
+                                        } else {
+                                            Some(trimmed.to_string())
+                                        }
+                                    },
+                                    forward_agent: forward_agent_val,
                                 },
                             };
 

@@ -5,7 +5,7 @@
 //! rates are computed from deltas between polls. Linux-only (`/proc`); missing
 //! fields degrade gracefully. Runs in its own task so it never blocks the shell.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -13,6 +13,18 @@ use crate::session::{FromCore, SessionId};
 
 /// 轮询间隔。Poll interval.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+const SAMPLE_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// 监控子任务退出原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MonitorExit {
+    /// 远端正常关闭或结束,不应展示为错误。
+    Stopped,
+    /// 子任务已发送用户可见错误事件。
+    ErrorReported,
+    /// core 输出通道已关闭,无需继续通知 UI。
+    ReceiverDropped,
+}
 
 /// 命令包:各段以哨兵分隔,便于切分解析。
 /// Command bundle; sections delimited by sentinels for easy splitting.
@@ -84,44 +96,67 @@ struct NetSample {
 
 /// 监控子任务主循环。通道关闭(会话结束)即退出。
 /// Monitor loop; exits when the channel closes (session ended).
-pub async fn monitor_task(
+pub(crate) async fn monitor_task(
     id: SessionId,
     mut channel: russh::Channel<russh::client::Msg>,
     out: mpsc::UnboundedSender<FromCore>,
-) {
+) -> MonitorExit {
     let mut prev_cpu: Option<CpuSample> = None;
     let mut prev_net: Option<NetSample> = None;
     let mut prev_at: Option<Instant> = None;
     let mut buf = String::new();
 
-    loop {
+    let exit = loop {
         let sample_started = Instant::now();
         // 写入命令包。Write the command bundle.
         if channel.data(CMD.as_bytes()).await.is_err() {
-            break;
+            let _ = out.send(FromCore::MonitorError {
+                id,
+                message: "资源监控命令发送失败".to_string(),
+            });
+            break MonitorExit::ErrorReported;
         }
 
         // 读取到 END 哨兵为止。Read until the END sentinel.
         buf.clear();
         let mut closed = false;
+        let mut failure_message = None;
+        let sample_timeout = tokio::time::sleep(SAMPLE_TIMEOUT);
+        tokio::pin!(sample_timeout);
         loop {
-            match channel.wait().await {
-                Some(russh::ChannelMsg::Data { data }) => {
-                    buf.push_str(&String::from_utf8_lossy(&data));
-                    if buf.contains(END) {
-                        break;
-                    }
-                }
-                Some(russh::ChannelMsg::ExtendedData { .. }) => {}
-                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
+            tokio::select! {
+                _ = &mut sample_timeout => {
+                    failure_message = Some(format!(
+                        "资源监控采样超时({} 秒)",
+                        SAMPLE_TIMEOUT.as_secs()
+                    ));
                     closed = true;
                     break;
                 }
-                _ => {}
+                msg = channel.wait() => {
+                    match msg {
+                        Some(russh::ChannelMsg::Data { data }) => {
+                            buf.push_str(&String::from_utf8_lossy(&data));
+                            if buf.contains(END) {
+                                break;
+                            }
+                        }
+                        Some(russh::ChannelMsg::ExtendedData { .. }) => {}
+                        Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
+                            closed = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         if closed {
-            break;
+            if let Some(message) = failure_message {
+                let _ = out.send(FromCore::MonitorError { id, message });
+                break MonitorExit::ErrorReported;
+            }
+            break MonitorExit::Stopped;
         }
 
         let now = Instant::now();
@@ -139,16 +174,23 @@ pub async fn monitor_task(
                 })
                 .is_err()
             {
-                break;
+                break MonitorExit::ReceiverDropped;
             }
+        } else {
+            let _ = out.send(FromCore::MonitorError {
+                id,
+                message: "资源监控采样解析失败".to_string(),
+            });
+            break MonitorExit::ErrorReported;
         }
 
         tokio::time::sleep(POLL).await;
-    }
+    };
 
     // 关闭 sh:写 EOF 让远端进程退出。
     // Close sh by sending EOF so the remote process exits.
     let _ = channel.eof().await;
+    exit
 }
 
 /// 解析一次输出块。`prev_*` 在内部更新以便下次算增量。

@@ -1,6 +1,8 @@
 //! Store 桥接层（复用 egui 版本的持久化逻辑）
 
-use kt_config::{normalize_group_name, AppSettings, Config, Paths, SessionProfile};
+use kt_config::{
+    normalize_group_name, AppSettings, Config, KnownHostCheck, KnownHosts, Paths, SessionProfile,
+};
 use kt_secrets::Vault;
 use std::sync::Mutex;
 
@@ -70,6 +72,25 @@ impl Store {
             vault.save().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// 校验或首次信任主机密钥指纹。
+    pub fn check_or_trust_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> anyhow::Result<KnownHostCheck> {
+        let path = self.paths.known_hosts_file();
+        let mut known_hosts =
+            KnownHosts::load_from(&path).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let decision = known_hosts.check_or_trust(host, port, fingerprint);
+        if matches!(decision, KnownHostCheck::NewlyTrusted) {
+            known_hosts
+                .save_to(path)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
+        Ok(decision)
     }
 
     /// 删除指定名称的会话

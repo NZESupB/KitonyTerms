@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
 use kt_core::monitor::MonitorStats;
-use kt_core::{SessionId, ToCore};
+use kt_core::SessionId;
 
 use crate::components::icons::Icon;
 use crate::i18n::texts;
@@ -11,18 +11,11 @@ use crate::i18n::texts;
 #[component]
 pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
     let state = crate::components::app::get_state().clone();
-    let state_for_start = state.clone();
     let t = texts(language).monitor;
 
     let mut stats = use_signal(|| None::<MonitorStats>);
-
-    use_effect(move || {
-        if let Ok(app_state) = state_for_start.lock() {
-            app_state
-                .manager
-                .send(ToCore::StartMonitor { id: session_id });
-        }
-    });
+    let mut loading = use_signal(|| true);
+    let mut error_message = use_signal(|| None::<String>);
 
     use_effect(move || {
         let state = state.clone();
@@ -32,11 +25,19 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                 if let Ok(app_state) = state.lock() {
                     if let Some(sess) = app_state.sessions.get(&session_id) {
                         stats.set(sess.monitor.clone());
+                        loading.set(sess.monitor_loading);
+                        error_message.set(sess.monitor_error.clone());
                     }
                 }
             }
         });
     });
+
+    let waiting_grid_class = if loading() {
+        "monitor-grid is-loading"
+    } else {
+        "monitor-grid"
+    };
 
     rsx! {
         div {
@@ -49,7 +50,13 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                 button { class: "icon-button slim", title: "{t.close}", Icon { name: "close" } }
             }
 
-            if let Some(ref s) = stats() {
+            if let Some(error) = error_message() {
+                div {
+                    class: "monitor-state-message error",
+                    Icon { name: "monitor" }
+                    "{t.error_prefix}: {error}"
+                }
+            } else if let Some(ref s) = stats() {
                 div {
                     class: "monitor-grid",
 
@@ -92,7 +99,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                 }
             } else {
                 div {
-                    class: "monitor-grid",
+                    class: "{waiting_grid_class}",
                     MetricCard {
                         icon: "cpu",
                         tone: "blue",
