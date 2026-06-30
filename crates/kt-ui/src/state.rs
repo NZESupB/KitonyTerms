@@ -33,6 +33,8 @@ pub struct SessionState {
     pub connection_error: Option<String>,
     /// 当前等待用户输入的认证挑战。
     pub auth_challenge: Option<AuthChallenge>,
+    /// 远端 shell 通过 OSC 7 上报的当前工作目录。
+    pub terminal_cwd: Option<String>,
 
     // SFTP 状态
     pub sftp_path: String,
@@ -131,6 +133,11 @@ impl AppState {
             }
             FromCore::Title { id, title } => {
                 tracing::debug!("忽略远端终端标题更新，会话 {:?}: {:?}", id, title);
+            }
+            FromCore::TerminalCwd { id, path } => {
+                if let Some(sess) = self.sessions.get_mut(&id) {
+                    sess.terminal_cwd = Some(path);
+                }
             }
             FromCore::Bell { .. } => {}
             FromCore::Closed { id, error } => {
@@ -313,6 +320,7 @@ mod tests {
             connected,
             connection_error: None,
             auth_challenge: None,
+            terminal_cwd: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: false,
@@ -455,6 +463,22 @@ mod tests {
 
         let sess = app_state.sessions.get(&id).unwrap();
         assert_eq!(sess.title, "demo");
+    }
+
+    #[test]
+    fn terminal_cwd_event_updates_session_cwd() {
+        let mut app_state = app_state();
+        let sess = session_state(true);
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::TerminalCwd {
+            id,
+            path: "/srv/app".to_string(),
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert_eq!(sess.terminal_cwd.as_deref(), Some("/srv/app"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ kt-app (Dioxus Desktop 入口) ──▶ kt-ui ──▶ kt-core ──▶ kt-co
 kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
-- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`KnownHosts`、`SessionProfile`、`AppSettings`、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
+- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`SshProxy`(None/System/Socks/Http)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`KnownHosts`、`SessionProfile`、`AppSettings`(语言/主题/默认文本编辑器/扩展名打开方式/默认 SSH 代理/终端时间戳与行号开关)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
 - **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。UI Store 不暴露主密码流程，而是使用应用托管固定保护因子自动打开/创建本机 vault。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
@@ -46,6 +46,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - 认证:按 `params.auth` 顺序尝试 password / publickey / keyboard-interactive / agent。ssh-agent 不可用、公钥文件不可用或 key 认证失败时应继续后续认证方式,避免 `~/.ssh/config` 中的默认 `IdentityFile` 或 agent 环境破坏密码 fallback。`AuthProvider::password` 必须按实际 `user@host:port` 请求密码,以支持 ProxyJump 和非 22 端口。GUI 认证缺口统一走 `AuthChallenge`/`AuthResponse`:password 返回单个隐藏输入,加密私钥返回私钥口令输入,keyboard-interactive 按服务端 prompts 逐项采集。
 - 主机密钥:GUI 使用持久化 `KnownHostsVerifier`。未知主机或已知主机指纹变化时,verifier 记录 `PendingHostKey` 并拒绝本次握手;UI 弹窗展示主机、已保存指纹与本次指纹,用户可选择“仅允许一次”(内存态,下次连接消费后失效,不写入 `known_hosts.toml`)或“信任此主机”(持久写入/更新 `known_hosts.toml`)。由于 russh 主机密钥 verifier 为同步回调,确认后需要用户重新发起连接。测试和显式 opt-in 才使用 `AcceptAllVerifier`。`Trusted` 与 `NewlyTrusted` 都要保存 `known_hosts.toml`,确保 `last_seen_unix` 可追踪。
 - ProxyJump: `ConnectParams.proxy_jump` 支持单跳 `[user@]host[:port]`;core 先认证跳板,再通过 `channel_open_direct_tcpip` 建立目标 SSH 握手,并保留跳板 handle 直到目标连接结束。
+- 网络代理: `ConnectParams.proxy` 支持直连、系统代理、SOCKS5 和 HTTP CONNECT。系统代理首期读取 `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` 与 `NO_PROXY` 环境变量,不执行 `ProxyCommand`。若同时配置网络代理和 ProxyJump,网络代理用于连接跳板第一段 TCP,跳板到目标仍走 SSH direct-tcpip。代理认证涉及 secret 时必须进 vault,不得写入 `config.toml`。
 - ssh-agent: `AuthMethod::Agent` 会读取本机 ssh-agent/Pageant identities 逐个尝试公钥认证;`ConnectParams.forward_agent` 会在 shell channel 上请求 agent forwarding。
 - `open_sftp(&self) -> SftpSession`:在**同一 handle** 上 `channel_open_session` → `request_subsystem(true,"sftp")` → `russh_sftp::client::SftpSession::new(channel.into_stream())`。返回独立拥有通道流的会话,可 move 进子任务;底层 TCP 由 `SshShell` 的 handle 维持。
 
@@ -65,6 +66,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 文件:`crates/kt-core/src/term/`(`mod.rs`/`color.rs`/`snapshot.rs`)
 
 - `TermEngine` 包装 `alacritty_terminal`,产出 `GridSnapshot`(行列单元格 + 光标 + 颜色),`advance(bytes)` 喂入输出,`resize/scroll`,`take_events()` 取 Bell/Title 等。
+- `TermEngine` 轻量捕获 OSC 7 shell integration 当前目录事件,通过 `FromCore::TerminalCwd` 交给 UI。SFTP “同步终端路径”只能使用该可信 cwd 信号,不要解析 prompt 或终端画面。
 - `GridSnapshot` 中的单元格颜色是 core 层解析后的最终显示色:反色、DIM 等属性在快照生成时完成颜色计算,UI 不应再次反转前景/背景。终端字符必须以普通文本节点渲染,不得使用 HTML 注入式渲染,避免 `<`、`&` 等字符破坏 DOM。终端 cell 的 inline style 必须显式写出可跨帧变化属性的默认值(如 `background: transparent`、`text-decoration: none`、`opacity: 1`),避免 WebView/Dioxus 样式 diff 后残留备用屏程序的色块。
 
 ## kt-ui / kt-app:GUI
@@ -78,8 +80,8 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - **UI 抽离约定**:接收 `Arc<Mutex<AppState>>`、`Arc<Store>`、大量 `Signal` 或闭包的重状态入口优先使用普通函数返回 `Element`,不要默认写成 Dioxus `#[component]`;只有 props 天然适合 `PartialEq`、边界清晰且可复用的展示单元才使用组件。这样避免为了通过 props 派生而给运行时对象引入伪等价语义。
 - **终端渲染**:[terminal.rs](../crates/kt-ui/src/components/terminal.rs) 使用 `GridSnapshot` 渲染 HTML 行列，并把键盘、滚轮输入转成 `ToCore::Input`/`Scroll`。
 - **会话标题边界**:`SessionState.title` 是用户保存的服务器/会话名称,用于标签、侧边栏高亮与状态栏;远端 OSC title/ResetTitle 事件不得覆盖它。若后续需要展示远端窗口标题,应新增独立字段。
-- **分屏与触发器高亮**:终端工具栏可切换水平/垂直双视图,当前为同一 session 的本地双视图;`AppSettings.trigger_highlights` 提供行级文本触发器,由 [terminal.rs](../crates/kt-ui/src/components/terminal.rs) 做大小写不敏感匹配并加高亮 class。
-- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；`SftpStopped` 清理 loading/progress 但不覆盖已有错误。同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。侧边栏 SFTP 树、条目格式化和右键菜单在 [sidebar.rs](../crates/kt-ui/src/components/sidebar.rs)。外部编辑器状态机、临时文件命名、打开本地编辑器与状态栏文案在 [external_edit.rs](../crates/kt-ui/src/components/external_edit.rs);App 只负责触发下载/上传和弹出保存确认。
+- **分屏、触发器高亮与辅助显示**:终端工具栏可切换水平/垂直双视图,当前为同一 session 的本地双视图;`AppSettings.trigger_highlights` 提供行级文本触发器,由 [terminal.rs](../crates/kt-ui/src/components/terminal.rs) 做大小写不敏感匹配并加高亮 class。终端时间戳与行号是 UI gutter 显示选项,不写回远端 PTY。
+- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；`SftpStopped` 清理 loading/progress 但不覆盖已有错误。同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。侧边栏 SFTP 树、条目格式化和右键菜单在 [sidebar.rs](../crates/kt-ui/src/components/sidebar.rs);路径输入必须隔离粘贴/键盘事件，避免终端快捷键抢焦点；同步终端路径使用 `SessionState.terminal_cwd`。外部编辑器状态机、临时文件命名、打开本地编辑器与状态栏文案在 [external_edit.rs](../crates/kt-ui/src/components/external_edit.rs);默认文本编辑器与扩展名打开方式来自 `AppSettings`,自定义打开命令只经 `Command` 直接执行并追加/替换 `{path}`,不得通过 shell 拼接。
 - **资源监控**:[state.rs](../crates/kt-ui/src/state.rs) 收到 `Connected` 后自动发送 `StartMonitor` 并进入 `monitor_loading`;core 成功采样返回 `Monitor`,失败/超时返回 `MonitorError`;正常通道关闭返回 `MonitorStopped` 清理等待态,不展示为错误。监控子任务退出后会通知会话重置启动状态,允许后续重新 `StartMonitor`。延迟采样优先 TCP connect 当前会话 SSH `host:port`,失败时回退到已连接 SSH monitor 通道心跳,不得阻塞资源采样。[monitor.rs](../crates/kt-ui/src/components/monitor.rs) 只展示 `monitor_loading`、`monitor_error` 与 `monitor` 三态。
 - **连接失败展示**:`FromCore::Closed{error}` 必须写入 `SessionState.connection_error`;终端占位、状态栏和会话状态点都要把错误会话显示为失败/断开,不得继续使用 connecting 文案或黄色连接中状态。
 - **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。Store 启动时自动打开或创建应用托管 vault,保存连接后按 `effective_vault_id()` 写入密码;Store-backed `AuthProvider` 重连时直接读取 `user@host:port` 或配置的 `vault_id`。旧主密码 vault 无法自动打开时会备份为 `secrets.vault.legacy` 并创建新的托管 vault,状态栏提示旧保存密码暂不可用;若初始化/备份失败则保持 `VaultState::Locked` 并让读写返回明确错误。secret 值不得写入 `config.toml` 或日志。

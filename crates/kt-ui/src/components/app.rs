@@ -19,12 +19,14 @@ use crate::components::app_logic::{
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
 use crate::components::desktop_menu::is_settings_menu_id;
 use crate::components::dialog::{
-    first_public_key_path, ConnectionDialog, GroupDialog, SftpNameDialog,
+    first_public_key_path, proxy_host, proxy_kind, proxy_port, ConnectionDialog, GroupDialog,
+    SftpNameDialog,
 };
 use crate::components::external_edit::{
     external_edit_local_path, external_edit_status_text, latest_sftp_completion_revision,
-    local_file_modified, open_local_file, ExternalEdit, ExternalEditAction, ExternalEditSaveDialog,
-    ExternalEditStatus, ExternalEditSyncMode,
+    local_file_modified, normalized_extension, open_local_file, opener_command_for_file,
+    upsert_file_opener, ExternalEdit, ExternalEditAction, ExternalEditSaveDialog,
+    ExternalEditStatus, ExternalEditSyncMode, OpenWithDialog,
 };
 use crate::components::main_shell::{
     render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
@@ -94,6 +96,9 @@ pub fn App() -> Element {
     let mut edit_password = use_signal(String::new);
     let mut edit_key_path = use_signal(String::new);
     let mut edit_proxy_jump = use_signal(String::new);
+    let mut edit_proxy_kind = use_signal(|| "direct".to_string());
+    let mut edit_proxy_host = use_signal(String::new);
+    let mut edit_proxy_port = use_signal(String::new);
     let mut edit_use_agent = use_signal(|| false);
     let mut edit_forward_agent = use_signal(|| false);
 
@@ -110,6 +115,9 @@ pub fn App() -> Element {
     let mut sftp_name_dialog_target_path = use_signal(String::new);
     let mut sftp_name_dialog_is_dir = use_signal(|| false);
     let mut sftp_name_dialog_value = use_signal(String::new);
+    let mut show_open_with_dialog = use_signal(|| false);
+    let mut open_with_extension = use_signal(String::new);
+    let mut open_with_command = use_signal(String::new);
     let mut external_edits = use_signal(Vec::<ExternalEdit>::new);
     let mut external_edit_notice = use_signal(|| None::<String>);
     let next_external_edit_id = use_signal(|| 1u64);
@@ -150,8 +158,9 @@ pub fn App() -> Element {
                 edit_id,
                 path,
                 file_name,
+                opener_command,
             } => {
-                if let Err(e) = open_local_file(&path) {
+                if let Err(e) = open_local_file(&path, opener_command.as_deref()) {
                     tracing::error!("打开外部编辑器失败: {}", e);
                     external_edit_notice.set(Some(format!(
                         "{} {}: {}",
@@ -332,6 +341,9 @@ pub fn App() -> Element {
                 edit_password,
                 edit_key_path,
                 edit_proxy_jump,
+                edit_proxy_kind,
+                edit_proxy_host,
+                edit_proxy_port,
                 edit_use_agent,
                 edit_forward_agent,
                 show_group_dialog,
@@ -362,6 +374,7 @@ pub fn App() -> Element {
                             ctx,
                             external_edits,
                             next_external_edit_id,
+                            settings(),
                         );
                     })
                 },
@@ -385,6 +398,9 @@ pub fn App() -> Element {
                                 edit_password.set(String::new());
                                 edit_key_path.set(first_public_key_path(&profile.params.auth));
                                 edit_proxy_jump.set(profile.params.proxy_jump.clone().unwrap_or_default());
+                                edit_proxy_kind.set(proxy_kind(&profile.params.proxy).to_string());
+                                edit_proxy_host.set(proxy_host(&profile.params.proxy));
+                                edit_proxy_port.set(proxy_port(&profile.params.proxy));
                                 edit_use_agent.set(profile.params.auth.contains(&kt_config::AuthMethod::Agent));
                                 edit_forward_agent.set(profile.params.forward_agent);
                                 show_dialog.set(true);
@@ -501,7 +517,24 @@ pub fn App() -> Element {
                                 ctx,
                                 external_edits,
                                 next_external_edit_id,
+                                settings(),
                             );
+                            context_menu.set(None);
+                        }
+                    },
+                    on_sftp_set_open_with: {
+                        move |ctx: SftpEntryContext| {
+                            let extension =
+                                normalized_extension(&ctx.entry.name).unwrap_or_default();
+                            let current_command = settings()
+                                .file_openers
+                                .iter()
+                                .find(|opener| opener.extension == extension)
+                                .map(|opener| opener.command.clone())
+                                .unwrap_or_default();
+                            open_with_extension.set(extension);
+                            open_with_command.set(current_command);
+                            show_open_with_dialog.set(true);
                             context_menu.set(None);
                         }
                     },
@@ -510,6 +543,24 @@ pub fn App() -> Element {
                         context_menu.set(None);
                     },
                 }
+            }
+
+            OpenWithDialog {
+                show: show_open_with_dialog,
+                extension: open_with_extension,
+                command: open_with_command,
+                language,
+                on_save: {
+                    let store = Arc::clone(store);
+                    move |(extension, command): (String, String)| {
+                        let mut next = settings();
+                        upsert_file_opener(&mut next.file_openers, &extension, &command);
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存打开方式失败: {}", e),
+                        }
+                    }
+                },
             }
 
             if let Some(edit) = external_edits()
@@ -714,6 +765,9 @@ pub fn App() -> Element {
                 password: edit_password,
                 key_path: edit_key_path,
                 proxy_jump: edit_proxy_jump,
+                proxy_kind: edit_proxy_kind,
+                proxy_host: edit_proxy_host,
+                proxy_port: edit_proxy_port,
                 use_agent: edit_use_agent,
                 forward_agent: edit_forward_agent,
                 groups: saved_groups.clone(),
@@ -818,6 +872,10 @@ pub fn App() -> Element {
                 show: show_settings,
                 language,
                 theme: settings().theme.clone(),
+                default_text_editor: settings().default_text_editor.clone(),
+                default_ssh_proxy: settings().default_ssh_proxy.clone(),
+                terminal_show_timestamps: settings().terminal_show_timestamps,
+                terminal_show_line_numbers: settings().terminal_show_line_numbers,
                 on_language_change: {
                     let store = Arc::clone(store);
                     move |language| {
@@ -837,6 +895,50 @@ pub fn App() -> Element {
                         match store.update_settings(next.clone()) {
                             Ok(()) => settings.set(next),
                             Err(e) => tracing::error!("保存主题失败: {}", e),
+                        }
+                    }
+                },
+                on_default_text_editor_change: {
+                    let store = Arc::clone(store);
+                    move |editor| {
+                        let mut next = settings();
+                        next.default_text_editor = editor;
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存默认编辑器失败: {}", e),
+                        }
+                    }
+                },
+                on_default_ssh_proxy_change: {
+                    let store = Arc::clone(store);
+                    move |proxy| {
+                        let mut next = settings();
+                        next.default_ssh_proxy = proxy;
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存默认 SSH 代理失败: {}", e),
+                        }
+                    }
+                },
+                on_terminal_timestamps_change: {
+                    let store = Arc::clone(store);
+                    move |enabled| {
+                        let mut next = settings();
+                        next.terminal_show_timestamps = enabled;
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存终端时间戳设置失败: {}", e),
+                        }
+                    }
+                },
+                on_terminal_line_numbers_change: {
+                    let store = Arc::clone(store);
+                    move |enabled| {
+                        let mut next = settings();
+                        next.terminal_show_line_numbers = enabled;
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存终端行号设置失败: {}", e),
                         }
                     }
                 },
@@ -867,6 +969,7 @@ fn start_sftp_external_edit(
     ctx: SftpEntryContext,
     mut external_edits: Signal<Vec<ExternalEdit>>,
     mut next_external_edit_id: Signal<u64>,
+    settings: kt_config::AppSettings,
 ) {
     if ctx.entry.is_dir {
         return;
@@ -874,6 +977,7 @@ fn start_sftp_external_edit(
 
     let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
     let local_path = external_edit_local_path(ctx.session_id, &remote_path);
+    let opener_command = opener_command_for_file(&settings, &ctx.entry.name);
     if let Some(parent) = local_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             tracing::error!("创建本地编辑目录失败: {}", e);
@@ -888,6 +992,7 @@ fn start_sftp_external_edit(
         remote_path: remote_path.clone(),
         local_path: local_path.clone(),
         file_name: ctx.entry.name.clone(),
+        opener_command,
         after_revision,
         status: ExternalEditStatus::Downloading,
         sync_mode: ExternalEditSyncMode::Ask,

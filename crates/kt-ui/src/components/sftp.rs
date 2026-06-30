@@ -513,6 +513,7 @@ mod tests {
             connected: true,
             connection_error: None,
             auth_challenge: None,
+            terminal_cwd: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: true,

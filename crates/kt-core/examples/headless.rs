@@ -29,7 +29,7 @@ use crossterm::{
     QueueableCommand,
 };
 
-use kt_config::{AuthMethod, ConnectParams, Paths};
+use kt_config::{AuthMethod, ConnectParams, Paths, SshProxy};
 use kt_core::session::{AuthProviderFactory, SessionId};
 use kt_core::ssh::{AuthProvider, HostKeyDecision, HostKeyVerifier, PtySize};
 use kt_core::term::{CursorShape, GridSnapshot};
@@ -287,6 +287,7 @@ fn build_params(target: &str) -> anyhow::Result<ConnectParams> {
         auth: Vec::new(),
         vault_id: None,
         proxy_jump: None,
+        proxy: SshProxy::None,
         forward_agent: false,
     };
 

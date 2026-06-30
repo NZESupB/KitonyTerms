@@ -23,6 +23,7 @@ use crate::components::app_logic::{
     ActiveMonitorView, ActiveSftpView, ActiveTerminalView, SessionTabView, StatusBarSessionView,
 };
 use crate::components::dialog::first_public_key_path;
+use crate::components::dialog::{proxy_host, proxy_kind, proxy_port};
 use crate::components::sidebar::{ContextMenuState, SftpEntryContext};
 use crate::i18n::texts;
 use crate::state::AppState;
@@ -88,6 +89,9 @@ pub struct MainShellArgs {
     pub edit_password: Signal<String>,
     pub edit_key_path: Signal<String>,
     pub edit_proxy_jump: Signal<String>,
+    pub edit_proxy_kind: Signal<String>,
+    pub edit_proxy_host: Signal<String>,
+    pub edit_proxy_port: Signal<String>,
     pub edit_use_agent: Signal<bool>,
     pub edit_forward_agent: Signal<bool>,
     pub show_group_dialog: Signal<bool>,
@@ -106,7 +110,7 @@ pub struct MainShellArgs {
     pub on_sftp_entry_external_edit: Callback<SftpEntryContext>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ConnectionDialogSignals {
     show_dialog: Signal<bool>,
     dialog_mode: Signal<String>,
@@ -119,8 +123,12 @@ pub(super) struct ConnectionDialogSignals {
     edit_password: Signal<String>,
     edit_key_path: Signal<String>,
     edit_proxy_jump: Signal<String>,
+    edit_proxy_kind: Signal<String>,
+    edit_proxy_host: Signal<String>,
+    edit_proxy_port: Signal<String>,
     edit_use_agent: Signal<bool>,
     edit_forward_agent: Signal<bool>,
+    default_proxy: kt_config::SshProxy,
 }
 
 impl ConnectionDialogSignals {
@@ -135,6 +143,10 @@ impl ConnectionDialogSignals {
         self.edit_password.set(String::new());
         self.edit_key_path.set(String::new());
         self.edit_proxy_jump.set(String::new());
+        self.edit_proxy_kind
+            .set(proxy_kind(&self.default_proxy).to_string());
+        self.edit_proxy_host.set(proxy_host(&self.default_proxy));
+        self.edit_proxy_port.set(proxy_port(&self.default_proxy));
         self.edit_use_agent.set(false);
         self.edit_forward_agent.set(false);
         self.show_dialog.set(true);
@@ -154,6 +166,10 @@ impl ConnectionDialogSignals {
             .set(first_public_key_path(&profile.params.auth));
         self.edit_proxy_jump
             .set(profile.params.proxy_jump.clone().unwrap_or_default());
+        self.edit_proxy_kind
+            .set(proxy_kind(&profile.params.proxy).to_string());
+        self.edit_proxy_host.set(proxy_host(&profile.params.proxy));
+        self.edit_proxy_port.set(proxy_port(&profile.params.proxy));
         self.edit_use_agent
             .set(profile.params.auth.contains(&AuthMethod::Agent));
         self.edit_forward_agent.set(profile.params.forward_agent);
@@ -186,6 +202,9 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         edit_password,
         edit_key_path,
         edit_proxy_jump,
+        edit_proxy_kind,
+        edit_proxy_host,
+        edit_proxy_port,
         edit_use_agent,
         edit_forward_agent,
         show_group_dialog,
@@ -217,8 +236,12 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         edit_password,
         edit_key_path,
         edit_proxy_jump,
+        edit_proxy_kind,
+        edit_proxy_host,
+        edit_proxy_port,
         edit_use_agent,
         edit_forward_agent,
+        default_proxy: settings().default_ssh_proxy,
     };
     let active_profile_title = active_terminal
         .as_ref()
@@ -237,7 +260,7 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
                 saved_groups,
                 active_profile_title,
                 active_sftp,
-                dialog_signals,
+                dialog_signals: dialog_signals.clone(),
                 show_group_dialog,
                 group_dialog_mode,
                 group_dialog_name,

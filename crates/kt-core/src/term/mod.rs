@@ -69,6 +69,8 @@ pub enum TermEvent {
     PtyWrite(Vec<u8>),
     /// New content is available (alacritty `Wakeup`).
     Wakeup,
+    /// Current working directory reported by shell integration (OSC 7).
+    CurrentDir(String),
 }
 
 /// `EventListener` impl that funnels alacritty events into a shared queue.
@@ -121,6 +123,7 @@ pub struct TermEngine {
     proxy: EventProxy,
     size: TermSize,
     revision: u64,
+    pending_osc7: Option<Vec<u8>>,
 }
 
 impl TermEngine {
@@ -139,6 +142,7 @@ impl TermEngine {
             proxy,
             size,
             revision: 0,
+            pending_osc7: None,
         }
     }
 
@@ -149,6 +153,7 @@ impl TermEngine {
 
     /// Feed raw bytes from the PTY into the parser/grid.
     pub fn advance(&mut self, bytes: &[u8]) {
+        self.capture_current_dirs(bytes);
         self.parser.advance(&mut self.term, bytes);
         self.revision = self.revision.wrapping_add(1);
     }
@@ -270,6 +275,83 @@ impl TermEngine {
             display_offset,
         }
     }
+
+    fn capture_current_dirs(&mut self, bytes: &[u8]) {
+        let mut index = 0;
+        while index < bytes.len() {
+            if let Some(buffer) = self.pending_osc7.as_mut() {
+                match osc_sequence_end(&bytes[index..]) {
+                    Some((end, terminator_len)) => {
+                        buffer.extend_from_slice(&bytes[index..index + end]);
+                        if let Some(path) = osc7_payload_to_path(buffer) {
+                            self.proxy.push(TermEvent::CurrentDir(path));
+                        }
+                        self.pending_osc7 = None;
+                        index += end + terminator_len;
+                    }
+                    None => {
+                        buffer.extend_from_slice(&bytes[index..]);
+                        return;
+                    }
+                }
+            } else if let Some(start) = find_osc7_start(&bytes[index..]) {
+                index += start + OSC7_PREFIX.len();
+                self.pending_osc7 = Some(Vec::new());
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+const OSC7_PREFIX: &[u8] = b"\x1b]7;";
+
+fn find_osc7_start(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(OSC7_PREFIX.len())
+        .position(|window| window == OSC7_PREFIX)
+}
+
+fn osc_sequence_end(bytes: &[u8]) -> Option<(usize, usize)> {
+    let bel = bytes.iter().position(|byte| *byte == b'\x07');
+    let st = bytes.windows(2).position(|window| window == b"\x1b\\");
+    match (bel, st) {
+        (Some(bel), Some(st)) if bel < st => Some((bel, 1)),
+        (Some(_), Some(st)) => Some((st, 2)),
+        (Some(bel), None) => Some((bel, 1)),
+        (None, Some(st)) => Some((st, 2)),
+        (None, None) => None,
+    }
+}
+
+fn osc7_payload_to_path(payload: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(payload).ok()?.trim();
+    let uri = text.strip_prefix("file://").unwrap_or(text);
+    let path = uri
+        .find('/')
+        .map(|index| &uri[index..])
+        .filter(|path| !path.is_empty())?;
+    Some(percent_decode(path))
+}
+
+fn percent_decode(value: &str) -> String {
+    let mut out = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Linear blend of two colors: `a*(1-t) + b*t`.
@@ -294,6 +376,43 @@ mod tests {
         assert_eq!(snap.rows, 5);
         assert_eq!(snap.cols, 20);
         assert_eq!(snap.row_text(0), "hello");
+    }
+
+    #[test]
+    fn osc7_reports_current_directory() {
+        let mut eng = TermEngine::new(20, 5, 100);
+        eng.advance(b"\x1b]7;file://host/home/app\x07");
+
+        let events = eng.take_events();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, TermEvent::CurrentDir(cwd) if cwd == "/home/app")));
+    }
+
+    #[test]
+    fn osc7_can_span_multiple_chunks_and_percent_decodes_path() {
+        let mut eng = TermEngine::new(20, 5, 100);
+        eng.advance(b"\x1b]7;file://host/home/");
+        assert!(!eng
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, TermEvent::CurrentDir(_))));
+
+        eng.advance(b"my%20app\x1b\\");
+
+        assert!(eng
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, TermEvent::CurrentDir(cwd) if cwd == "/home/my app")));
+    }
+
+    #[test]
+    fn osc7_percent_decode_preserves_utf8_paths() {
+        assert_eq!(
+            percent_decode("/tmp/%E4%B8%AD%E6%96%87"),
+            "/tmp/\u{4e2d}\u{6587}"
+        );
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub struct ActiveSftpView {
     pub session_id: SessionId,
     pub connected: bool,
     pub path: String,
+    pub terminal_cwd: Option<String>,
     pub entries: Vec<SftpEntry>,
     pub loading: bool,
     pub error: Option<String>,
@@ -93,6 +94,7 @@ pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Se
         connected: false,
         connection_error: None,
         auth_challenge: None,
+        terminal_cwd: None,
         sftp_path: ".".to_string(),
         sftp_entries: Vec::new(),
         sftp_loading: false,
@@ -182,6 +184,7 @@ pub fn active_sftp_view(active: Option<&SessionState>) -> Option<ActiveSftpView>
         session_id: sess.id,
         connected: sess.connected,
         path: sess.sftp_path.clone(),
+        terminal_cwd: sess.terminal_cwd.clone(),
         entries: sess.sftp_entries.clone(),
         loading: sess.sftp_loading,
         error: sess.sftp_error.clone(),
@@ -281,7 +284,7 @@ pub fn unique_copy_name(base: &str, existing_names: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kt_config::AuthMethod;
+    use kt_config::{AuthMethod, SshProxy};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -297,6 +300,7 @@ mod tests {
                 auth: vec![AuthMethod::Password],
                 vault_id: None,
                 proxy_jump: None,
+                proxy: SshProxy::None,
                 forward_agent: false,
             },
         };
@@ -456,6 +460,7 @@ mod tests {
                     auth: vec![AuthMethod::Password],
                     vault_id: None,
                     proxy_jump: None,
+                    proxy: SshProxy::None,
                     forward_agent: false,
                 },
             },
@@ -469,6 +474,7 @@ mod tests {
                     auth: vec![AuthMethod::Password],
                     vault_id: None,
                     proxy_jump: None,
+                    proxy: SshProxy::None,
                     forward_agent: false,
                 },
             },

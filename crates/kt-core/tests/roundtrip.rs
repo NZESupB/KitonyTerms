@@ -13,7 +13,7 @@ use std::time::Duration;
 use russh::server::{self, Auth, Msg, Session as ServerSession};
 use russh::{Channel, ChannelId};
 
-use kt_config::{AuthMethod, ConnectParams};
+use kt_config::{AuthMethod, ConnectParams, SshProxy};
 use kt_core::session::{AuthProviderFactory, SessionId};
 use kt_core::ssh::{AcceptAllVerifier, AuthProvider, HostKeyVerifier};
 use kt_core::{FromCore, PtySize, SessionManager, ToCore};
@@ -168,6 +168,7 @@ fn full_roundtrip_through_term_engine() {
         auth: vec![AuthMethod::Password],
         vault_id: None,
         proxy_jump: None,
+        proxy: SshProxy::None,
         forward_agent: false,
     };
     mgr.send(ToCore::Connect {

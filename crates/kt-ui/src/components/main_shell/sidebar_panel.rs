@@ -111,7 +111,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         class: "sidebar-add-btn",
                         title: "{t.new_connection}",
                         onclick: move |_| {
-                            dialog_signals.open_new();
+                            dialog_signals.clone().open_new();
                         },
                         Icon { name: "add" }
                     }
@@ -189,8 +189,9 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                                         },
                                         on_edit: {
                                             let profile = profile.clone();
+                                            let dialog_signals = dialog_signals.clone();
                                             move |_| {
-                                                dialog_signals.open_edit(&profile);
+                                                dialog_signals.clone().open_edit(&profile);
                                             }
                                         },
                                         on_delete: {
@@ -263,6 +264,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         session_id: sftp.session_id,
                         connected: sftp.connected,
                         path: sftp.path.clone(),
+                        terminal_cwd: sftp.terminal_cwd.clone(),
                         entries: sftp.entries.clone(),
                         loading: sftp.loading,
                         error: sftp.error.clone(),

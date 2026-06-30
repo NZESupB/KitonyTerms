@@ -9,9 +9,10 @@ use std::sync::Arc;
 use russh::client::{self, Handle};
 use russh::keys::{load_secret_key, HashAlg, PrivateKey, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, Disconnect};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 
-use kt_config::{AuthMethod, ConnectParams};
+use kt_config::{AuthMethod, ConnectParams, SshProxy};
 
 mod handler;
 pub use handler::{AcceptAllVerifier, ClientHandler, HostKeyDecision, HostKeyVerifier};
@@ -48,6 +49,9 @@ pub enum SshError {
 
     #[error("ProxyJump error: {0}")]
     ProxyJump(String),
+
+    #[error("proxy error: {0}")]
+    Proxy(String),
 
     #[error("sftp error: {0}")]
     Sftp(String),
@@ -313,12 +317,315 @@ async fn connect_direct(
         verifier,
     };
 
-    let addr = (params.host.as_str(), params.port);
-    // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。
-    // Bound connect + handshake so an unreachable host fails fast instead of
-    // hanging in the "Connecting" state.
-    let connect_fut = client::connect(config, addr, handler);
-    timeout_connect(connect_fut).await
+    match effective_network_proxy(params)? {
+        SshProxy::None => {
+            let addr = (params.host.as_str(), params.port);
+            // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。
+            // Bound connect + handshake so an unreachable host fails fast instead of
+            // hanging in the "Connecting" state.
+            let connect_fut = client::connect(config, addr, handler);
+            timeout_connect(connect_fut).await
+        }
+        proxy => {
+            let stream = timeout_proxy_connect(connect_proxy_stream(params, &proxy)).await?;
+            let connect_fut = client::connect_stream(config, stream, handler);
+            timeout_connect(connect_fut).await
+        }
+    }
+}
+
+async fn timeout_proxy_connect<F>(connect_fut: F) -> Result<TcpStream>
+where
+    F: std::future::Future<Output = Result<TcpStream>>,
+{
+    match tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut).await {
+        Ok(result) => result,
+        Err(_) => Err(SshError::Proxy(
+            "proxy connection timed out after 15s / 代理连接超时(15 秒)".to_string(),
+        )),
+    }
+}
+
+fn effective_network_proxy(params: &ConnectParams) -> Result<SshProxy> {
+    match &params.proxy {
+        SshProxy::System => system_proxy_for_host(&params.host)
+            .map_err(SshError::Proxy)?
+            .map(Ok)
+            .unwrap_or(Ok(SshProxy::None)),
+        proxy => Ok(proxy.clone()),
+    }
+}
+
+async fn connect_proxy_stream(params: &ConnectParams, proxy: &SshProxy) -> Result<TcpStream> {
+    match proxy {
+        SshProxy::Socks {
+            host,
+            port,
+            version,
+        } if *version == 5 => connect_socks5_proxy(host, *port, &params.host, params.port).await,
+        SshProxy::Socks { version, .. } => Err(SshError::Proxy(format!(
+            "unsupported SOCKS version: {version}"
+        ))),
+        SshProxy::Http { host, port } => {
+            connect_http_proxy(host, *port, &params.host, params.port).await
+        }
+        SshProxy::None | SshProxy::System => Err(SshError::Proxy(
+            "internal error: proxy stream requested without a concrete proxy".to_string(),
+        )),
+    }
+}
+
+async fn connect_http_proxy(
+    proxy_host: &str,
+    proxy_port: u16,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream> {
+    let mut stream = TcpStream::connect((proxy_host, proxy_port))
+        .await
+        .map_err(|err| {
+            SshError::Proxy(format!(
+                "connect HTTP proxy {proxy_host}:{proxy_port}: {err}"
+            ))
+        })?;
+    let target = format_host_port(target_host, target_port);
+    let request = format!(
+        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| SshError::Proxy(format!("write HTTP CONNECT request: {err}")))?;
+
+    let response = read_http_connect_response(&mut stream).await?;
+    if http_connect_status(&response) == Some(200) {
+        Ok(stream)
+    } else {
+        Err(SshError::Proxy(format!(
+            "HTTP proxy rejected CONNECT: {}",
+            response.lines().next().unwrap_or("invalid response")
+        )))
+    }
+}
+
+async fn read_http_connect_response(stream: &mut TcpStream) -> Result<String> {
+    let mut response = Vec::new();
+    let mut buf = [0u8; 256];
+    while response.len() < 8192 {
+        let n = stream
+            .read(&mut buf)
+            .await
+            .map_err(|err| SshError::Proxy(format!("read HTTP CONNECT response: {err}")))?;
+        if n == 0 {
+            break;
+        }
+        response.extend_from_slice(&buf[..n]);
+        if response.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(response)
+        .map_err(|err| SshError::Proxy(format!("HTTP proxy response is not UTF-8: {err}")))
+}
+
+fn http_connect_status(response: &str) -> Option<u16> {
+    response
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+async fn connect_socks5_proxy(
+    proxy_host: &str,
+    proxy_port: u16,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream> {
+    let mut stream = TcpStream::connect((proxy_host, proxy_port))
+        .await
+        .map_err(|err| {
+            SshError::Proxy(format!(
+                "connect SOCKS proxy {proxy_host}:{proxy_port}: {err}"
+            ))
+        })?;
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .map_err(|err| SshError::Proxy(format!("write SOCKS greeting: {err}")))?;
+    let mut greeting = [0u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|err| SshError::Proxy(format!("read SOCKS greeting: {err}")))?;
+    if greeting != [0x05, 0x00] {
+        return Err(SshError::Proxy(
+            "SOCKS proxy requires unsupported authentication".to_string(),
+        ));
+    }
+
+    let request = socks5_connect_request(target_host, target_port)?;
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|err| SshError::Proxy(format!("write SOCKS connect request: {err}")))?;
+    read_socks5_connect_response(&mut stream).await?;
+    Ok(stream)
+}
+
+fn socks5_connect_request(host: &str, port: u16) -> Result<Vec<u8>> {
+    let host_bytes = host.as_bytes();
+    if host_bytes.len() > u8::MAX as usize {
+        return Err(SshError::Proxy("SOCKS target host is too long".to_string()));
+    }
+    let mut request = Vec::with_capacity(7 + host_bytes.len());
+    request.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8]);
+    request.extend_from_slice(host_bytes);
+    request.extend_from_slice(&port.to_be_bytes());
+    Ok(request)
+}
+
+async fn read_socks5_connect_response(stream: &mut TcpStream) -> Result<()> {
+    let mut head = [0u8; 4];
+    stream
+        .read_exact(&mut head)
+        .await
+        .map_err(|err| SshError::Proxy(format!("read SOCKS response: {err}")))?;
+    if head[0] != 0x05 || head[1] != 0x00 {
+        return Err(SshError::Proxy(format!(
+            "SOCKS connect failed with status 0x{:02x}",
+            head[1]
+        )));
+    }
+    let addr_len = match head[3] {
+        0x01 => 4,
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|err| SshError::Proxy(format!("read SOCKS domain length: {err}")))?;
+            len[0] as usize
+        }
+        0x04 => 16,
+        other => {
+            return Err(SshError::Proxy(format!(
+                "SOCKS response used unknown address type 0x{other:02x}"
+            )))
+        }
+    };
+    let mut discard = vec![0u8; addr_len + 2];
+    stream
+        .read_exact(&mut discard)
+        .await
+        .map_err(|err| SshError::Proxy(format!("read SOCKS bound address: {err}")))?;
+    Ok(())
+}
+
+fn system_proxy_for_host(host: &str) -> std::result::Result<Option<SshProxy>, String> {
+    let no_proxy = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .ok();
+    if no_proxy
+        .as_deref()
+        .map(|patterns| no_proxy_matches(patterns, host))
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    for key in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                return parse_proxy_url(&value);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn parse_proxy_url(value: &str) -> std::result::Result<Option<SshProxy>, String> {
+    let value = value.trim();
+    let (scheme, rest) = value
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest))
+        .unwrap_or_else(|| ("http".to_string(), value));
+    let rest = rest
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(rest)
+        .trim_end_matches('/');
+    let (host, port) = parse_proxy_host_port(rest, default_proxy_port(&scheme))?;
+    match scheme.as_str() {
+        "socks" | "socks5" | "socks5h" => Ok(Some(SshProxy::Socks {
+            host,
+            port,
+            version: 5,
+        })),
+        "http" | "https" => Ok(Some(SshProxy::Http { host, port })),
+        _ => Err(format!("unsupported proxy scheme: {scheme}")),
+    }
+}
+
+fn default_proxy_port(scheme: &str) -> u16 {
+    match scheme {
+        "socks" | "socks5" | "socks5h" => 1080,
+        _ => 8080,
+    }
+}
+
+fn parse_proxy_host_port(
+    value: &str,
+    default_port: u16,
+) -> std::result::Result<(String, u16), String> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let (host, after) = rest
+            .split_once(']')
+            .ok_or_else(|| "invalid bracketed proxy host".to_string())?;
+        let port = after
+            .strip_prefix(':')
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(default_port);
+        return Ok((host.to_string(), port));
+    }
+    match value.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => Ok((
+            host.to_string(),
+            port.parse::<u16>()
+                .map_err(|_| "invalid proxy port".to_string())?,
+        )),
+        _ => Ok((value.to_string(), default_port)),
+    }
+}
+
+fn no_proxy_matches(patterns: &str, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    patterns.split(',').any(|pattern| {
+        let pattern = pattern.trim().to_ascii_lowercase();
+        pattern == "*"
+            || pattern == host
+            || pattern
+                .strip_prefix('.')
+                .map(|suffix| host == suffix || host.ends_with(&format!(".{suffix}")))
+                .unwrap_or(false)
+    })
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 async fn connect_via_proxy_jump(
@@ -598,5 +905,50 @@ mod tests {
         assert_eq!(target.user, None);
         assert_eq!(target.host, "2001:db8::1");
         assert_eq!(target.port, 22);
+    }
+
+    #[test]
+    fn proxy_url_parser_supports_http_and_socks_defaults() {
+        assert_eq!(
+            parse_proxy_url("socks5://127.0.0.1").unwrap(),
+            Some(SshProxy::Socks {
+                host: "127.0.0.1".to_string(),
+                port: 1080,
+                version: 5,
+            })
+        );
+        assert_eq!(
+            parse_proxy_url("http://proxy.local:3128").unwrap(),
+            Some(SshProxy::Http {
+                host: "proxy.local".to_string(),
+                port: 3128,
+            })
+        );
+    }
+
+    #[test]
+    fn proxy_helpers_build_connect_requests() {
+        assert_eq!(
+            http_connect_status("HTTP/1.1 200 Connection Established\r\n\r\n"),
+            Some(200)
+        );
+        assert_eq!(
+            socks5_connect_request("example.com", 22).unwrap(),
+            [
+                0x05, 0x01, 0x00, 0x03, 11, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c',
+                b'o', b'm', 0, 22,
+            ]
+        );
+        assert_eq!(format_host_port("2001:db8::1", 22), "[2001:db8::1]:22");
+    }
+
+    #[test]
+    fn no_proxy_matches_exact_or_suffix_patterns() {
+        assert!(no_proxy_matches(
+            "localhost,.example.com",
+            "api.example.com"
+        ));
+        assert!(no_proxy_matches("localhost,.example.com", "localhost"));
+        assert!(!no_proxy_matches("localhost,.example.com", "example.net"));
     }
 }

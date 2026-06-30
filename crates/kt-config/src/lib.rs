@@ -54,6 +54,50 @@ pub enum AuthMethod {
     Agent,
 }
 
+/// SSH TCP connection proxy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SshProxy {
+    /// Connect to the target host directly.
+    #[default]
+    None,
+    /// Read platform proxy environment variables such as `ALL_PROXY`,
+    /// `HTTPS_PROXY`, and `HTTP_PROXY`.
+    System,
+    /// Connect through a SOCKS proxy. `version` currently accepts `5`.
+    Socks {
+        host: String,
+        #[serde(default = "default_socks_port")]
+        port: u16,
+        #[serde(default = "default_socks_version")]
+        version: u8,
+    },
+    /// Connect through an HTTP proxy using CONNECT.
+    Http {
+        host: String,
+        #[serde(default = "default_http_proxy_port")]
+        port: u16,
+    },
+}
+
+fn default_socks_port() -> u16 {
+    1080
+}
+
+fn default_socks_version() -> u8 {
+    5
+}
+
+fn default_http_proxy_port() -> u16 {
+    8080
+}
+
+impl SshProxy {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 /// Everything needed to establish one SSH connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectParams {
@@ -74,6 +118,9 @@ pub struct ConnectParams {
     /// Optional single-hop ProxyJump target, formatted as `[user@]host[:port]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_jump: Option<String>,
+    /// Optional TCP proxy used before the SSH handshake.
+    #[serde(default, skip_serializing_if = "SshProxy::is_none")]
+    pub proxy: SshProxy,
     /// Request OpenSSH agent forwarding for the interactive shell.
     #[serde(default)]
     pub forward_agent: bool,
@@ -93,6 +140,7 @@ impl ConnectParams {
             auth: vec![AuthMethod::Password],
             vault_id: None,
             proxy_jump: None,
+            proxy: SshProxy::None,
             forward_agent: false,
         }
     }
@@ -378,6 +426,30 @@ pub struct AppSettings {
     /// Case-insensitive row-level terminal highlight triggers.
     #[serde(default)]
     pub trigger_highlights: Vec<String>,
+    /// Default local editor command used for SFTP external editing.
+    #[serde(default)]
+    pub default_text_editor: Option<String>,
+    /// Optional per-file-extension opener commands.
+    #[serde(default)]
+    pub file_openers: Vec<FileOpener>,
+    /// Default SSH proxy for new sessions.
+    #[serde(default)]
+    pub default_ssh_proxy: SshProxy,
+    /// Show local timestamps beside terminal rows.
+    #[serde(default)]
+    pub terminal_show_timestamps: bool,
+    /// Show row numbers beside terminal rows.
+    #[serde(default)]
+    pub terminal_show_line_numbers: bool,
+}
+
+/// Local open command for one file extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileOpener {
+    /// Extension without leading dot. Empty means "default".
+    pub extension: String,
+    /// Command path or executable name.
+    pub command: String,
 }
 
 impl Default for AppSettings {
@@ -391,6 +463,11 @@ impl Default for AppSettings {
             cursor_style: CursorStyle::Block,
             use_ssh_config: true,
             trigger_highlights: default_trigger_highlights(),
+            default_text_editor: None,
+            file_openers: Vec::new(),
+            default_ssh_proxy: SshProxy::None,
+            terminal_show_timestamps: false,
+            terminal_show_line_numbers: false,
         }
     }
 }
@@ -645,6 +722,7 @@ mod tests {
                 }],
                 vault_id: None,
                 proxy_jump: None,
+                proxy: SshProxy::None,
                 forward_agent: false,
             },
         });
@@ -774,6 +852,7 @@ use_ssh_config = true
             auth: vec![AuthMethod::Password],
             vault_id: None,
             proxy_jump: None,
+            proxy: SshProxy::None,
             forward_agent: false,
         };
         let cfg = SshConfigHost {

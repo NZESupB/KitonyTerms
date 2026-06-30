@@ -1,6 +1,7 @@
 //! 终端渲染组件（核心性能组件）
 
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
@@ -27,6 +28,8 @@ pub fn Terminal(
     session_id: SessionId,
     pane_id: String,
     trigger_highlights: Vec<String>,
+    show_timestamps: bool,
+    show_line_numbers: bool,
     language: AppLanguage,
 ) -> Element {
     let snapshot = &snapshot.0;
@@ -40,6 +43,7 @@ pub fn Terminal(
     let state_for_paste = state.clone();
     let terminal_id = format!("terminal-{}-{}", session_id.0, pane_id);
     let terminal_screen_id = terminal_screen_id(&terminal_id);
+    let timestamp_label = terminal_timestamp_label(SystemTime::now());
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
 
@@ -213,7 +217,7 @@ pub fn Terminal(
             // 渲染每一行
             div {
                 id: "{terminal_screen_id}",
-                class: "terminal-screen",
+                class: if show_timestamps || show_line_numbers { "terminal-screen has-gutter" } else { "terminal-screen" },
 
                 for row in 0..rows {
                     div {
@@ -223,6 +227,18 @@ pub fn Terminal(
                         } else {
                             "terminal-row"
                         },
+
+                        if show_line_numbers || show_timestamps {
+                            span {
+                                class: "terminal-row-gutter",
+                                if show_line_numbers {
+                                    span { class: "terminal-line-number", "{terminal_line_number(snapshot, row)}" }
+                                }
+                                if show_timestamps {
+                                    span { class: "terminal-timestamp", "{timestamp_label}" }
+                                }
+                            }
+                        }
 
                         for col in 0..cols {
                             {
@@ -406,6 +422,21 @@ fn send_terminal_text(state: Arc<Mutex<AppState>>, session_id: SessionId, text: 
 
 fn terminal_paste_input(text: &str) -> Vec<u8> {
     text.replace("\r\n", "\n").replace('\r', "\n").into_bytes()
+}
+
+fn terminal_line_number(snapshot: &GridSnapshot, row: usize) -> usize {
+    snapshot.display_offset + row + 1
+}
+
+fn terminal_timestamp_label(now: SystemTime) -> String {
+    let seconds = now
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let datetime = chrono::DateTime::<chrono::Local>::from(
+        UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+    );
+    datetime.format("%H:%M:%S").to_string()
 }
 
 fn select_terminal_contents(terminal_screen_id: &str) {
@@ -761,5 +792,30 @@ mod tests {
             b"one\ntwo\nthree"
         );
         assert!(terminal_paste_input("").is_empty());
+    }
+
+    #[test]
+    fn terminal_line_number_uses_display_offset() {
+        let mut snapshot = GridSnapshot {
+            rows: 2,
+            cols: 1,
+            cells: vec![SnapshotCell::default(); 2],
+            cursor: kt_core::term::Cursor {
+                line: 0,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision: 1,
+            display_offset: 40,
+        };
+
+        assert_eq!(terminal_line_number(&snapshot, 0), 41);
+        snapshot.display_offset = 0;
+        assert_eq!(terminal_line_number(&snapshot, 1), 2);
+    }
+
+    #[test]
+    fn terminal_timestamp_label_is_clock_shaped() {
+        assert_eq!(terminal_timestamp_label(UNIX_EPOCH).len(), 8);
     }
 }

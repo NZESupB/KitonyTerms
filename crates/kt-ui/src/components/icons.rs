@@ -118,6 +118,14 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M17 3V7H21" }
             path { d: "M7 21V17H3" }
         },
+        "sync" => rsx! {
+            path { d: "M16 3H21V8" }
+            path { d: "M21 3L14 10" }
+            path { d: "M8 21H3V16" }
+            path { d: "M3 21L10 14" }
+            path { d: "M21 13A8 8 0 0 1 7.8 18.1" }
+            path { d: "M3 11A8 8 0 0 1 16.2 5.9" }
+        },
         "upload" => rsx! {
             path { d: "M12 19V5" }
             path { d: "M6 11L12 5L18 11" }

@@ -1,6 +1,7 @@
 # 多端打包与发布 / Cross-platform packaging & release
 #
 # 触发方式:
+#   - 推送任意分支 → 构建各端产物并更新 Alpha prerelease
 #   - 推送 v* 标签(如 v0.0.2)→ 构建各端产物并创建 GitHub Release
 #   - 手动触发(workflow_dispatch)→ 仅构建并上传 artifacts,便于验证打包流程
 #
@@ -20,6 +21,8 @@ name: release
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -101,6 +104,9 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME:-dev}"
+          if [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
+            version="alpha"
+          fi
           staging="kitonyterms-${version}-${{ matrix.name }}"
           mkdir -p dist "$staging/bin" "$staging/share/applications" "$staging/share/icons"
           cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/"
@@ -115,6 +121,9 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME:-dev}"
+          if [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
+            version="alpha"
+          fi
           version_clean="${version#v}"
           base="kitonyterms-${version}-${{ matrix.name }}"
           app="KitonyTerms.app"
@@ -160,7 +169,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $version = if ($env:GITHUB_REF_TYPE -eq "branch") { "alpha" } elseif ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
           $base = "kitonyterms-$version-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path dist, staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" staging
@@ -267,3 +276,45 @@ jobs:
             安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
 
             ---
+
+  # 普通分支 push 后更新固定 Alpha prerelease。正式 v* tag release 不走这里。
+  alpha:
+    name: publish Alpha prerelease
+    needs: build
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: alpha-release
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Move alpha tag to current commit
+        shell: bash
+        run: |
+          git tag -f alpha "${GITHUB_SHA}"
+          git push origin refs/tags/alpha --force
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish Alpha prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: alpha
+          target_commitish: ${{ github.sha }}
+          name: Alpha
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            Alpha 自动构建产物，对应提交 `${{ github.sha }}`。
+
+            该 prerelease 会在每次分支 push 后被覆盖更新，不代表正式发布版本。

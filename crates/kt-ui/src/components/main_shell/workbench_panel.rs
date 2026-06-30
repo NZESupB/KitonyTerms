@@ -119,7 +119,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                         class: "new-tab-button",
                         title: "{t.new_connection}",
                         onclick: move |_| {
-                            dialog_signals.open_new();
+                            dialog_signals.clone().open_new();
                         },
                         Icon { name: "add" }
                     }
@@ -141,6 +141,8 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     session_id: sess.id,
                                     pane_id: "primary".to_string(),
                                     trigger_highlights: settings().trigger_highlights,
+                                    show_timestamps: settings().terminal_show_timestamps,
+                                    show_line_numbers: settings().terminal_show_line_numbers,
                                     language,
                                 }
                             }
@@ -152,6 +154,8 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         session_id: sess.id,
                                         pane_id: "secondary".to_string(),
                                         trigger_highlights: settings().trigger_highlights,
+                                        show_timestamps: settings().terminal_show_timestamps,
+                                        show_line_numbers: settings().terminal_show_line_numbers,
                                         language,
                                     }
                                 }

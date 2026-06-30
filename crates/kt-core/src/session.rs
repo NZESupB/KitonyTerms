@@ -168,6 +168,8 @@ pub enum FromCore {
     },
     /// Title changed (OSC).
     Title { id: SessionId, title: String },
+    /// Current working directory reported by shell integration (OSC 7).
+    TerminalCwd { id: SessionId, path: String },
     /// Terminal bell.
     Bell { id: SessionId },
     /// SFTP 目录列表就绪。SFTP directory listing is ready.
@@ -838,6 +840,9 @@ async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: 
             }
             TermEvent::Title(title) => {
                 let _ = out.send(FromCore::Title { id, title }).await;
+            }
+            TermEvent::CurrentDir(path) => {
+                let _ = out.send(FromCore::TerminalCwd { id, path }).await;
             }
             // PtyWrite would be written back to the shell; deferred until
             // needed (device-status responses etc.).

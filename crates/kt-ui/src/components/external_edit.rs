@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::prelude::*;
-use kt_config::AppLanguage;
+use kt_config::{AppLanguage, AppSettings, FileOpener};
 use kt_core::{SessionId, SftpOp};
 
 use crate::components::icons::Icon;
@@ -36,11 +36,96 @@ pub struct ExternalEdit {
     pub remote_path: String,
     pub local_path: PathBuf,
     pub file_name: String,
+    pub opener_command: Option<String>,
     pub after_revision: u64,
     pub status: ExternalEditStatus,
     pub sync_mode: ExternalEditSyncMode,
     pub last_seen_modified: Option<SystemTime>,
     pub pending_modified: Option<SystemTime>,
+}
+
+#[component]
+pub fn OpenWithDialog(
+    show: Signal<bool>,
+    extension: Signal<String>,
+    command: Signal<String>,
+    language: AppLanguage,
+    on_save: EventHandler<(String, String)>,
+) -> Element {
+    if !show() {
+        return rsx! {};
+    }
+
+    let t = texts(language).sftp;
+    let dialog_t = texts(language).dialog;
+
+    rsx! {
+        div {
+            class: "settings-overlay",
+            onclick: move |_| show.set(false),
+
+            section {
+                class: "settings-panel open-with-dialog",
+                onclick: move |evt| evt.stop_propagation(),
+
+                div {
+                    class: "settings-head",
+                    h2 { "{t.open_with_title}" }
+                    button {
+                        class: "icon-button slim",
+                        title: "{t.close}",
+                        onclick: move |_| show.set(false),
+                        Icon { name: "close" }
+                    }
+                }
+
+                div {
+                    class: "dialog-field",
+                    span { "{t.open_with_extension}" }
+                    input {
+                        r#type: "text",
+                        value: "{extension()}",
+                        oninput: move |evt| extension.set(evt.value().clone()),
+                        placeholder: "log",
+                    }
+                }
+
+                div {
+                    class: "dialog-field",
+                    span { "{t.open_with_command}" }
+                    input {
+                        r#type: "text",
+                        value: "{command()}",
+                        oninput: move |evt| command.set(evt.value().clone()),
+                        placeholder: "{t.open_with_command_placeholder}",
+                    }
+                }
+
+                div {
+                    class: "external-edit-dialog-actions",
+                    button {
+                        onclick: move |_| show.set(false),
+                        "{dialog_t.cancel}"
+                    }
+                    button {
+                        onclick: move |_| {
+                            on_save.call((extension(), String::new()));
+                            show.set(false);
+                        },
+                        "{t.open_with_use_system}"
+                    }
+                    button {
+                        class: "primary",
+                        onclick: move |_| {
+                            on_save.call((extension(), command()));
+                            show.set(false);
+                        },
+                        "{t.open_with_save_for_extension}"
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +134,7 @@ pub enum ExternalEditAction {
         edit_id: u64,
         path: PathBuf,
         file_name: String,
+        opener_command: Option<String>,
     },
     Upload {
         session_id: SessionId,
@@ -91,6 +177,7 @@ pub fn sync_external_edits(
                     edit_id: edit.id,
                     path: edit.local_path.clone(),
                     file_name: edit.file_name.clone(),
+                    opener_command: edit.opener_command.clone(),
                 });
                 next.push(edit);
             }
@@ -231,8 +318,14 @@ pub fn sanitize_local_file_name(name: &str) -> String {
     }
 }
 
-pub fn open_local_file(path: &Path) -> Result<(), String> {
+pub fn open_local_file(path: &Path, opener_command: Option<&str>) -> Result<(), String> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Some(command) = opener_command
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+    {
+        return open_with_command(&path, command);
+    }
 
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -256,6 +349,110 @@ pub fn open_local_file(path: &Path) -> Result<(), String> {
     };
 
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+pub fn opener_command_for_file(settings: &AppSettings, file_name: &str) -> Option<String> {
+    let extension = normalized_extension(file_name);
+    extension
+        .as_deref()
+        .and_then(|extension| {
+            settings
+                .file_openers
+                .iter()
+                .find(|opener| normalize_extension(&opener.extension) == extension)
+                .map(|opener| opener.command.trim().to_string())
+                .filter(|command| !command.is_empty())
+        })
+        .or_else(|| {
+            settings
+                .default_text_editor
+                .as_deref()
+                .map(str::trim)
+                .filter(|command| !command.is_empty())
+                .map(str::to_string)
+        })
+}
+
+pub fn upsert_file_opener(openers: &mut Vec<FileOpener>, extension: &str, command: &str) {
+    let extension = normalize_extension(extension);
+    if extension.is_empty() {
+        return;
+    }
+    let command = command.trim().to_string();
+    openers.retain(|opener| normalize_extension(&opener.extension) != extension);
+    if !command.is_empty() {
+        openers.push(FileOpener { extension, command });
+        openers.sort_by(|a, b| a.extension.cmp(&b.extension));
+    }
+}
+
+pub fn normalized_extension(file_name: &str) -> Option<String> {
+    file_name
+        .rsplit_once('.')
+        .map(|(_, extension)| normalize_extension(extension))
+        .filter(|extension| !extension.is_empty())
+}
+
+fn normalize_extension(extension: &str) -> String {
+    extension
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+}
+
+fn open_with_command(path: &Path, command: &str) -> Result<(), String> {
+    let mut parts = split_command_line(command)?;
+    if parts.is_empty() {
+        return Err("打开命令为空".to_string());
+    }
+
+    let program = parts.remove(0);
+    let path_text = path.to_string_lossy().to_string();
+    let has_placeholder = parts.iter().any(|part| part.contains("{path}"));
+    let args = parts
+        .into_iter()
+        .map(|part| part.replace("{path}", &path_text))
+        .collect::<Vec<_>>();
+
+    let mut command = Command::new(program);
+    command.args(args);
+    if !has_placeholder {
+        command.arg(path);
+    }
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn split_command_line(command: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '\'' | '"' if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(ch),
+            ch if ch.is_whitespace() && quote.is_none() => {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if quote.is_some() {
+        return Err("打开命令中的引号未闭合".to_string());
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    Ok(parts)
 }
 
 pub fn external_edit_status_text(
@@ -383,6 +580,7 @@ mod tests {
             connected: true,
             connection_error: None,
             auth_challenge: None,
+            terminal_cwd: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::<SftpEntry>::new(),
             sftp_loading: false,
@@ -431,6 +629,7 @@ mod tests {
             remote_path: "/root/demo.txt".to_string(),
             local_path: PathBuf::from("/tmp/demo.txt"),
             file_name: "demo.txt".to_string(),
+            opener_command: Some("code --wait".to_string()),
             after_revision: 1,
             status: ExternalEditStatus::Downloading,
             sync_mode: ExternalEditSyncMode::Ask,
@@ -448,6 +647,7 @@ mod tests {
                 edit_id: 1,
                 path: PathBuf::from("/tmp/demo.txt"),
                 file_name: "demo.txt".to_string(),
+                opener_command: Some("code --wait".to_string()),
             }]
         );
     }
@@ -467,6 +667,7 @@ mod tests {
             remote_path: "/root/demo.txt".to_string(),
             local_path: PathBuf::from("/tmp/demo.txt"),
             file_name: "demo.txt".to_string(),
+            opener_command: None,
             after_revision: 4,
             status: ExternalEditStatus::UploadingOnce,
             sync_mode: ExternalEditSyncMode::Ask,
@@ -499,6 +700,7 @@ mod tests {
             remote_path: "/root/prompt.txt".to_string(),
             local_path: path.clone(),
             file_name: "prompt.txt".to_string(),
+            opener_command: None,
             after_revision: 0,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::Ask,
@@ -526,6 +728,7 @@ mod tests {
             remote_path: "/root/auto.txt".to_string(),
             local_path: path.clone(),
             file_name: "auto.txt".to_string(),
+            opener_command: None,
             after_revision: 0,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::AutoUpload,
@@ -546,5 +749,51 @@ mod tests {
             }]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn opener_resolution_prefers_extension_before_default_editor() {
+        let settings = AppSettings {
+            default_text_editor: Some("code --wait".to_string()),
+            file_openers: vec![FileOpener {
+                extension: ".log".to_string(),
+                command: "less".to_string(),
+            }],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            opener_command_for_file(&settings, "app.LOG").as_deref(),
+            Some("less")
+        );
+        assert_eq!(
+            opener_command_for_file(&settings, "Dockerfile").as_deref(),
+            Some("code --wait")
+        );
+    }
+
+    #[test]
+    fn file_openers_are_upserted_by_normalized_extension() {
+        let mut openers = vec![FileOpener {
+            extension: "log".to_string(),
+            command: "less".to_string(),
+        }];
+
+        upsert_file_opener(&mut openers, ".LOG", "code --wait");
+        assert_eq!(openers.len(), 1);
+        assert_eq!(openers[0].extension, "log");
+        assert_eq!(openers[0].command, "code --wait");
+
+        upsert_file_opener(&mut openers, "log", " ");
+        assert!(openers.is_empty());
+    }
+
+    #[test]
+    fn command_line_split_supports_quotes_and_placeholders() {
+        assert_eq!(
+            split_command_line(r#"code --wait "{path}""#).unwrap(),
+            vec!["code", "--wait", "{path}"]
+        );
+        assert!(split_command_line(r#""unterminated"#).is_err());
     }
 }

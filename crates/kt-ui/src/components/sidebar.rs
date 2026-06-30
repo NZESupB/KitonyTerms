@@ -143,6 +143,7 @@ pub fn SidebarSftpTree(
     session_id: SessionId,
     connected: bool,
     path: String,
+    terminal_cwd: Option<String>,
     entries: Vec<SftpEntry>,
     loading: bool,
     error: Option<String>,
@@ -187,12 +188,15 @@ pub fn SidebarSftpTree(
                     oninput: move |evt| {
                         path_input.set(evt.value());
                     },
+                    onpaste: move |evt| {
+                        evt.stop_propagation();
+                    },
                     onkeydown: {
                         let state = state.clone();
                         let path = path.clone();
                         move |evt| {
+                            evt.stop_propagation();
                             if evt.key() == Key::Enter {
-                                evt.stop_propagation();
                                 evt.prevent_default();
                                 match normalize_sftp_path_input(&path_input()) {
                                     Some(next) => {
@@ -250,6 +254,23 @@ pub fn SidebarSftpTree(
                         }
                     },
                     Icon { name: "refresh" }
+                }
+                button {
+                    title: "{t.sync_terminal_path}",
+                    disabled: !connected || terminal_cwd.is_none(),
+                    onclick: {
+                        let state = state.clone();
+                        let terminal_cwd = terminal_cwd.clone();
+                        move |evt| {
+                            evt.stop_propagation();
+                            if let Some(path) = terminal_cwd.clone() {
+                                if let Err(e) = request_directory(state.clone(), session_id, path, language) {
+                                    tracing::error!("SFTP 同步终端路径失败: {}", e);
+                                }
+                            }
+                        }
+                    },
+                    Icon { name: "sync" }
                 }
             }
 
@@ -404,6 +425,7 @@ pub fn ContextMenu(
     on_sftp_rename: EventHandler<SftpEntryContext>,
     on_sftp_delete: EventHandler<SftpEntryContext>,
     on_sftp_external_edit: EventHandler<SftpEntryContext>,
+    on_sftp_set_open_with: EventHandler<SftpEntryContext>,
     on_copy_text: EventHandler<String>,
 ) -> Element {
     let t = texts(language).app;
@@ -534,6 +556,14 @@ pub fn ContextMenu(
                                 },
                                 Icon { name: "edit" }
                                 span { "{sftp_t.edit_external}" }
+                            }
+                            button {
+                                onclick: {
+                                    let ctx = ctx.clone();
+                                    move |_| on_sftp_set_open_with.call(ctx.clone())
+                                },
+                                Icon { name: "settings" }
+                                span { "{sftp_t.set_open_with}" }
                             }
                         }
                         div { class: "context-separator" }

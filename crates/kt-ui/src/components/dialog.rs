@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
-use kt_config::{normalize_group_name, AppLanguage, AuthMethod, ConnectParams, SessionProfile};
+use kt_config::{
+    normalize_group_name, AppLanguage, AuthMethod, ConnectParams, SessionProfile, SshProxy,
+};
 
 use crate::components::icons::Icon;
 use crate::i18n::texts;
@@ -32,6 +34,46 @@ pub fn first_public_key_path(auth: &[AuthMethod]) -> String {
         .unwrap_or_default()
 }
 
+pub fn proxy_kind(proxy: &SshProxy) -> &'static str {
+    match proxy {
+        SshProxy::None => "direct",
+        SshProxy::System => "system",
+        SshProxy::Socks { .. } => "socks",
+        SshProxy::Http { .. } => "http",
+    }
+}
+
+pub fn proxy_host(proxy: &SshProxy) -> String {
+    match proxy {
+        SshProxy::Socks { host, .. } | SshProxy::Http { host, .. } => host.clone(),
+        SshProxy::None | SshProxy::System => String::new(),
+    }
+}
+
+pub fn proxy_port(proxy: &SshProxy) -> String {
+    match proxy {
+        SshProxy::Socks { port, .. } | SshProxy::Http { port, .. } => port.to_string(),
+        SshProxy::None | SshProxy::System => String::new(),
+    }
+}
+
+pub fn proxy_from_inputs(kind: &str, host: &str, port: &str) -> SshProxy {
+    let host = host.trim().to_string();
+    match kind {
+        "system" => SshProxy::System,
+        "socks" if !host.is_empty() => SshProxy::Socks {
+            host,
+            port: port.trim().parse().unwrap_or(1080),
+            version: 5,
+        },
+        "http" if !host.is_empty() => SshProxy::Http {
+            host,
+            port: port.trim().parse().unwrap_or(8080),
+        },
+        _ => SshProxy::None,
+    }
+}
+
 #[component]
 pub fn ConnectionDialog(
     show: Signal<bool>,
@@ -44,6 +86,9 @@ pub fn ConnectionDialog(
     password: Signal<String>,
     key_path: Signal<String>,
     proxy_jump: Signal<String>,
+    proxy_kind: Signal<String>,
+    proxy_host: Signal<String>,
+    proxy_port: Signal<String>,
     use_agent: Signal<bool>,
     forward_agent: Signal<bool>,
     groups: Vec<String>,
@@ -235,6 +280,63 @@ pub fn ConnectionDialog(
                         style: "border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; margin: 0;",
                         legend {
                             style: "padding: 0 4px; font-size: 13px; color: #4b5563;",
+                            "{t.ssh_proxy}"
+                        }
+                        div {
+                            style: "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 8px;",
+                            for (kind, label) in [
+                                ("direct", t.proxy_direct),
+                                ("system", t.proxy_system),
+                                ("socks", t.proxy_socks),
+                                ("http", t.proxy_http),
+                            ] {
+                                button {
+                                    r#type: "button",
+                                    style: if proxy_kind() == kind { "padding: 6px; border-radius: 4px; background: #2b7de9; color: white;" } else { "padding: 6px; border-radius: 4px; background: #e5e7eb; color: #374151;" },
+                                    onclick: move |_| proxy_kind.set(kind.to_string()),
+                                    "{label}"
+                                }
+                            }
+                        }
+                        if matches!(proxy_kind().as_str(), "socks" | "http") {
+                            div {
+                                style: "display: flex; gap: 8px;",
+                                div {
+                                    style: "flex: 2;",
+                                    label {
+                                        style: "display: block; margin-bottom: 4px; font-size: 12px; color: #4b5563;",
+                                        "{t.proxy_host}"
+                                    }
+                                    input {
+                                        style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
+                                        r#type: "text",
+                                        value: "{proxy_host()}",
+                                        oninput: move |evt| proxy_host.set(evt.value().clone()),
+                                        placeholder: "127.0.0.1"
+                                    }
+                                }
+                                div {
+                                    style: "flex: 1;",
+                                    label {
+                                        style: "display: block; margin-bottom: 4px; font-size: 12px; color: #4b5563;",
+                                        "{t.proxy_port}"
+                                    }
+                                    input {
+                                        style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
+                                        r#type: "text",
+                                        value: "{proxy_port()}",
+                                        oninput: move |evt| proxy_port.set(evt.value().clone()),
+                                        placeholder: if proxy_kind() == "socks" { "1080" } else { "8080" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    fieldset {
+                        style: "border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; margin: 0;",
+                        legend {
+                            style: "padding: 0 4px; font-size: 13px; color: #4b5563;",
                             "{t.auth_options}"
                         }
                         label {
@@ -285,6 +387,9 @@ pub fn ConnectionDialog(
                             let group_val = group();
                             let key_path_val = key_path();
                             let proxy_jump_val = proxy_jump();
+                            let proxy_kind_val = proxy_kind();
+                            let proxy_host_val = proxy_host();
+                            let proxy_port_val = proxy_port();
                             let use_agent_val = use_agent();
                             let forward_agent_val = forward_agent();
 
@@ -321,6 +426,11 @@ pub fn ConnectionDialog(
                                             Some(trimmed.to_string())
                                         }
                                     },
+                                    proxy: proxy_from_inputs(
+                                        &proxy_kind_val,
+                                        &proxy_host_val,
+                                        &proxy_port_val,
+                                    ),
                                     forward_agent: forward_agent_val,
                                 },
                             };
@@ -378,6 +488,24 @@ mod tests {
         ];
 
         assert_eq!(first_public_key_path(&auth), "/home/me/.ssh/id_rsa");
+    }
+
+    #[test]
+    fn proxy_inputs_roundtrip_basic_proxy_modes() {
+        let socks = proxy_from_inputs("socks", "127.0.0.1", "1081");
+        assert_eq!(proxy_kind(&socks), "socks");
+        assert_eq!(proxy_host(&socks), "127.0.0.1");
+        assert_eq!(proxy_port(&socks), "1081");
+
+        assert_eq!(proxy_from_inputs("system", "", ""), SshProxy::System);
+        assert_eq!(
+            proxy_from_inputs("http", "proxy.local", ""),
+            SshProxy::Http {
+                host: "proxy.local".to_string(),
+                port: 8080,
+            }
+        );
+        assert_eq!(proxy_from_inputs("socks", " ", "1080"), SshProxy::None);
     }
 }
 

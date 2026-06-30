@@ -20,6 +20,7 @@
 - README 第四阶段：同步功能里程碑、README 状态与功能声明。
 - SFTP 文件管理：沉淀右键菜单、外部编辑菜单、保存确认对话和回传策略。
 - 架构审查：确认项目适合继续维护，指出 UI 主组件过大、通道背压、vault 解锁、known_hosts 安全语义与认证能力缺口。
+- 近期生产力与发布能力：修复 SFTP 路径粘贴，增加基于 OSC 7 的同步终端路径；设置支持默认文本编辑器、扩展名打开方式、默认 SSH 代理与终端时间戳/行号；连接支持 HTTP/SOCKS/系统代理与既有 ProxyJump；分支 push 自动更新 Alpha prerelease。
 
 ## 测试与验证要求
 - Rust 代码变更后至少运行 `cargo fmt --all -- --check`、`cargo check --workspace --all-targets`、`cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`。
@@ -33,3 +34,6 @@
 - 每次功能更新前先按 `maintenance.md` 填写影响清单；新增 `app.rs` 之外模块逻辑时优先补纯逻辑单测，再接入渲染或副作用。
 - Store 启动时自动打开或创建应用托管加密 vault，不再向用户暴露 vault 主密码流程；旧主密码 vault 无法自动打开时备份为 `secrets.vault.legacy*` 后重建新 vault。
 - Monitor 延迟优先 TCP connect 当前 SSH `host:port`，失败时回退 SSH 心跳；UI 中延迟合并到网络标题展示并用颜色分级提示高延迟。
+- SSH 网络代理统一走 `ConnectParams.proxy`，系统代理首期只读取环境变量，不执行 `ProxyCommand`；涉及代理 secret 时必须进入 vault。
+- SFTP 同步终端路径只使用 core 捕获的 OSC 7 cwd 信号，不解析终端画面或 shell prompt。
+- SFTP 外部打开方式由 `AppSettings.default_text_editor` 与扩展名 `file_openers` 决定，自定义命令通过进程参数直接执行，不通过 shell 拼接。
