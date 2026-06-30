@@ -66,6 +66,10 @@ pub struct AppText {
     pub ready_hint: &'static str,
     pub language: &'static str,
     pub language_hint: &'static str,
+    pub theme: &'static str,
+    pub theme_hint: &'static str,
+    pub theme_dark: &'static str,
+    pub theme_light: &'static str,
     pub chinese: &'static str,
     pub english: &'static str,
     pub close: &'static str,
@@ -82,6 +86,8 @@ pub struct AppText {
     pub edit: &'static str,
     pub delete: &'static str,
     pub copy: &'static str,
+    pub paste: &'static str,
+    pub select_all: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,6 +104,9 @@ pub struct DialogText {
     pub group_placeholder: &'static str,
     pub password: &'static str,
     pub password_placeholder: &'static str,
+    pub password_save_hint: &'static str,
+    pub private_key_path: &'static str,
+    pub private_key_path_placeholder: &'static str,
     pub proxy_jump: &'static str,
     pub proxy_jump_placeholder: &'static str,
     pub auth_options: &'static str,
@@ -142,10 +151,11 @@ pub struct DialogText {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SftpText {
+    pub title: &'static str,
+    pub path: &'static str,
     pub close: &'static str,
     pub back: &'static str,
     pub refresh: &'static str,
-    pub more: &'static str,
     pub name: &'static str,
     pub size: &'static str,
     pub modified: &'static str,

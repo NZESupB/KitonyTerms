@@ -348,6 +348,16 @@ impl AppLanguage {
 }
 
 /// Visual / behavioral app settings.
+pub const DEFAULT_DARK_THEME: &str = "default-dark";
+pub const DEFAULT_LIGHT_THEME: &str = "default-light";
+
+pub fn normalize_theme_name(theme: &str) -> &'static str {
+    match theme.trim() {
+        DEFAULT_LIGHT_THEME | "light" => DEFAULT_LIGHT_THEME,
+        _ => DEFAULT_DARK_THEME,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Display language for the desktop UI.
@@ -376,12 +386,22 @@ impl Default for AppSettings {
             language: AppLanguage::default(),
             font_family: default_mono_font().to_string(),
             font_size: 13.0,
-            theme: "default-dark".to_string(),
+            theme: DEFAULT_DARK_THEME.to_string(),
             scrollback_lines: 10_000,
             cursor_style: CursorStyle::Block,
             use_ssh_config: true,
             trigger_highlights: default_trigger_highlights(),
         }
+    }
+}
+
+impl AppSettings {
+    pub fn normalized_theme(&self) -> &'static str {
+        normalize_theme_name(&self.theme)
+    }
+
+    pub fn is_light_theme(&self) -> bool {
+        self.normalized_theme() == DEFAULT_LIGHT_THEME
     }
 }
 
@@ -661,6 +681,20 @@ use_ssh_config = true
             settings.language,
             AppLanguage::Chinese | AppLanguage::English
         ));
+    }
+
+    #[test]
+    fn app_settings_theme_helpers_normalize_known_values() {
+        let mut settings = AppSettings::default();
+        assert_eq!(settings.normalized_theme(), DEFAULT_DARK_THEME);
+        assert!(!settings.is_light_theme());
+
+        settings.theme = DEFAULT_LIGHT_THEME.to_string();
+        assert_eq!(settings.normalized_theme(), DEFAULT_LIGHT_THEME);
+        assert!(settings.is_light_theme());
+
+        settings.theme = "unknown-theme".to_string();
+        assert_eq!(settings.normalized_theme(), DEFAULT_DARK_THEME);
     }
 
     #[test]

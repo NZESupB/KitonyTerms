@@ -1,4 +1,5 @@
 //! 服务器资源监控子任务 —— 通过一条持久 `sh` 通道周期采集远端 `/proc` 等数据。
+//! 监控延迟通过同一已连接 SSH 通道上的轻量心跳单独测量，避免被较重资源命令耗时放大。
 //!
 //! Server resource monitor: drives a persistent `sh` channel, periodically writing
 //! a command bundle and parsing the output into [`MonitorStats`]. CPU% and network
@@ -14,6 +15,7 @@ use crate::session::{FromCore, SessionId};
 /// 轮询间隔。Poll interval.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(12);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// 监控子任务退出原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,8 @@ echo __KTM_END__\n";
 const BEGIN: &str = "__KTM_BEGIN__";
 const SEC: &str = "__KTM_SEC__";
 const END: &str = "__KTM_END__";
+const HEARTBEAT: &str = "__KTM_HEARTBEAT__";
+const HEARTBEAT_CMD: &str = "printf '__KTM_HEARTBEAT__\\n'\n";
 
 /// 单个挂载点使用情况。Disk usage for one mount point.
 #[derive(Debug, Clone)]
@@ -74,7 +78,7 @@ pub struct MonitorStats {
     pub net_tx_rate: u64,
     pub load1: f32,
     pub uptime_secs: u64,
-    /// 一次监控命令从写入到读完整块的耗时，近似远端监控通道延迟。
+    /// 轻量心跳在已连接 SSH 通道上的往返时间，避免被重监控采样耗时放大。
     pub latency_ms: u64,
     pub disks: Vec<DiskUsage>,
     pub processes: Vec<ProcInfo>,
@@ -94,6 +98,20 @@ struct NetSample {
     tx: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadUntil {
+    Found,
+    Closed,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeartbeatError {
+    SendFailed,
+    Closed,
+    Timeout,
+}
+
 /// 监控子任务主循环。通道关闭(会话结束)即退出。
 /// Monitor loop; exits when the channel closes (session ended).
 pub(crate) async fn monitor_task(
@@ -107,7 +125,29 @@ pub(crate) async fn monitor_task(
     let mut buf = String::new();
 
     let exit = loop {
-        let sample_started = Instant::now();
+        let latency_ms = match measure_heartbeat_latency(&mut channel, &mut buf).await {
+            Ok(latency_ms) => latency_ms,
+            Err(HeartbeatError::Closed) => break MonitorExit::Stopped,
+            Err(HeartbeatError::SendFailed) => {
+                let _ = out
+                    .send(FromCore::MonitorError {
+                        id,
+                        message: "资源监控心跳发送失败".to_string(),
+                    })
+                    .await;
+                break MonitorExit::ErrorReported;
+            }
+            Err(HeartbeatError::Timeout) => {
+                let _ = out
+                    .send(FromCore::MonitorError {
+                        id,
+                        message: format!("资源监控心跳超时({} 秒)", HEARTBEAT_TIMEOUT.as_secs()),
+                    })
+                    .await;
+                break MonitorExit::ErrorReported;
+            }
+        };
+
         // 写入命令包。Write the command bundle.
         if channel.data(CMD.as_bytes()).await.is_err() {
             let _ = out
@@ -120,45 +160,18 @@ pub(crate) async fn monitor_task(
         }
 
         // 读取到 END 哨兵为止。Read until the END sentinel.
-        buf.clear();
-        let mut closed = false;
-        let mut failure_message = None;
-        let sample_timeout = tokio::time::sleep(SAMPLE_TIMEOUT);
-        tokio::pin!(sample_timeout);
-        loop {
-            tokio::select! {
-                _ = &mut sample_timeout => {
-                    failure_message = Some(format!(
-                        "资源监控采样超时({} 秒)",
-                        SAMPLE_TIMEOUT.as_secs()
-                    ));
-                    closed = true;
-                    break;
-                }
-                msg = channel.wait() => {
-                    match msg {
-                        Some(russh::ChannelMsg::Data { data }) => {
-                            buf.push_str(&String::from_utf8_lossy(&data));
-                            if buf.contains(END) {
-                                break;
-                            }
-                        }
-                        Some(russh::ChannelMsg::ExtendedData { .. }) => {}
-                        Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
-                            closed = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if closed {
-            if let Some(message) = failure_message {
-                let _ = out.send(FromCore::MonitorError { id, message }).await;
+        match read_until(&mut channel, &mut buf, END, SAMPLE_TIMEOUT).await {
+            ReadUntil::Found => {}
+            ReadUntil::Closed => break MonitorExit::Stopped,
+            ReadUntil::Timeout => {
+                let _ = out
+                    .send(FromCore::MonitorError {
+                        id,
+                        message: format!("资源监控采样超时({} 秒)", SAMPLE_TIMEOUT.as_secs()),
+                    })
+                    .await;
                 break MonitorExit::ErrorReported;
             }
-            break MonitorExit::Stopped;
         }
 
         let now = Instant::now();
@@ -168,7 +181,7 @@ pub(crate) async fn monitor_task(
         prev_at = Some(now);
 
         if let Some(mut stats) = parse_block(&buf, &mut prev_cpu, &mut prev_net, elapsed) {
-            stats.latency_ms = sample_started.elapsed().as_millis() as u64;
+            stats.latency_ms = latency_ms;
             if out
                 .send(FromCore::Monitor {
                     id,
@@ -196,6 +209,56 @@ pub(crate) async fn monitor_task(
     // Close sh by sending EOF so the remote process exits.
     let _ = channel.eof().await;
     exit
+}
+
+async fn measure_heartbeat_latency(
+    channel: &mut russh::Channel<russh::client::Msg>,
+    buf: &mut String,
+) -> Result<u64, HeartbeatError> {
+    let started = Instant::now();
+    if channel.data(HEARTBEAT_CMD.as_bytes()).await.is_err() {
+        return Err(HeartbeatError::SendFailed);
+    }
+
+    match read_until(channel, buf, HEARTBEAT, HEARTBEAT_TIMEOUT).await {
+        ReadUntil::Found => Ok(started.elapsed().as_millis() as u64),
+        ReadUntil::Closed => Err(HeartbeatError::Closed),
+        ReadUntil::Timeout => Err(HeartbeatError::Timeout),
+    }
+}
+
+async fn read_until(
+    channel: &mut russh::Channel<russh::client::Msg>,
+    buf: &mut String,
+    needle: &str,
+    timeout: Duration,
+) -> ReadUntil {
+    buf.clear();
+    let sample_timeout = tokio::time::sleep(timeout);
+    tokio::pin!(sample_timeout);
+
+    loop {
+        tokio::select! {
+            _ = &mut sample_timeout => {
+                return ReadUntil::Timeout;
+            }
+            msg = channel.wait() => {
+                match msg {
+                    Some(russh::ChannelMsg::Data { data }) => {
+                        buf.push_str(&String::from_utf8_lossy(&data));
+                        if buf.contains(needle) {
+                            return ReadUntil::Found;
+                        }
+                    }
+                    Some(russh::ChannelMsg::ExtendedData { .. }) => {}
+                    Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => {
+                        return ReadUntil::Closed;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// 解析一次输出块。`prev_*` 在内部更新以便下次算增量。
@@ -449,5 +512,14 @@ mod tests {
         let n = parse_net(s).unwrap();
         assert_eq!(n.rx, 100);
         assert_eq!(n.tx, 200);
+    }
+
+    #[test]
+    fn heartbeat_command_stays_lightweight_and_separate_from_resource_sample() {
+        assert!(HEARTBEAT_CMD.contains("printf"));
+        assert!(HEARTBEAT_CMD.contains(HEARTBEAT));
+        assert!(!HEARTBEAT_CMD.contains("/proc"));
+        assert!(!HEARTBEAT_CMD.contains("ps "));
+        assert!(!CMD.contains(HEARTBEAT));
     }
 }

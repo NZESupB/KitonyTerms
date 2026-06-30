@@ -83,7 +83,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         tone: "green",
                         label: t.load,
                         value: format!("{:.2}", s.load1),
-                        subvalue: format!("{} · {}", format_uptime(s.uptime_secs), format_latency(s.latency_ms, t.latency)),
+                        subvalue: format_load_subvalue(s.uptime_secs),
                         percent: load_percent(s.load1, s.cpu_cores),
                         trend: t.trend,
                     }
@@ -92,8 +92,8 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         tone: "purple",
                         label: t.network,
                         value: format!("↓ {}", format_rate(s.net_rx_rate)),
-                        subvalue: format!("↑ {}", format_rate(s.net_tx_rate)),
-                        percent: 0.0,
+                        subvalue: format_network_subvalue(s.net_tx_rate, s.latency_ms, t.latency),
+                        percent: network_activity_percent(s.net_rx_rate, s.net_tx_rate),
                         trend: t.trend,
                     }
                 }
@@ -193,6 +193,38 @@ fn load_percent(load1: f32, cpu_cores: u32) -> f32 {
     }
 }
 
+fn network_activity_percent(rx_rate: u64, tx_rate: u64) -> f32 {
+    let total = rx_rate.saturating_add(tx_rate);
+    if total == 0 {
+        return 0.0;
+    }
+
+    const LOW: u64 = 64 * 1024;
+    const MID: u64 = 1024 * 1024;
+    const HIGH: u64 = 10 * 1024 * 1024;
+    const CAP: u64 = 100 * 1024 * 1024;
+
+    if total <= LOW {
+        interpolate_activity(total, 0, LOW, 0.0, 25.0)
+    } else if total <= MID {
+        interpolate_activity(total, LOW, MID, 25.0, 25.0)
+    } else if total <= HIGH {
+        interpolate_activity(total, MID, HIGH, 50.0, 25.0)
+    } else if total <= CAP {
+        interpolate_activity(total, HIGH, CAP, 75.0, 25.0)
+    } else {
+        100.0
+    }
+}
+
+fn interpolate_activity(value: u64, start: u64, end: u64, base: f32, span: f32) -> f32 {
+    if end <= start {
+        return clamp_percent(base);
+    }
+    let ratio = (value.saturating_sub(start)) as f32 / (end - start) as f32;
+    clamp_percent(base + ratio * span)
+}
+
 fn clamp_percent(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 100.0)
@@ -215,6 +247,18 @@ fn format_cores(cores: u32, unit: &str) -> String {
 
 fn format_latency(latency_ms: u64, label: &str) -> String {
     format!("{label} {latency_ms}ms")
+}
+
+fn format_load_subvalue(uptime_secs: u64) -> String {
+    format_uptime(uptime_secs)
+}
+
+fn format_network_subvalue(tx_rate: u64, latency_ms: u64, latency_label: &str) -> String {
+    format!(
+        "↑ {} · {}",
+        format_rate(tx_rate),
+        format_latency(latency_ms, latency_label)
+    )
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -269,6 +313,29 @@ mod tests {
         assert_eq!(memory_percent(1, 0), 0.0);
         assert_eq!(load_percent(0.5, 1), 50.0);
         assert_eq!(load_percent(3.0, 1), 100.0);
+    }
+
+    #[test]
+    fn network_activity_uses_throughput_as_meter_percent() {
+        assert_eq!(network_activity_percent(0, 0), 0.0);
+
+        let light = network_activity_percent(32 * 1024, 0);
+        assert!(light > 0.0 && light < 25.0, "{light}");
+
+        let moderate = network_activity_percent(512 * 1024, 512 * 1024);
+        assert!((moderate - 50.0).abs() < 0.01, "{moderate}");
+
+        assert_eq!(network_activity_percent(100 * 1024 * 1024, 0), 100.0);
+        assert_eq!(network_activity_percent(u64::MAX, u64::MAX), 100.0);
+    }
+
+    #[test]
+    fn latency_is_formatted_with_network_subvalue_not_load_subvalue() {
+        assert_eq!(format_load_subvalue(25 * 3600), "1d 1h");
+        assert_eq!(
+            format_network_subvalue(2 * 1024, 37, "延迟"),
+            "↑ 2.0 KB/s · 延迟 37ms"
+        );
     }
 
     #[test]

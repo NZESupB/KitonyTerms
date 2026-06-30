@@ -4,10 +4,15 @@ mod sidebar_panel;
 mod status_bar;
 mod workbench_panel;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use dioxus::prelude::*;
-use kt_config::{AppLanguage, AppSettings, AuthMethod, SessionProfile};
+use kt_config::{
+    normalize_theme_name, AppLanguage, AppSettings, AuthMethod, SessionProfile, DEFAULT_LIGHT_THEME,
+};
 use kt_core::SessionId;
 
 use sidebar_panel::{render_sidebar_panel, SidebarPanelArgs};
@@ -17,6 +22,7 @@ use workbench_panel::{render_workbench_panel, WorkbenchPanelArgs};
 use crate::components::app_logic::{
     ActiveMonitorView, ActiveSftpView, ActiveTerminalView, SessionTabView, StatusBarSessionView,
 };
+use crate::components::dialog::first_public_key_path;
 use crate::components::sidebar::ContextMenuState;
 use crate::i18n::texts;
 use crate::state::AppState;
@@ -41,12 +47,21 @@ pub enum SplitMode {
     Vertical,
 }
 
-pub fn window_class(active_resize: Option<ResizeDrag>) -> &'static str {
-    match active_resize {
-        Some(ResizeDrag::SidebarWidth { .. }) => "kt-window is-resizing is-resizing-x",
-        Some(ResizeDrag::SftpHeight { .. }) => "kt-window is-resizing is-resizing-y",
-        None => "kt-window",
+pub fn theme_class(theme: &str) -> &'static str {
+    if normalize_theme_name(theme) == DEFAULT_LIGHT_THEME {
+        "theme-light"
+    } else {
+        "theme-dark"
     }
+}
+
+pub fn window_class(active_resize: Option<ResizeDrag>, theme: &str) -> String {
+    let resize_class = match active_resize {
+        Some(ResizeDrag::SidebarWidth { .. }) => " is-resizing is-resizing-x",
+        Some(ResizeDrag::SftpHeight { .. }) => " is-resizing is-resizing-y",
+        None => "",
+    };
+    format!("kt-window {}{}", theme_class(theme), resize_class)
 }
 
 pub struct MainShellArgs {
@@ -71,6 +86,7 @@ pub struct MainShellArgs {
     pub edit_user: Signal<String>,
     pub edit_group: Signal<String>,
     pub edit_password: Signal<String>,
+    pub edit_key_path: Signal<String>,
     pub edit_proxy_jump: Signal<String>,
     pub edit_use_agent: Signal<bool>,
     pub edit_forward_agent: Signal<bool>,
@@ -78,13 +94,13 @@ pub struct MainShellArgs {
     pub group_dialog_mode: Signal<String>,
     pub group_dialog_name: Signal<String>,
     pub group_dialog_original: Signal<String>,
-    pub show_settings: Signal<bool>,
     pub active_session_id: Signal<Option<SessionId>>,
     pub saved_tick: Signal<u64>,
     pub sidebar_width: Signal<f64>,
     pub sftp_height: Signal<Option<f64>>,
     pub active_resize: Signal<Option<ResizeDrag>>,
     pub context_menu: Signal<Option<ContextMenuState>>,
+    pub collapsed_server_groups: Signal<BTreeSet<String>>,
     pub split_mode: Signal<Option<SplitMode>>,
 }
 
@@ -99,6 +115,7 @@ pub(super) struct ConnectionDialogSignals {
     edit_user: Signal<String>,
     edit_group: Signal<String>,
     edit_password: Signal<String>,
+    edit_key_path: Signal<String>,
     edit_proxy_jump: Signal<String>,
     edit_use_agent: Signal<bool>,
     edit_forward_agent: Signal<bool>,
@@ -114,6 +131,7 @@ impl ConnectionDialogSignals {
         self.edit_user.set(String::new());
         self.edit_group.set(String::new());
         self.edit_password.set(String::new());
+        self.edit_key_path.set(String::new());
         self.edit_proxy_jump.set(String::new());
         self.edit_use_agent.set(false);
         self.edit_forward_agent.set(false);
@@ -130,6 +148,8 @@ impl ConnectionDialogSignals {
         self.edit_group
             .set(profile.group.clone().unwrap_or_default());
         self.edit_password.set(String::new());
+        self.edit_key_path
+            .set(first_public_key_path(&profile.params.auth));
         self.edit_proxy_jump
             .set(profile.params.proxy_jump.clone().unwrap_or_default());
         self.edit_use_agent
@@ -162,6 +182,7 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         edit_user,
         edit_group,
         edit_password,
+        edit_key_path,
         edit_proxy_jump,
         edit_use_agent,
         edit_forward_agent,
@@ -169,13 +190,13 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         group_dialog_mode,
         group_dialog_name,
         group_dialog_original,
-        show_settings,
         active_session_id,
         saved_tick,
         sidebar_width,
         sftp_height,
         mut active_resize,
         context_menu,
+        collapsed_server_groups,
         split_mode,
     } = args;
 
@@ -190,6 +211,7 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         edit_user,
         edit_group,
         edit_password,
+        edit_key_path,
         edit_proxy_jump,
         edit_use_agent,
         edit_forward_agent,
@@ -216,13 +238,13 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
                 group_dialog_mode,
                 group_dialog_name,
                 group_dialog_original,
-                show_settings,
                 active_session_id,
                 saved_tick,
                 sidebar_width,
                 sftp_height,
                 active_resize,
                 context_menu,
+                collapsed_server_groups,
             })}
 
             div {
@@ -256,5 +278,34 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
             status_session,
             status_detail,
         })}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kt_config::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME};
+
+    #[test]
+    fn window_class_applies_theme_and_resize_state() {
+        assert_eq!(
+            window_class(None, DEFAULT_DARK_THEME),
+            "kt-window theme-dark"
+        );
+        assert_eq!(
+            window_class(None, DEFAULT_LIGHT_THEME),
+            "kt-window theme-light"
+        );
+        assert_eq!(
+            window_class(
+                Some(ResizeDrag::SidebarWidth {
+                    start_x: 10.0,
+                    start_width: 220.0,
+                }),
+                DEFAULT_LIGHT_THEME,
+            ),
+            "kt-window theme-light is-resizing is-resizing-x"
+        );
+        assert_eq!(theme_class("unknown-theme"), "theme-dark");
     }
 }

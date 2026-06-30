@@ -339,6 +339,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kt_config::DEFAULT_LIGHT_THEME;
 
     fn test_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -403,6 +404,23 @@ mod tests {
             reloaded.get_secret("root@example.com:22").unwrap(),
             Some("pw".to_string())
         );
+    }
+
+    #[test]
+    fn update_settings_persists_theme() {
+        let (dir, store) = test_store();
+        let mut settings = store.settings();
+        settings.theme = DEFAULT_LIGHT_THEME.to_string();
+
+        store.update_settings(settings).unwrap();
+
+        let reloaded = Store::load_from_files(
+            dir.path().join("config.toml"),
+            dir.path().join("secrets.vault"),
+            dir.path().join("known_hosts.toml"),
+        )
+        .unwrap();
+        assert_eq!(reloaded.settings().theme, DEFAULT_LIGHT_THEME);
     }
 
     #[test]

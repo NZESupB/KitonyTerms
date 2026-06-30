@@ -2,11 +2,14 @@
 //!
 //! 这里保留全局状态、弹窗和跨模块副作用编排；主工作台布局由 `main_shell` 承接。
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use dioxus::prelude::*;
 use kt_config::SessionProfile;
-use kt_core::{AuthResponse, SessionId, SessionManager, SftpRequest, ToCore};
+use kt_core::{AuthChallenge, AuthResponse, SessionId, SessionManager, SftpRequest, ToCore};
 
 use crate::components::app_logic::{
     active_monitor_view, active_session, active_sftp_view, active_terminal_view,
@@ -14,7 +17,10 @@ use crate::components::app_logic::{
     status_bar_session_view, DEFAULT_GROUP_NAME,
 };
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
-use crate::components::dialog::{ConnectionDialog, GroupDialog, SftpNameDialog};
+use crate::components::desktop_menu::is_settings_menu_id;
+use crate::components::dialog::{
+    first_public_key_path, ConnectionDialog, GroupDialog, SftpNameDialog,
+};
 use crate::components::external_edit::{
     external_edit_local_path, external_edit_status_text, latest_sftp_completion_revision,
     local_file_modified, open_local_file, ExternalEdit, ExternalEditAction, ExternalEditSaveDialog,
@@ -33,13 +39,28 @@ use crate::components::state_controller::use_state_controller;
 use crate::components::workbench::SettingsPanel;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
-use crate::store::{PendingHostKey, Store};
+use crate::store::{PendingHostKey, Store, VaultState};
 
 /// 全局 Store（只初始化一次）。
 static GLOBAL_STORE: OnceLock<Arc<Store>> = OnceLock::new();
 
 /// 全局 AppState（只初始化一次）。
 static GLOBAL_STATE: OnceLock<Arc<Mutex<AppState>>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingAuthSecret {
+    session_id: SessionId,
+    vault_id: String,
+    password: String,
+}
+
+#[derive(Clone, Copy)]
+struct SecretSaveSignals {
+    pending_secret_save: Signal<Option<PendingSecretSave>>,
+    vault_master_password: Signal<String>,
+    vault_error: Signal<Option<String>>,
+    status_notice: Signal<Option<String>>,
+}
 
 /// 获取全局 state，供其他模块共享会话运行时。
 pub fn get_state() -> &'static Arc<Mutex<AppState>> {
@@ -75,6 +96,7 @@ pub fn App() -> Element {
     let mut edit_user = use_signal(String::new);
     let mut edit_group = use_signal(String::new);
     let mut edit_password = use_signal(String::new);
+    let mut edit_key_path = use_signal(String::new);
     let mut edit_proxy_jump = use_signal(String::new);
     let mut edit_use_agent = use_signal(|| false);
     let mut edit_forward_agent = use_signal(|| false);
@@ -98,6 +120,7 @@ pub fn App() -> Element {
     let mut host_key_prompt = use_signal(|| None::<PendingHostKey>);
     let mut host_key_error = use_signal(|| None::<String>);
     let mut pending_secret_save = use_signal(|| None::<PendingSecretSave>);
+    let mut pending_auth_secrets = use_signal(Vec::<PendingAuthSecret>::new);
     let mut vault_master_password = use_signal(String::new);
     let mut vault_error = use_signal(|| None::<String>);
     let mut status_notice = use_signal(|| None::<String>);
@@ -108,7 +131,24 @@ pub fn App() -> Element {
     let mut sftp_height = use_signal(|| None::<f64>);
     let mut active_resize = use_signal(|| None::<ResizeDrag>);
     let mut context_menu = use_signal(|| None::<ContextMenuState>);
+    let collapsed_server_groups = use_signal(BTreeSet::<String>::new);
     let split_mode = use_signal(|| None::<SplitMode>);
+    let secret_save_signals = SecretSaveSignals {
+        pending_secret_save,
+        vault_master_password,
+        vault_error,
+        status_notice,
+    };
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    dioxus::desktop::use_muda_event_handler({
+        let mut show_settings = show_settings;
+        move |event| {
+            if is_settings_menu_id(event.id().as_ref()) {
+                show_settings.set(true);
+            }
+        }
+    });
 
     use_state_controller(
         state,
@@ -176,6 +216,42 @@ pub fn App() -> Element {
         }),
     );
 
+    use_effect({
+        let store = Arc::clone(store);
+        move || {
+            let sessions = all_sessions();
+            let pending = pending_auth_secrets();
+            if pending.is_empty() {
+                return;
+            }
+
+            let mut remaining = Vec::new();
+            for secret in pending {
+                let session = sessions
+                    .iter()
+                    .find(|session| session.id == secret.session_id);
+                match session {
+                    Some(session) if session.connected => {
+                        save_pending_secret(
+                            &store,
+                            secret.vault_id,
+                            secret.password,
+                            secret_save_signals,
+                            settings.peek().language,
+                        );
+                    }
+                    Some(session) if session.connection_error.is_some() => {}
+                    Some(_) => remaining.push(secret),
+                    None => {}
+                }
+            }
+
+            if *pending_auth_secrets.peek() != remaining {
+                pending_auth_secrets.set(remaining);
+            }
+        }
+    });
+
     let saved_profiles = {
         let _ = saved_tick();
         store.saved_sessions()
@@ -185,8 +261,10 @@ pub fn App() -> Element {
         store.saved_groups()
     };
 
-    let language = settings().language;
-    let window_class_name = window_class(active_resize());
+    let current_settings = settings();
+    let language = current_settings.language;
+    let theme_name = current_settings.normalized_theme();
+    let window_class_name = window_class(active_resize(), theme_name);
     let sessions_snapshot = all_sessions();
     let active_session_ref = active_session(&sessions_snapshot, active_session_id());
     let active_status_session = active_session_ref.cloned();
@@ -212,6 +290,7 @@ pub fn App() -> Element {
 
         div {
             class: "{window_class_name}",
+            "data-theme": "{theme_name}",
             onmousemove: move |evt| {
                 match active_resize() {
                     Some(ResizeDrag::SidebarWidth { start_x, start_width }) => {
@@ -263,6 +342,7 @@ pub fn App() -> Element {
                 edit_user,
                 edit_group,
                 edit_password,
+                edit_key_path,
                 edit_proxy_jump,
                 edit_use_agent,
                 edit_forward_agent,
@@ -270,13 +350,13 @@ pub fn App() -> Element {
                 group_dialog_mode,
                 group_dialog_name,
                 group_dialog_original,
-                show_settings,
                 active_session_id,
                 saved_tick,
                 sidebar_width,
                 sftp_height,
                 active_resize,
                 context_menu,
+                collapsed_server_groups,
                 split_mode,
             })}
 
@@ -296,6 +376,7 @@ pub fn App() -> Element {
                                 edit_user.set(profile.params.user.clone());
                                 edit_group.set(profile.group.clone().unwrap_or_default());
                                 edit_password.set(String::new());
+                                edit_key_path.set(first_public_key_path(&profile.params.auth));
                                 edit_proxy_jump.set(profile.params.proxy_jump.clone().unwrap_or_default());
                                 edit_use_agent.set(profile.params.auth.contains(&kt_config::AuthMethod::Agent));
                                 edit_forward_agent.set(profile.params.forward_agent);
@@ -542,11 +623,24 @@ pub fn App() -> Element {
             if let Some((session_id, session_title, challenge)) = active_auth_challenge.clone() {
                 AuthChallengeDialog {
                     session_title,
-                    challenge,
+                    challenge: challenge.clone(),
                     language,
                     on_submit: {
                         let state = Arc::clone(state);
+                        let challenge = challenge.clone();
                         move |answers: Vec<String>| {
+                            if let Some(secret) =
+                                pending_auth_secret(session_id, &challenge, &answers)
+                            {
+                                let mut next = pending_auth_secrets.peek().clone();
+                                next.retain(|pending| {
+                                    pending.session_id != secret.session_id
+                                        || pending.vault_id != secret.vault_id
+                                });
+                                next.push(secret);
+                                pending_auth_secrets.set(next);
+                            }
+
                             if let Ok(mut app_state) = state.lock() {
                                 if !app_state.manager.send(ToCore::AuthResponse {
                                     id: session_id,
@@ -709,6 +803,7 @@ pub fn App() -> Element {
                 user: edit_user,
                 group: edit_group,
                 password: edit_password,
+                key_path: edit_key_path,
                 proxy_jump: edit_proxy_jump,
                 use_agent: edit_use_agent,
                 forward_agent: edit_forward_agent,
@@ -733,20 +828,13 @@ pub fn App() -> Element {
                             let pwd = edit_password();
                             if !pwd.is_empty() {
                                 let vault_id = profile.params.effective_vault_id();
-                                if let Err(e) = store.set_secret(&vault_id, &pwd) {
-                                    let message =
-                                        format!("{}: {}", texts(language).dialog.vault_save_failed, e);
-                                    tracing::error!("{}", message);
-                                    pending_secret_save.set(Some(PendingSecretSave {
-                                        vault_id,
-                                        password: pwd,
-                                    }));
-                                    vault_master_password.set(String::new());
-                                    vault_error.set(Some(message));
-                                    status_notice.set(Some(
-                                        texts(language).dialog.vault_unlock_required.to_string(),
-                                    ));
-                                }
+                                save_pending_secret(
+                                    &store,
+                                    vault_id,
+                                    pwd,
+                                    secret_save_signals,
+                                    language,
+                                );
                             }
                             saved_tick.set(saved_tick() + 1);
                         }
@@ -820,6 +908,7 @@ pub fn App() -> Element {
             SettingsPanel {
                 show: show_settings,
                 language,
+                theme: settings().theme.clone(),
                 on_language_change: {
                     let store = Arc::clone(store);
                     move |language| {
@@ -828,6 +917,17 @@ pub fn App() -> Element {
                         match store.update_settings(next.clone()) {
                             Ok(()) => settings.set(next),
                             Err(e) => tracing::error!("保存设置失败: {}", e),
+                        }
+                    }
+                },
+                on_theme_change: {
+                    let store = Arc::clone(store);
+                    move |theme| {
+                        let mut next = settings();
+                        next.theme = theme;
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存主题失败: {}", e),
                         }
                     }
                 },
@@ -842,6 +942,79 @@ fn send_sftp_request(state: Arc<Mutex<AppState>>, session_id: SessionId, req: Sf
             id: session_id,
             req,
         });
+    }
+}
+
+fn auth_challenge_vault_id(challenge: &AuthChallenge) -> Option<String> {
+    match challenge {
+        AuthChallenge::Password { user, host, port } => Some(format!("{user}@{host}:{port}")),
+        AuthChallenge::KeyPassphrase { key_path } => Some(format!("key:{key_path}")),
+        AuthChallenge::KeyboardInteractive { .. } => None,
+    }
+}
+
+fn auth_challenge_secret(challenge: &AuthChallenge, answers: &[String]) -> Option<String> {
+    match challenge {
+        AuthChallenge::Password { .. } | AuthChallenge::KeyPassphrase { .. } => answers
+            .first()
+            .map(|answer| answer.trim())
+            .filter(|answer| !answer.is_empty())
+            .map(str::to_string),
+        AuthChallenge::KeyboardInteractive { .. } => None,
+    }
+}
+
+fn pending_auth_secret(
+    session_id: SessionId,
+    challenge: &AuthChallenge,
+    answers: &[String],
+) -> Option<PendingAuthSecret> {
+    Some(PendingAuthSecret {
+        session_id,
+        vault_id: auth_challenge_vault_id(challenge)?,
+        password: auth_challenge_secret(challenge, answers)?,
+    })
+}
+
+fn save_pending_secret(
+    store: &Arc<Store>,
+    vault_id: String,
+    password: String,
+    mut signals: SecretSaveSignals,
+    language: kt_config::AppLanguage,
+) {
+    if vault_id.is_empty() || password.is_empty() {
+        return;
+    }
+
+    match store.set_secret(&vault_id, &password) {
+        Ok(()) => {
+            signals.pending_secret_save.set(None);
+            signals.vault_error.set(None);
+            signals.status_notice.set(Some(
+                texts(language).dialog.vault_password_saved.to_string(),
+            ));
+        }
+        Err(e) => {
+            let message = format!("{}: {}", texts(language).dialog.vault_save_failed, e);
+            tracing::error!("{}", message);
+            match store.vault_state() {
+                VaultState::Missing | VaultState::Locked => {
+                    signals
+                        .pending_secret_save
+                        .set(Some(PendingSecretSave { vault_id, password }));
+                    signals.vault_master_password.set(String::new());
+                    signals.vault_error.set(None);
+                    signals.status_notice.set(Some(
+                        texts(language).dialog.vault_unlock_required.to_string(),
+                    ));
+                }
+                VaultState::Unlocked => {
+                    signals.vault_error.set(None);
+                    signals.status_notice.set(Some(message));
+                }
+            }
+        }
     }
 }
 
@@ -867,4 +1040,38 @@ fn copy_to_clipboard(value: &str) {
         "#
     );
     dioxus::document::eval(&script);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_challenge_creates_pending_secret_for_session() {
+        let challenge = AuthChallenge::Password {
+            user: "root".to_string(),
+            host: "example.com".to_string(),
+            port: 2222,
+        };
+        let pending = pending_auth_secret(SessionId(7), &challenge, &[" secret ".to_string()])
+            .expect("密码认证应生成待保存项");
+
+        assert_eq!(pending.session_id, SessionId(7));
+        assert_eq!(pending.vault_id, "root@example.com:2222");
+        assert_eq!(pending.password, "secret");
+    }
+
+    #[test]
+    fn keyboard_interactive_challenge_is_not_saved_as_password() {
+        let challenge = AuthChallenge::KeyboardInteractive {
+            name: "otp".to_string(),
+            instructions: String::new(),
+            prompts: vec![kt_core::AuthPrompt {
+                text: "code".to_string(),
+                echo: false,
+            }],
+        };
+
+        assert!(pending_auth_secret(SessionId(1), &challenge, &["123456".to_string()]).is_none());
+    }
 }

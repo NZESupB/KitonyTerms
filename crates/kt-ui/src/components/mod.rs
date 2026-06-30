@@ -3,6 +3,7 @@
 pub mod app;
 pub mod app_logic;
 pub mod app_runtime;
+pub mod desktop_menu;
 pub mod dialog;
 pub mod external_edit;
 pub mod icons;

@@ -7,7 +7,9 @@ use kt_core::{SessionId, SftpEntry};
 use crate::components::app::get_state;
 use crate::components::app_logic::DEFAULT_GROUP_NAME;
 use crate::components::icons::Icon;
-use crate::components::sftp::{display_path, join_path, parent_path, request_directory};
+use crate::components::sftp::{
+    display_path, join_path, normalize_sftp_path_input, parent_path, request_directory,
+};
 use crate::i18n::texts;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,12 +137,23 @@ pub fn SidebarSftpTree(
 ) -> Element {
     let state = get_state().clone();
     let t = texts(language).sftp;
+    let mut path_input = use_signal(|| display_path(&path));
     let item_count = entries.len();
     let total_size = entries
         .iter()
         .filter(|entry| !entry.is_dir)
         .map(|entry| entry.size)
         .sum::<u64>();
+
+    use_effect({
+        let path = path.clone();
+        move || {
+            let display = display_path(&path);
+            if *path_input.peek() != display {
+                path_input.set(display);
+            }
+        }
+    });
 
     rsx! {
         div {
@@ -149,7 +162,42 @@ pub fn SidebarSftpTree(
             div {
                 class: "sftp-path-line",
                 Icon { name: "folder" }
-                span { "{display_path(&path)}" }
+                input {
+                    class: "sftp-path-input",
+                    r#type: "text",
+                    value: "{path_input()}",
+                    disabled: !connected,
+                    placeholder: "{t.path}",
+                    oninput: move |evt| {
+                        path_input.set(evt.value());
+                    },
+                    onkeydown: {
+                        let state = state.clone();
+                        let path = path.clone();
+                        move |evt| {
+                            if evt.key() == Key::Enter {
+                                evt.stop_propagation();
+                                evt.prevent_default();
+                                match normalize_sftp_path_input(&path_input()) {
+                                    Some(next) => {
+                                        path_input.set(display_path(&next));
+                                        if let Err(e) = request_directory(
+                                            state.clone(),
+                                            session_id,
+                                            next,
+                                            language,
+                                        ) {
+                                            tracing::error!("SFTP 路径跳转失败: {}", e);
+                                        }
+                                    }
+                                    None => {
+                                        path_input.set(display_path(&path));
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
             }
 
             div {

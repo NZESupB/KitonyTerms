@@ -9,6 +9,9 @@
 `workflow/260628-implementation-roadmap.md` - 统一优化路线图：cover 安全、并发、性能、UI 模块化与文档治理，支持分阶段落地。
 
 ## 已归档完成任务文档
+`workflow/done/260629-menu-polish-followup.md` - 菜单与终端编辑入口跟进：移除应用内顶栏、精简 macOS 系统菜单、将编辑操作放入 SSH 终端右键菜单。
+`workflow/done/260629-polish-menu-terminal-auth.md` - 顶部入口、终端渲染与密码保存修正：macOS 系统菜单设置入口、终端横线、认证弹窗密码保存。
+`workflow/done/260628-functional-optimizations.md` - 功能性问题优化：终端键位/尺寸、监控延迟与占用、主题入口、文件管理、服务器分组、SSH 密码保存与密钥登录。
 `workflow/done/260627-architecture-evolution.md` - 架构演进框架：记录早期入口能力对齐、Monitor 闭环、UI 拆分、安全策略与背压治理计划。
 
 ## 已归档完成任务摘要

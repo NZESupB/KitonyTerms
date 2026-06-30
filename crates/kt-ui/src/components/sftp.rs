@@ -74,9 +74,8 @@ pub fn SftpPanel(session_id: SessionId, language: AppLanguage) -> Element {
                 class: "sftp-titlebar",
                 strong {
                     Icon { name: "folder" }
-                    "SFTP"
+                    "{t.title}"
                 }
-                button { class: "icon-button slim", title: "{t.close}", Icon { name: "close" } }
             }
 
             div {
@@ -125,8 +124,6 @@ pub fn SftpPanel(session_id: SessionId, language: AppLanguage) -> Element {
                     class: "sftp-path",
                     "{display_path(&current_path())}"
                 }
-
-                button { class: "icon-button slim", title: "{t.more}", Icon { name: "more" } }
             }
 
             div {
@@ -354,6 +351,41 @@ pub(crate) fn display_path(path: &str) -> String {
     }
 }
 
+pub(crate) fn normalize_sftp_path_input(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = if trimmed == "~" {
+        ".".to_string()
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        let rest = rest.trim_start_matches('/');
+        if rest.is_empty() {
+            ".".to_string()
+        } else {
+            format!("./{rest}")
+        }
+    } else {
+        trimmed.to_string()
+    };
+
+    Some(trim_sftp_trailing_slashes(&path))
+}
+
+fn trim_sftp_trailing_slashes(path: &str) -> String {
+    if path.chars().all(|ch| ch == '/') {
+        return "/".to_string();
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn ui_timeout_message(path: &str, language: AppLanguage) -> String {
     sftp_timeout_message(language, path, UI_SFTP_TIMEOUT_SECS)
 }
@@ -420,6 +452,21 @@ mod tests {
         assert_eq!(join_path("/root", ".ssh"), "/root/.ssh");
         assert_eq!(join_path("/root/", ".ssh"), "/root/.ssh");
         assert_eq!(join_path(".", ".ssh"), ".ssh");
+    }
+
+    #[test]
+    fn normalize_sftp_path_input_trims_and_maps_home_display() {
+        assert_eq!(
+            normalize_sftp_path_input("  /var/log/ "),
+            Some("/var/log".to_string())
+        );
+        assert_eq!(normalize_sftp_path_input("////"), Some("/".to_string()));
+        assert_eq!(normalize_sftp_path_input("~"), Some(".".to_string()));
+        assert_eq!(
+            normalize_sftp_path_input("~/logs/"),
+            Some("./logs".to_string())
+        );
+        assert_eq!(normalize_sftp_path_input("   "), None);
     }
 
     #[test]

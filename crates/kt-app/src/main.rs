@@ -52,6 +52,10 @@ fn desktop_config() -> dioxus::desktop::Config {
     if let Some(window_icon) = icon::kitony_window_icon() {
         config = config.with_icon(window_icon);
     }
+    #[cfg(target_os = "macos")]
+    {
+        config = config.with_menu(kt_ui::components::desktop_menu::app_menu());
+    }
     icon::with_platform_icon_hooks(config)
 }
 

@@ -1,10 +1,36 @@
 //! 连接编辑对话框组件
 
+use std::path::PathBuf;
+
 use dioxus::prelude::*;
 use kt_config::{normalize_group_name, AppLanguage, AuthMethod, ConnectParams, SessionProfile};
 
 use crate::components::icons::Icon;
 use crate::i18n::texts;
+
+pub fn auth_methods_from_inputs(key_path: &str, use_agent: bool) -> Vec<AuthMethod> {
+    let mut auth = Vec::new();
+    let trimmed_key_path = key_path.trim();
+    if !trimmed_key_path.is_empty() {
+        auth.push(AuthMethod::PublicKey {
+            key_path: PathBuf::from(trimmed_key_path),
+        });
+    }
+    if use_agent {
+        auth.push(AuthMethod::Agent);
+    }
+    auth.push(AuthMethod::Password);
+    auth
+}
+
+pub fn first_public_key_path(auth: &[AuthMethod]) -> String {
+    auth.iter()
+        .find_map(|method| match method {
+            AuthMethod::PublicKey { key_path } => Some(key_path.to_string_lossy().to_string()),
+            AuthMethod::Password | AuthMethod::KeyboardInteractive | AuthMethod::Agent => None,
+        })
+        .unwrap_or_default()
+}
 
 #[component]
 pub fn ConnectionDialog(
@@ -16,6 +42,7 @@ pub fn ConnectionDialog(
     user: Signal<String>,
     group: Signal<String>,
     password: Signal<String>,
+    key_path: Signal<String>,
     proxy_jump: Signal<String>,
     use_agent: Signal<bool>,
     forward_agent: Signal<bool>,
@@ -151,7 +178,7 @@ pub fn ConnectionDialog(
                         }
                     }
 
-                    // 密码
+                    // 密码会在保存连接时自动写入本机 vault。
                     div {
                         label {
                             style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
@@ -165,6 +192,26 @@ pub fn ConnectionDialog(
                                 password.set(evt.value().clone());
                             },
                             placeholder: "{t.password_placeholder}"
+                        }
+                        p {
+                            style: "margin-top: 4px; font-size: 12px; color: #6b7280; line-height: 1.4;",
+                            "{t.password_save_hint}"
+                        }
+                    }
+
+                    div {
+                        label {
+                            style: "display: block; margin-bottom: 4px; font-size: 14px; color: #374151;",
+                            "{t.private_key_path}"
+                        }
+                        input {
+                            style: "width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;",
+                            r#type: "text",
+                            value: "{key_path()}",
+                            oninput: move |evt| {
+                                key_path.set(evt.value().clone());
+                            },
+                            placeholder: "{t.private_key_path_placeholder}"
                         }
                     }
 
@@ -236,6 +283,7 @@ pub fn ConnectionDialog(
                             let port_str = port();
                             let user_val = user();
                             let group_val = group();
+                            let key_path_val = key_path();
                             let proxy_jump_val = proxy_jump();
                             let use_agent_val = use_agent();
                             let forward_agent_val = forward_agent();
@@ -246,11 +294,7 @@ pub fn ConnectionDialog(
                             }
 
                             let port_val: u16 = port_str.parse().unwrap_or(22);
-                            let mut auth = Vec::new();
-                            if use_agent_val {
-                                auth.push(AuthMethod::Agent);
-                            }
-                            auth.push(AuthMethod::Password);
+                            let auth = auth_methods_from_inputs(&key_path_val, use_agent_val);
 
                             // 创建 SessionProfile
                             let profile = SessionProfile {
@@ -292,6 +336,48 @@ pub fn ConnectionDialog(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_methods_include_public_key_before_fallbacks() {
+        let auth = auth_methods_from_inputs(" ~/.ssh/id_ed25519 ", true);
+
+        assert_eq!(
+            auth,
+            vec![
+                AuthMethod::PublicKey {
+                    key_path: PathBuf::from("~/.ssh/id_ed25519")
+                },
+                AuthMethod::Agent,
+                AuthMethod::Password,
+            ]
+        );
+    }
+
+    #[test]
+    fn auth_methods_keep_password_fallback_without_key_or_agent() {
+        assert_eq!(
+            auth_methods_from_inputs("   ", false),
+            vec![AuthMethod::Password]
+        );
+    }
+
+    #[test]
+    fn first_public_key_path_returns_existing_key_for_editing() {
+        let auth = vec![
+            AuthMethod::Agent,
+            AuthMethod::PublicKey {
+                key_path: PathBuf::from("/home/me/.ssh/id_rsa"),
+            },
+            AuthMethod::Password,
+        ];
+
+        assert_eq!(first_public_key_path(&auth), "/home/me/.ssh/id_rsa");
     }
 }
 

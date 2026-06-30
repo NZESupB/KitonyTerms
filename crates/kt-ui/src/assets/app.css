@@ -67,6 +67,111 @@ button:disabled {
     border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.kt-window.theme-light {
+    color-scheme: light;
+    --bg: #f4f7fb;
+    --bg-strong: #ffffff;
+    --panel: #ffffff;
+    --panel-soft: #f0f4f8;
+    --panel-raised: #e8eef6;
+    --border: #c8d3df;
+    --border-soft: rgba(75, 91, 109, 0.18);
+    --text: #17212f;
+    --muted: #59687a;
+    --faint: #7b8998;
+    --blue: #2563eb;
+    --green: #15803d;
+    --amber: #b7791f;
+    --purple: #7c3aed;
+    --red: #dc2626;
+    --shadow: rgba(27, 39, 56, 0.16);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(235, 241, 248, 0.96) 100%);
+}
+
+.kt-window.theme-light .sidebar,
+.kt-window.theme-light .terminal-panel,
+.kt-window.theme-light .monitor-dock,
+.kt-window.theme-light .sftp-shell,
+.kt-window.theme-light .settings-panel {
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 16px 38px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.kt-window.theme-light .session-tabs,
+.kt-window.theme-light .terminal-toolbar,
+.kt-window.theme-light .status-bar {
+    background: rgba(248, 250, 252, 0.86);
+}
+
+.kt-window.theme-light .terminal-body,
+.kt-window.theme-light .terminal-surface {
+    background: #f8fbff;
+    color: #1f2937;
+}
+
+.kt-window.theme-light .sidebar-section-head,
+.kt-window.theme-light .tree-group-title,
+.kt-window.theme-light .connection-card,
+.kt-window.theme-light .connection-copy strong,
+.kt-window.theme-light .session-tab.is-active,
+.kt-window.theme-light .host-pill,
+.kt-window.theme-light .terminal-placeholder,
+.kt-window.theme-light .terminal-placeholder pre,
+.kt-window.theme-light .terminal-placeholder p,
+.kt-window.theme-light .empty-workbench h2,
+.kt-window.theme-light .monitor-title,
+.kt-window.theme-light .metric-value-row strong,
+.kt-window.theme-light .settings-head h2,
+.kt-window.theme-light .settings-row strong,
+.kt-window.theme-light .group-form input,
+.kt-window.theme-light .dialog-field span,
+.kt-window.theme-light .dialog-field input {
+    color: var(--text);
+}
+
+.kt-window.theme-light .connection-card:hover,
+.kt-window.theme-light .host-pill,
+.kt-window.theme-light .sftp-path-line,
+.kt-window.theme-light .sftp-path,
+.kt-window.theme-light .group-form input,
+.kt-window.theme-light .dialog-field input,
+.kt-window.theme-light .segmented-control {
+    background: rgba(241, 245, 249, 0.9);
+}
+
+.kt-window.theme-light .connection-card.is-active {
+    border-color: rgba(37, 99, 235, 0.28);
+    background: linear-gradient(90deg, rgba(219, 234, 254, 0.96), rgba(236, 244, 255, 0.88));
+}
+
+.kt-window.theme-light .session-tab.is-active {
+    border-color: rgba(37, 99, 235, 0.32);
+    background: #ffffff;
+}
+
+.kt-window.theme-light .protocol-badge {
+    background: rgba(37, 99, 235, 0.12);
+    color: #1d4ed8;
+}
+
+.kt-window.theme-light .terminal-caret {
+    background: #1f2937;
+}
+
+.kt-window.theme-light .metric-card,
+.kt-window.theme-light .context-menu {
+    background: rgba(255, 255, 255, 0.94);
+}
+
+.kt-window.theme-light .context-menu button {
+    color: var(--text);
+}
+
+.kt-window.theme-light .settings-overlay {
+    background: rgba(15, 23, 42, 0.22);
+}
+
 .kt-content {
     display: flex;
     min-height: 0;
@@ -223,6 +328,20 @@ button:disabled {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.sftp-path-input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.sftp-path-input:disabled {
+    opacity: 0.72;
 }
 
 .sftp-tree-actions {
@@ -391,34 +510,6 @@ button:disabled {
     white-space: nowrap;
 }
 
-.sidebar-footer {
-    display: flex;
-    align-items: center;
-    padding: 10px 12px;
-    border-top: 1px solid var(--border-soft);
-}
-
-.sidebar-settings-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 14px;
-}
-
-.sidebar-settings-btn:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: #f8fbff;
-}
-
-.sidebar-settings-btn > .kt-icon {
-    font-size: 18px;
-}
-
 /* ========== 连接树 ========== */
 
 .connection-tree {
@@ -434,6 +525,7 @@ button:disabled {
     gap: 6px;
     padding: 5px 6px;
     color: #dce7f6;
+    cursor: pointer;
     font-size: 14px;
     font-weight: 700;
 }
@@ -441,6 +533,11 @@ button:disabled {
 .tree-group-title > .kt-icon {
     font-size: 14px;
     color: var(--muted);
+    transition: transform 0.12s ease;
+}
+
+.tree-group.is-collapsed .tree-group-title > .kt-icon {
+    transform: rotate(-90deg);
 }
 
 .empty-resource {
@@ -794,8 +891,16 @@ button:disabled {
 }
 
 .terminal-row {
+    display: block;
     height: 1.25em;
+    line-height: 1.25;
     white-space: pre;
+}
+
+.terminal-row > span {
+    height: 1.25em;
+    line-height: 1.25;
+    vertical-align: top;
 }
 
 .terminal-row.is-trigger-highlight {
@@ -993,6 +1098,7 @@ button:disabled {
     display: flex;
     min-width: 0;
     flex-direction: column;
+    gap: 8px;
     justify-content: space-between;
     overflow: hidden;
     padding: 9px 10px;
@@ -1022,9 +1128,13 @@ button:disabled {
 }
 
 .metric-value-row strong {
+    min-width: 0;
+    overflow: hidden;
     color: #f6f9ff;
     font-size: 20px;
     line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .metric-value-row small {
@@ -1037,16 +1147,18 @@ button:disabled {
 }
 
 .metric-meter {
-    height: 8px;
+    height: 10px;
     overflow: hidden;
     border-radius: 999px;
     background: rgba(148, 163, 184, 0.13);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .metric-fill {
     height: 100%;
     min-width: 0;
     border-radius: inherit;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
     transition: width 0.22s ease;
 }
 

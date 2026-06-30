@@ -155,6 +155,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     session_id: sess.id,
                                     pane_id: "primary".to_string(),
                                     trigger_highlights: settings().trigger_highlights,
+                                    language,
                                 }
                             }
                             if split_mode().is_some() {
@@ -165,6 +166,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         session_id: sess.id,
                                         pane_id: "secondary".to_string(),
                                         trigger_highlights: settings().trigger_highlights,
+                                        language,
                                     }
                                 }
                             }

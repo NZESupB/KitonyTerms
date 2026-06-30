@@ -1,7 +1,7 @@
 //! 工作区级展示组件。
 
 use dioxus::prelude::*;
-use kt_config::AppLanguage;
+use kt_config::{normalize_theme_name, AppLanguage, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME};
 
 use crate::components::icons::{AppLogo, Icon};
 use crate::i18n::texts;
@@ -10,13 +10,16 @@ use crate::i18n::texts;
 pub fn SettingsPanel(
     show: Signal<bool>,
     language: AppLanguage,
+    theme: String,
     on_language_change: EventHandler<AppLanguage>,
+    on_theme_change: EventHandler<String>,
 ) -> Element {
     if !show() {
         return rsx! {};
     }
 
     let t = texts(language).app;
+    let selected_theme = normalize_theme_name(&theme);
 
     rsx! {
         div {
@@ -56,6 +59,28 @@ pub fn SettingsPanel(
                             class: if language == AppLanguage::English { "is-selected" } else { "" },
                             onclick: move |_| on_language_change.call(AppLanguage::English),
                             "{t.english}"
+                        }
+                    }
+                }
+
+                div {
+                    class: "settings-row",
+                    div {
+                        strong { "{t.theme}" }
+                        p { "{t.theme_hint}" }
+                    }
+
+                    div {
+                        class: "segmented-control",
+                        button {
+                            class: if selected_theme == DEFAULT_DARK_THEME { "is-selected" } else { "" },
+                            onclick: move |_| on_theme_change.call(DEFAULT_DARK_THEME.to_string()),
+                            "{t.theme_dark}"
+                        }
+                        button {
+                            class: if selected_theme == DEFAULT_LIGHT_THEME { "is-selected" } else { "" },
+                            onclick: move |_| on_theme_change.call(DEFAULT_LIGHT_THEME.to_string()),
+                            "{t.theme_light}"
                         }
                     }
                 }
