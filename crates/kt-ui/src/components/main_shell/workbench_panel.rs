@@ -43,6 +43,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
     } = args;
 
     let t = texts(language).app;
+    let active_tab_id = active_session_id();
 
     rsx! {
         div {
@@ -57,7 +58,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                     for sess in session_tabs {
                         div {
                             key: "tab-{sess.id.0}",
-                            class: if active_session_id() == Some(sess.id) { "session-tab is-active" } else { "session-tab" },
+                            class: if active_tab_id == Some(sess.id) { "session-tab is-active" } else { "session-tab" },
                             onclick: {
                                 let id = sess.id;
                                 move |_| active_session_id.set(Some(id))
@@ -65,6 +66,32 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
 
                             span { class: session_dot_class_for_status(sess.status) }
                             span { class: "tab-title", "{sess.title}" }
+                            if active_tab_id == Some(sess.id) {
+                                div {
+                                    class: "tab-actions",
+                                    onclick: move |evt| evt.stop_propagation(),
+                                    button {
+                                        class: "tab-action",
+                                        title: "{t.split}",
+                                        onclick: move |_| split_mode.set(None),
+                                        Icon { name: "split" }
+                                    }
+                                    button {
+                                        class: "tab-action",
+                                        title: "{t.split_horizontal}",
+                                        onclick: move |_| split_mode.set(Some(SplitMode::Horizontal)),
+                                        Icon { name: "split-horizontal" }
+                                    }
+                                    button {
+                                        class: "tab-action",
+                                        title: "{t.split_vertical}",
+                                        onclick: move |_| split_mode.set(Some(SplitMode::Vertical)),
+                                        Icon { name: "split-vertical" }
+                                    }
+                                    button { class: "tab-action", title: "{t.clear}", Icon { name: "clear" } }
+                                    button { class: "tab-action", title: "{t.more}", Icon { name: "more" } }
+                                }
+                            }
                             button {
                                 class: "tab-close",
                                 title: "{t.close_session}",
@@ -96,47 +123,6 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                         },
                         Icon { name: "add" }
                     }
-                }
-
-                div {
-                    class: "terminal-toolbar",
-
-                    div {
-                        class: "breadcrumb",
-                        span { class: "protocol-badge", "ssh" }
-                        span { class: "chevron", "›" }
-                        if let Some(sess) = active_terminal.clone() {
-                            span {
-                                class: "host-pill",
-                                span { class: session_dot_class_for_status(sess.status) }
-                                "{sess.title}"
-                            }
-                        } else {
-                            span { class: "host-pill muted", "{t.disconnected}" }
-                        }
-                    }
-
-                    div { class: "toolbar-spacer" }
-                    button {
-                        class: "icon-button slim",
-                        title: "{t.split}",
-                        onclick: move |_| split_mode.set(None),
-                        Icon { name: "split" }
-                    }
-                    button {
-                        class: "icon-button slim",
-                        title: "{t.split_horizontal}",
-                        onclick: move |_| split_mode.set(Some(SplitMode::Horizontal)),
-                        Icon { name: "split-horizontal" }
-                    }
-                    button {
-                        class: "icon-button slim",
-                        title: "{t.split_vertical}",
-                        onclick: move |_| split_mode.set(Some(SplitMode::Vertical)),
-                        Icon { name: "split-vertical" }
-                    }
-                    button { class: "icon-button slim", title: "{t.clear}", Icon { name: "clear" } }
-                    button { class: "icon-button slim", title: "{t.more}", Icon { name: "more" } }
                 }
 
                 div {

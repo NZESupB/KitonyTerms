@@ -142,3 +142,60 @@ impl HostKeyVerifier for KnownHostsVerifier {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kt_config::ConnectParams;
+    use kt_core::AuthProviderFactory;
+
+    #[test]
+    fn store_auth_provider_reads_saved_password_from_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::load_from_files(
+                dir.path().join("config.toml"),
+                dir.path().join("secrets.vault"),
+                dir.path().join("known_hosts.toml"),
+            )
+            .unwrap(),
+        );
+        store
+            .set_secret("root@example.com:2222", "saved-pw")
+            .unwrap();
+
+        let mut params = ConnectParams::new("example.com", "root");
+        params.port = 2222;
+        let factory = StoreAuthFactory::new(Arc::clone(&store));
+        let mut provider = factory.create(kt_core::SessionId(1), &params);
+
+        assert_eq!(
+            provider.password("root", "example.com", 2222),
+            Some("saved-pw".to_string())
+        );
+    }
+
+    #[test]
+    fn store_auth_provider_falls_back_to_profile_vault_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::load_from_files(
+                dir.path().join("config.toml"),
+                dir.path().join("secrets.vault"),
+                dir.path().join("known_hosts.toml"),
+            )
+            .unwrap(),
+        );
+        store.set_secret("custom-vault-id", "saved-pw").unwrap();
+
+        let mut params = ConnectParams::new("example.com", "root");
+        params.vault_id = Some("custom-vault-id".to_string());
+        let factory = StoreAuthFactory::new(Arc::clone(&store));
+        let mut provider = factory.create(kt_core::SessionId(1), &params);
+
+        assert_eq!(
+            provider.password("root", "example.com", 22),
+            Some("saved-pw".to_string())
+        );
+    }
+}

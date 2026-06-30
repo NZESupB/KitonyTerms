@@ -4,20 +4,44 @@ use kt_config::{
     normalize_group_name, AppSettings, Config, KnownHostCheck, KnownHosts, Paths, SessionProfile,
 };
 use kt_secrets::Vault;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultState {
-    Missing,
     Locked,
     Unlocked,
 }
 
 enum VaultAccess {
-    Missing,
-    Locked,
-    Unlocked(Vault),
+    Locked {
+        reason: String,
+    },
+    Unlocked {
+        vault: Vault,
+        notice: Option<String>,
+    },
+}
+
+const APP_MANAGED_VAULT_PASSWORD: &str = "kitonyterms:app-managed-vault:v1";
+
+fn legacy_vault_backup_path(vault_file: &Path) -> PathBuf {
+    let file_name = vault_file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "secrets.vault".to_string());
+    for index in 0.. {
+        let suffix = if index == 0 {
+            "legacy".to_string()
+        } else {
+            format!("legacy.{index}")
+        };
+        let candidate = vault_file.with_file_name(format!("{file_name}.{suffix}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("无限递增的备份序号总能找到可用路径")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +79,6 @@ impl PendingHostKey {
 /// Store 包装器：桥接会话配置与加密 vault
 pub struct Store {
     config_file: PathBuf,
-    vault_file: PathBuf,
     known_hosts_file: PathBuf,
     config: Mutex<Config>,
     vault: Mutex<VaultAccess>,
@@ -73,21 +96,16 @@ impl Store {
         )
     }
 
-    fn load_from_files(
+    pub(crate) fn load_from_files(
         config_file: PathBuf,
         vault_file: PathBuf,
         known_hosts_file: PathBuf,
     ) -> anyhow::Result<Self> {
         let config = Config::load_from(&config_file).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let vault = if vault_file.exists() {
-            VaultAccess::Locked
-        } else {
-            VaultAccess::Missing
-        };
+        let vault = Self::load_app_managed_vault(&vault_file);
 
         Ok(Self {
             config_file,
-            vault_file,
             known_hosts_file,
             config: Mutex::new(config),
             vault: Mutex::new(vault),
@@ -122,27 +140,24 @@ impl Store {
 
     pub fn vault_state(&self) -> VaultState {
         match &*self.vault.lock().unwrap() {
-            VaultAccess::Missing => VaultState::Missing,
-            VaultAccess::Locked => VaultState::Locked,
-            VaultAccess::Unlocked(_) => VaultState::Unlocked,
+            VaultAccess::Locked { .. } => VaultState::Locked,
+            VaultAccess::Unlocked { .. } => VaultState::Unlocked,
         }
     }
 
-    /// 使用主密码解锁已有 vault；不存在时创建新的 vault。
-    pub fn unlock_vault(&self, master_password: &str) -> anyhow::Result<VaultState> {
-        let mut guard = self.vault.lock().unwrap();
-        let vault = Vault::open_or_create(&self.vault_file, master_password)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        *guard = VaultAccess::Unlocked(vault);
-        Ok(VaultState::Unlocked)
+    /// 返回 vault 状态提示；正常自动打开时返回 `None`。
+    pub fn vault_status_message(&self) -> Option<String> {
+        match &*self.vault.lock().unwrap() {
+            VaultAccess::Locked { reason } => Some(reason.clone()),
+            VaultAccess::Unlocked { notice, .. } => notice.clone(),
+        }
     }
 
     pub fn get_secret(&self, vault_id: &str) -> anyhow::Result<Option<String>> {
         let guard = self.vault.lock().unwrap();
         match &*guard {
-            VaultAccess::Unlocked(vault) => Ok(vault.get(vault_id).map(String::from)),
-            VaultAccess::Missing => Ok(None),
-            VaultAccess::Locked => Err(anyhow::anyhow!("vault 已锁定，无法读取已保存密码")),
+            VaultAccess::Unlocked { vault, .. } => Ok(vault.get(vault_id).map(String::from)),
+            VaultAccess::Locked { reason } => Err(anyhow::anyhow!(reason.clone())),
         }
     }
 
@@ -150,14 +165,68 @@ impl Store {
     pub fn set_secret(&self, vault_id: &str, value: &str) -> anyhow::Result<()> {
         let mut guard = self.vault.lock().unwrap();
         match &mut *guard {
-            VaultAccess::Unlocked(vault) => {
+            VaultAccess::Unlocked { vault, .. } => {
                 vault.set(vault_id, value);
                 vault.save().map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 Ok(())
             }
-            VaultAccess::Missing => Err(anyhow::anyhow!("vault 尚未创建，无法保存密码")),
-            VaultAccess::Locked => Err(anyhow::anyhow!("vault 已锁定，无法保存密码")),
+            VaultAccess::Locked { reason } => Err(anyhow::anyhow!(reason.clone())),
         }
+    }
+
+    fn load_app_managed_vault(vault_file: &Path) -> VaultAccess {
+        match Vault::open_or_create(vault_file, APP_MANAGED_VAULT_PASSWORD) {
+            Ok(mut vault) => {
+                if vault.is_dirty() {
+                    if let Err(err) = vault.save() {
+                        return VaultAccess::Locked {
+                            reason: format!("无法初始化本机密码库，连接密码不会保存: {err}"),
+                        };
+                    }
+                }
+                VaultAccess::Unlocked {
+                    vault,
+                    notice: None,
+                }
+            }
+            Err(err) => {
+                if !vault_file.exists() {
+                    return VaultAccess::Locked {
+                        reason: format!("无法初始化本机密码库，连接密码不会保存: {err}"),
+                    };
+                }
+
+                match Self::replace_legacy_vault(vault_file) {
+                    Ok((vault, backup_file)) => {
+                        VaultAccess::Unlocked {
+                            vault,
+                            notice: Some(format!(
+                                "旧版密码库无法自动打开，已备份到 {} 并创建新的本机密码库；旧保存密码暂不可用",
+                                backup_file.display()
+                            )),
+                        }
+                    }
+                    Err(replace_err) => VaultAccess::Locked {
+                        reason: format!(
+                            "无法自动打开或重建本机密码库，连接密码不会保存: {err}; {replace_err}"
+                        ),
+                    },
+                }
+            }
+        }
+    }
+
+    fn replace_legacy_vault(vault_file: &Path) -> anyhow::Result<(Vault, PathBuf)> {
+        let backup_file = legacy_vault_backup_path(vault_file);
+        std::fs::rename(vault_file, &backup_file).map_err(|err| {
+            anyhow::anyhow!("备份旧密码库到 {} 失败: {err}", backup_file.display())
+        })?;
+        let mut vault = Vault::open_or_create(vault_file, APP_MANAGED_VAULT_PASSWORD)
+            .map_err(|err| anyhow::anyhow!("创建新的本机密码库失败: {err}"))?;
+        vault
+            .save()
+            .map_err(|err| anyhow::anyhow!("保存新的本机密码库失败: {err}"))?;
+        Ok((vault, backup_file))
     }
 
     /// 校验或首次信任主机密钥指纹。
@@ -353,20 +422,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_vault_does_not_silently_accept_secret_writes() {
-        let (_dir, store) = test_store();
+    fn missing_vault_is_created_and_unlocked_automatically() {
+        let (dir, store) = test_store();
 
-        assert_eq!(store.vault_state(), VaultState::Missing);
-        let err = store.set_secret("root@example.com:22", "pw").unwrap_err();
-
-        assert!(err.to_string().contains("尚未创建"));
+        assert_eq!(store.vault_state(), VaultState::Unlocked);
+        assert!(dir.path().join("secrets.vault").exists());
+        assert_eq!(store.vault_status_message(), None);
         assert_eq!(store.get_secret("root@example.com:22").unwrap(), None);
     }
 
     #[test]
-    fn existing_vault_starts_locked_until_explicit_unlock() {
+    fn app_managed_vault_reopens_and_reads_saved_password() {
         let (dir, store) = test_store();
-        store.unlock_vault("master").unwrap();
         store.set_secret("root@example.com:22", "pw").unwrap();
 
         let reloaded = Store::load_from_files(
@@ -376,9 +443,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(reloaded.vault_state(), VaultState::Locked);
-        assert!(reloaded.get_secret("root@example.com:22").is_err());
-        reloaded.unlock_vault("master").unwrap();
+        assert_eq!(reloaded.vault_state(), VaultState::Unlocked);
         assert_eq!(
             reloaded.get_secret("root@example.com:22").unwrap(),
             Some("pw".to_string())
@@ -386,23 +451,43 @@ mod tests {
     }
 
     #[test]
-    fn locked_vault_can_retry_secret_write_after_unlock() {
-        let (dir, store) = test_store();
-        store.unlock_vault("master").unwrap();
+    fn legacy_master_password_vault_is_backed_up_and_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("secrets.vault");
+        let mut legacy_vault = Vault::create(&vault_path, "legacy-master").unwrap();
+        legacy_vault.set("root@example.com:22", "pw");
+        legacy_vault.save().unwrap();
+        let backup_path = legacy_vault_backup_path(&vault_path);
 
-        let reloaded = Store::load_from_files(
+        let store = Store::load_from_files(
             dir.path().join("config.toml"),
-            dir.path().join("secrets.vault"),
+            vault_path.clone(),
             dir.path().join("known_hosts.toml"),
         )
         .unwrap();
 
-        assert!(reloaded.set_secret("root@example.com:22", "pw").is_err());
-        reloaded.unlock_vault("master").unwrap();
-        reloaded.set_secret("root@example.com:22", "pw").unwrap();
+        assert_eq!(store.vault_state(), VaultState::Unlocked);
+        assert!(backup_path.exists());
+        let message = store.vault_status_message().unwrap();
+        assert!(message.contains("已备份"));
+        assert!(message.contains("旧保存密码暂不可用"));
+        assert_eq!(store.get_secret("root@example.com:22").unwrap(), None);
+        store.set_secret("root@example.com:22", "new").unwrap();
         assert_eq!(
-            reloaded.get_secret("root@example.com:22").unwrap(),
-            Some("pw".to_string())
+            store.get_secret("root@example.com:22").unwrap(),
+            Some("new".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_vault_backup_path_does_not_overwrite_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("secrets.vault");
+        std::fs::write(dir.path().join("secrets.vault.legacy"), "old").unwrap();
+
+        assert_eq!(
+            legacy_vault_backup_path(&vault_path),
+            dir.path().join("secrets.vault.legacy.1")
         );
     }
 

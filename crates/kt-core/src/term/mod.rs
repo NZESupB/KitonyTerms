@@ -226,6 +226,8 @@ impl TermEngine {
             let mut bg = color::resolve(cell.bg, palette);
             if attrs.inverse {
                 std::mem::swap(&mut fg, &mut bg);
+                // 快照对外输出最终颜色，避免 UI 层再次反色。
+                attrs.inverse = false;
             }
             // Render hidden text as blanks (keep bg).
             let c = if flags.contains(Flags::HIDDEN) {
@@ -314,6 +316,36 @@ mod tests {
         assert!(cell.attrs.bold);
         // red maps onto ANSI_16[1].
         assert_eq!(cell.fg, color::Rgb::new(0xf7, 0x76, 0x8e));
+    }
+
+    #[test]
+    fn inverse_cells_are_resolved_to_final_colors() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        eng.advance(b"\x1b[7mX\x1b[0m");
+        let snap = eng.snapshot();
+        let cell = snap.cell(0, 0).unwrap();
+
+        assert_eq!(cell.c, 'X');
+        assert_eq!(cell.fg, color::DEFAULT_BG);
+        assert_eq!(cell.bg, color::DEFAULT_FG);
+        assert!(!cell.attrs.inverse);
+    }
+
+    #[test]
+    fn alternate_screen_exit_restores_primary_grid() {
+        let mut eng = TermEngine::new(20, 4, 50);
+        eng.advance(b"prompt> ready");
+        eng.advance(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[44mhtop row\x1b[0m");
+        assert_eq!(eng.snapshot().row_text(0), "htop row");
+
+        eng.advance(b"\x1b[?1049l");
+        let snap = eng.snapshot();
+
+        assert_eq!(snap.row_text(0), "prompt> ready");
+        assert!(snap
+            .cells
+            .iter()
+            .all(|cell| cell.bg != color::Rgb::new(0x7a, 0xa2, 0xf7)));
     }
 
     #[test]

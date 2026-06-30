@@ -34,6 +34,20 @@ pub struct SftpEntryContext {
     pub entry: SftpEntry,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SftpEntryOpenAction {
+    OpenDirectory,
+    ExternalEdit,
+}
+
+pub fn sftp_entry_open_action(entry: &SftpEntry) -> SftpEntryOpenAction {
+    if entry.is_dir {
+        SftpEntryOpenAction::OpenDirectory
+    } else {
+        SftpEntryOpenAction::ExternalEdit
+    }
+}
+
 pub fn format_sftp_size(size: u64, is_dir: bool) -> String {
     if is_dir {
         String::new()
@@ -134,6 +148,8 @@ pub fn SidebarSftpTree(
     error: Option<String>,
     language: AppLanguage,
     on_context_menu: EventHandler<ContextMenuState>,
+    on_entry_open: EventHandler<SftpEntryContext>,
+    on_entry_external_edit: EventHandler<SftpEntryContext>,
 ) -> Element {
     let state = get_state().clone();
     let t = texts(language).sftp;
@@ -280,8 +296,9 @@ pub fn SidebarSftpTree(
                                 session_id,
                                 base_path: path.clone(),
                                 entry,
-                                language,
                                 on_context_menu,
+                                on_entry_open,
+                                on_entry_external_edit,
                             }
                         }
                     }
@@ -302,10 +319,10 @@ pub fn SidebarSftpEntry(
     session_id: SessionId,
     base_path: String,
     entry: SftpEntry,
-    language: AppLanguage,
     on_context_menu: EventHandler<ContextMenuState>,
+    on_entry_open: EventHandler<SftpEntryContext>,
+    on_entry_external_edit: EventHandler<SftpEntryContext>,
 ) -> Element {
-    let state = get_state().clone();
     let icon = if entry.is_dir { "folder" } else { "file" };
     let row_class = if entry.is_dir {
         "sftp-table-row is-dir"
@@ -318,8 +335,8 @@ pub fn SidebarSftpEntry(
     let permissions = format_sftp_permissions(entry.permissions, entry.is_dir);
     let owner = format_sftp_owner(&entry);
     let full_path = join_path(&base_path, &name);
-    let click_base_path = base_path.clone();
-    let click_entry = entry.clone();
+    let double_open_base_path = base_path.clone();
+    let double_open_entry = entry.clone();
 
     rsx! {
         div {
@@ -327,11 +344,17 @@ pub fn SidebarSftpEntry(
             title: "{full_path}",
             onclick: move |evt| {
                 evt.stop_propagation();
-                if click_entry.is_dir {
-                    let next = join_path(&click_base_path, &click_entry.name);
-                    if let Err(e) = request_directory(state.clone(), session_id, next, language) {
-                        tracing::error!("SFTP 打开目录失败: {}", e);
-                    }
+            },
+            ondoubleclick: move |evt| {
+                evt.stop_propagation();
+                let ctx = SftpEntryContext {
+                    session_id,
+                    base_path: double_open_base_path.clone(),
+                    entry: double_open_entry.clone(),
+                };
+                match sftp_entry_open_action(&ctx.entry) {
+                    SftpEntryOpenAction::OpenDirectory => on_entry_open.call(ctx),
+                    SftpEntryOpenAction::ExternalEdit => on_entry_external_edit.call(ctx),
                 }
             },
             oncontextmenu: {
@@ -681,5 +704,34 @@ mod tests {
             ..named
         };
         assert_eq!(format_sftp_owner(&numeric), "0/0");
+    }
+
+    #[test]
+    fn sftp_double_click_action_opens_dirs_and_edits_files() {
+        let dir = SftpEntry {
+            name: "logs".to_string(),
+            is_dir: true,
+            size: 0,
+            modified: None,
+            permissions: None,
+            user: None,
+            group: None,
+            uid: None,
+            gid: None,
+        };
+        let file = SftpEntry {
+            name: "app.log".to_string(),
+            is_dir: false,
+            ..dir.clone()
+        };
+
+        assert_eq!(
+            sftp_entry_open_action(&dir),
+            SftpEntryOpenAction::OpenDirectory
+        );
+        assert_eq!(
+            sftp_entry_open_action(&file),
+            SftpEntryOpenAction::ExternalEdit
+        );
     }
 }

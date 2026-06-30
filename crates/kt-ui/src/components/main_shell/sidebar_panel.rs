@@ -16,7 +16,7 @@ use crate::components::app_logic::{
 };
 use crate::components::icons::Icon;
 use crate::components::sidebar::{
-    ConnectionCard, ContextMenuState, ContextMenuTarget, SidebarSftpTree,
+    ConnectionCard, ContextMenuState, ContextMenuTarget, SftpEntryContext, SidebarSftpTree,
 };
 use crate::i18n::texts;
 use crate::state::AppState;
@@ -43,6 +43,8 @@ pub(super) struct SidebarPanelArgs {
     pub(super) active_resize: Signal<Option<ResizeDrag>>,
     pub(super) context_menu: Signal<Option<ContextMenuState>>,
     pub(super) collapsed_server_groups: Signal<BTreeSet<String>>,
+    pub(super) on_sftp_entry_open: Callback<SftpEntryContext>,
+    pub(super) on_sftp_entry_external_edit: Callback<SftpEntryContext>,
 }
 
 pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
@@ -67,6 +69,8 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
         mut active_resize,
         context_menu,
         mut collapsed_server_groups,
+        on_sftp_entry_open,
+        on_sftp_entry_external_edit,
     } = args;
 
     let t = texts(language).app;
@@ -90,7 +94,6 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
 
                 div {
                     class: "sidebar-section-head",
-                    Icon { name: "chevron-down" }
                     span { "{t.groups}" }
                     button {
                         class: "sidebar-add-btn",
@@ -251,7 +254,6 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
 
                 div {
                     class: "sidebar-section-head",
-                    Icon { name: "chevron-down" }
                     span { "{texts(language).sftp.title}" }
                 }
 
@@ -266,6 +268,8 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         error: sftp.error.clone(),
                         language,
                         on_context_menu: move |menu| show_context_menu(context_menu, menu),
+                        on_entry_open: move |ctx| on_sftp_entry_open.call(ctx),
+                        on_entry_external_edit: move |ctx| on_sftp_entry_external_edit.call(ctx),
                     }
                 } else {
                     div {

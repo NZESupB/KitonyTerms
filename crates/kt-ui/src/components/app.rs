@@ -30,16 +30,15 @@ use crate::components::main_shell::{
     render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
     SFTP_MIN_HEIGHT, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
 };
-use crate::components::security_dialogs::{
-    AuthChallengeDialog, HostKeyConfirmDialog, PendingSecretSave, VaultUnlockDialog,
-};
+use crate::components::security_dialogs::{AuthChallengeDialog, HostKeyConfirmDialog};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
 use crate::components::state_controller::use_state_controller;
 use crate::components::workbench::SettingsPanel;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
-use crate::store::{PendingHostKey, Store, VaultState};
+use crate::store::PendingHostKey;
+use crate::store::Store;
 
 /// 全局 Store（只初始化一次）。
 static GLOBAL_STORE: OnceLock<Arc<Store>> = OnceLock::new();
@@ -56,9 +55,6 @@ struct PendingAuthSecret {
 
 #[derive(Clone, Copy)]
 struct SecretSaveSignals {
-    pending_secret_save: Signal<Option<PendingSecretSave>>,
-    vault_master_password: Signal<String>,
-    vault_error: Signal<Option<String>>,
     status_notice: Signal<Option<String>>,
 }
 
@@ -116,14 +112,11 @@ pub fn App() -> Element {
     let mut sftp_name_dialog_value = use_signal(String::new);
     let mut external_edits = use_signal(Vec::<ExternalEdit>::new);
     let mut external_edit_notice = use_signal(|| None::<String>);
-    let mut next_external_edit_id = use_signal(|| 1u64);
+    let next_external_edit_id = use_signal(|| 1u64);
     let mut host_key_prompt = use_signal(|| None::<PendingHostKey>);
     let mut host_key_error = use_signal(|| None::<String>);
-    let mut pending_secret_save = use_signal(|| None::<PendingSecretSave>);
     let mut pending_auth_secrets = use_signal(Vec::<PendingAuthSecret>::new);
-    let mut vault_master_password = use_signal(String::new);
-    let mut vault_error = use_signal(|| None::<String>);
-    let mut status_notice = use_signal(|| None::<String>);
+    let mut status_notice = use_signal(|| store.vault_status_message());
     let active_session_id = use_signal(|| None::<SessionId>);
     let all_sessions = use_signal(Vec::<SessionState>::new);
     let mut saved_tick = use_signal(|| 0u64);
@@ -133,12 +126,7 @@ pub fn App() -> Element {
     let mut context_menu = use_signal(|| None::<ContextMenuState>);
     let collapsed_server_groups = use_signal(BTreeSet::<String>::new);
     let split_mode = use_signal(|| None::<SplitMode>);
-    let secret_save_signals = SecretSaveSignals {
-        pending_secret_save,
-        vault_master_password,
-        vault_error,
-        status_notice,
-    };
+    let secret_save_signals = SecretSaveSignals { status_notice };
 
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     dioxus::desktop::use_muda_event_handler({
@@ -358,6 +346,25 @@ pub fn App() -> Element {
                 context_menu,
                 collapsed_server_groups,
                 split_mode,
+                on_sftp_entry_open: {
+                    let state = Arc::clone(state);
+                    Callback::new(move |ctx: SftpEntryContext| {
+                        if let Err(e) = open_sftp_entry(state.clone(), ctx, language) {
+                            tracing::error!("SFTP 打开目录失败: {}", e);
+                        }
+                    })
+                },
+                on_sftp_entry_external_edit: {
+                    let state = Arc::clone(state);
+                    Callback::new(move |ctx: SftpEntryContext| {
+                        start_sftp_external_edit(
+                            state.clone(),
+                            ctx,
+                            external_edits,
+                            next_external_edit_id,
+                        );
+                    })
+                },
             })}
 
             if let Some(menu) = context_menu() {
@@ -436,11 +443,8 @@ pub fn App() -> Element {
                     on_sftp_open: {
                         let state = Arc::clone(state);
                         move |ctx: SftpEntryContext| {
-                            if ctx.entry.is_dir {
-                                let next = join_path(&ctx.base_path, &ctx.entry.name);
-                                if let Err(e) = request_directory(state.clone(), ctx.session_id, next, language) {
-                                    tracing::error!("SFTP 打开目录失败: {}", e);
-                                }
+                            if let Err(e) = open_sftp_entry(state.clone(), ctx, language) {
+                                tracing::error!("SFTP 打开目录失败: {}", e);
                             }
                             context_menu.set(None);
                         }
@@ -492,43 +496,11 @@ pub fn App() -> Element {
                     on_sftp_external_edit: {
                         let state = Arc::clone(state);
                         move |ctx: SftpEntryContext| {
-                            if ctx.entry.is_dir {
-                                context_menu.set(None);
-                                return;
-                            }
-                            let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
-                            let local_path = external_edit_local_path(ctx.session_id, &remote_path);
-                            if let Some(parent) = local_path.parent() {
-                                if let Err(e) = std::fs::create_dir_all(parent) {
-                                    tracing::error!("创建本地编辑目录失败: {}", e);
-                                    context_menu.set(None);
-                                    return;
-                                }
-                            }
-                            let after_revision = latest_sftp_completion_revision(state.clone(), ctx.session_id);
-                            let edit = ExternalEdit {
-                                id: next_external_edit_id(),
-                                session_id: ctx.session_id,
-                                remote_path: remote_path.clone(),
-                                local_path: local_path.clone(),
-                                file_name: ctx.entry.name.clone(),
-                                after_revision,
-                                status: ExternalEditStatus::Downloading,
-                                sync_mode: ExternalEditSyncMode::Ask,
-                                last_seen_modified: None,
-                                pending_modified: None,
-                            };
-                            next_external_edit_id.set(next_external_edit_id() + 1);
-                            let mut edits = external_edits.peek().clone();
-                            edits.push(edit);
-                            external_edits.set(edits);
-                            send_sftp_request(
+                            start_sftp_external_edit(
                                 state.clone(),
-                                ctx.session_id,
-                                SftpRequest::Download {
-                                    remote: remote_path,
-                                    local: local_path,
-                                },
+                                ctx,
+                                external_edits,
+                                next_external_edit_id,
                             );
                             context_menu.set(None);
                         }
@@ -731,69 +703,6 @@ pub fn App() -> Element {
                 }
             }
 
-            if let Some(pending) = pending_secret_save() {
-                VaultUnlockDialog {
-                    pending,
-                    language,
-                    master_password: vault_master_password,
-                    error: vault_error(),
-                    on_unlock: {
-                        let store = Arc::clone(store);
-                        move |master_password: String| {
-                            match store.unlock_vault(&master_password) {
-                                Ok(_) => {
-                                    let pending_after_unlock = pending_secret_save();
-                                    if let Some(pending) = pending_after_unlock {
-                                        match store.set_secret(&pending.vault_id, &pending.password) {
-                                            Ok(()) => {
-                                                pending_secret_save.set(None);
-                                                vault_master_password.set(String::new());
-                                                vault_error.set(None);
-                                                status_notice.set(Some(
-                                                    texts(language)
-                                                        .dialog
-                                                        .vault_password_saved
-                                                        .to_string(),
-                                                ));
-                                            }
-                                            Err(err) => {
-                                                let message = format!(
-                                                    "{}: {}",
-                                                    texts(language).dialog.vault_save_failed,
-                                                    err
-                                                );
-                                                tracing::error!("{}", message);
-                                                vault_error.set(Some(message));
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    let message = format!(
-                                        "{}: {}",
-                                        texts(language).dialog.vault_unlock_failed,
-                                        err
-                                    );
-                                    tracing::error!("{}", message);
-                                    vault_error.set(Some(message));
-                                }
-                            }
-                        }
-                    },
-                    on_cancel: move |_| {
-                        pending_secret_save.set(None);
-                        vault_master_password.set(String::new());
-                        vault_error.set(None);
-                        status_notice.set(Some(
-                            texts(language)
-                                .dialog
-                                .vault_password_not_saved
-                                .to_string(),
-                        ));
-                    },
-                }
-            }
-
             ConnectionDialog {
                 show: show_dialog,
                 mode: dialog_mode,
@@ -936,6 +845,69 @@ pub fn App() -> Element {
     }
 }
 
+pub(crate) fn open_sftp_entry(
+    state: Arc<Mutex<AppState>>,
+    ctx: SftpEntryContext,
+    language: kt_config::AppLanguage,
+) -> Result<(), String> {
+    if !ctx.entry.is_dir {
+        return Ok(());
+    }
+
+    request_directory(
+        state,
+        ctx.session_id,
+        join_path(&ctx.base_path, &ctx.entry.name),
+        language,
+    )
+}
+
+fn start_sftp_external_edit(
+    state: Arc<Mutex<AppState>>,
+    ctx: SftpEntryContext,
+    mut external_edits: Signal<Vec<ExternalEdit>>,
+    mut next_external_edit_id: Signal<u64>,
+) {
+    if ctx.entry.is_dir {
+        return;
+    }
+
+    let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
+    let local_path = external_edit_local_path(ctx.session_id, &remote_path);
+    if let Some(parent) = local_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::error!("创建本地编辑目录失败: {}", e);
+            return;
+        }
+    }
+
+    let after_revision = latest_sftp_completion_revision(state.clone(), ctx.session_id);
+    let edit = ExternalEdit {
+        id: next_external_edit_id(),
+        session_id: ctx.session_id,
+        remote_path: remote_path.clone(),
+        local_path: local_path.clone(),
+        file_name: ctx.entry.name.clone(),
+        after_revision,
+        status: ExternalEditStatus::Downloading,
+        sync_mode: ExternalEditSyncMode::Ask,
+        last_seen_modified: None,
+        pending_modified: None,
+    };
+    next_external_edit_id.set(next_external_edit_id() + 1);
+    let mut edits = external_edits.peek().clone();
+    edits.push(edit);
+    external_edits.set(edits);
+    send_sftp_request(
+        state,
+        ctx.session_id,
+        SftpRequest::Download {
+            remote: remote_path,
+            local: local_path,
+        },
+    );
+}
+
 fn send_sftp_request(state: Arc<Mutex<AppState>>, session_id: SessionId, req: SftpRequest) {
     if let Ok(app_state) = state.lock() {
         app_state.manager.send(ToCore::Sftp {
@@ -989,8 +961,6 @@ fn save_pending_secret(
 
     match store.set_secret(&vault_id, &password) {
         Ok(()) => {
-            signals.pending_secret_save.set(None);
-            signals.vault_error.set(None);
             signals.status_notice.set(Some(
                 texts(language).dialog.vault_password_saved.to_string(),
             ));
@@ -998,22 +968,7 @@ fn save_pending_secret(
         Err(e) => {
             let message = format!("{}: {}", texts(language).dialog.vault_save_failed, e);
             tracing::error!("{}", message);
-            match store.vault_state() {
-                VaultState::Missing | VaultState::Locked => {
-                    signals
-                        .pending_secret_save
-                        .set(Some(PendingSecretSave { vault_id, password }));
-                    signals.vault_master_password.set(String::new());
-                    signals.vault_error.set(None);
-                    signals.status_notice.set(Some(
-                        texts(language).dialog.vault_unlock_required.to_string(),
-                    ));
-                }
-                VaultState::Unlocked => {
-                    signals.vault_error.set(None);
-                    signals.status_notice.set(Some(message));
-                }
-            }
+            signals.status_notice.set(Some(message));
         }
     }
 }

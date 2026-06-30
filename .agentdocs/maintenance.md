@@ -22,7 +22,7 @@
 - secret 值是否仍只进入 vault，不落入 `config.toml` 或日志。
 
 ### 4. 安全与失败闭环
-- 主机密钥、认证、vault 解锁、secret 写入是否有明确失败反馈。
+- 主机密钥、认证、vault 自动初始化/旧库备份、secret 写入是否有明确失败反馈。
 - 成功、失败、超时、取消、停止是否都能回到可预测状态。
 - 是否避免使用 `AcceptAllVerifier` 进入 GUI 默认路径。
 
@@ -54,7 +54,7 @@
 | 连接失败闭环 | `cargo test -p kt-ui session_close_records_connection_error`；`cargo test -p kt-core ssh_open_timeout_turns_pending_connect_into_error` | `Closed(error)` 写入 UI 错误状态，SSH 打开总超时不会卡住 |
 | SFTP 失败与重试 | `cargo test -p kt-core sftp_request_for_missing_session_returns_error`；`cargo test -p kt-ui sftp_stopped_clears_loading_and_progress_without_overwriting_error`；`cargo test -p kt-ui auto_sftp_load_only_when_connected_and_idle` | 缺失会话返回错误、停止事件清理 loading/progress、自动加载不重复触发 |
 | Monitor 停机 | `cargo test -p kt-core monitor_request_for_missing_session_returns_error`；`cargo test -p kt-ui monitor_stopped_clears_loading_without_overwriting_error`；`cargo test -p kt-ui session_close_clears_monitor_pending_and_error_state` | 缺失会话返回错误、正常停止不覆盖旧错误、会话关闭清理等待态 |
-| Vault 错误路径 | `cargo test -p kt-ui missing_vault_does_not_silently_accept_secret_writes`；`cargo test -p kt-ui existing_vault_starts_locked_until_explicit_unlock`；`cargo test -p kt-ui locked_vault_can_retry_secret_write_after_unlock` | 缺失/锁定 vault 不静默写入，解锁后可重试 |
+| Vault 自动加密存储 | `cargo test -p kt-ui missing_vault_is_created_and_unlocked_automatically`；`cargo test -p kt-ui app_managed_vault_reopens_and_reads_saved_password`；`cargo test -p kt-ui legacy_master_password_vault_is_backed_up_and_replaced`；`cargo test -p kt-ui legacy_vault_backup_path_does_not_overwrite_existing_backup`；`cargo test -p kt-ui store_auth_provider` | 自动创建/打开 vault、保存后重启可读、旧主密码 vault 有备份与状态提示、备份不覆盖、认证 provider 可直接读取已保存密码 |
 | Host key 安全语义 | `cargo test -p kt-ui host_key_check_does_not_persist_unknown_before_trust`；`cargo test -p kt-ui temporary_host_key_allowance_is_consumed_once_without_persisting`；`cargo test -p kt-config known_hosts_check_requires_explicit_trust_for_unknown_host` | 未确认不持久化、仅允许一次不落盘、未知主机需显式信任 |
 
 ## 季度治理核对

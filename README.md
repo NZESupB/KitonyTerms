@@ -12,13 +12,13 @@ A lightweight, cross-platform SSH terminal client built in **Rust** with [Dioxus
 
 | Crate | Responsibility | Tests |
 |-------|---------------|-------|
-| `kt-secrets` | Master-password vault: Argon2id + XChaCha20-Poly1305 for encrypted-at-rest secrets (SSH passwords, key passphrases) | 6 ✅ |
-| `kt-config` | TOML session profiles & app settings + `~/.ssh/config` parsing/merging | 20 ✅ |
-| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration + SFTP support + remote system monitoring. **No UI dependencies.** | 29 ✅ |
-| `kt-ui` | Dioxus components and UI state: terminal workbench, dialogs, SFTP tree/actions, system monitor, selector-driven main shell | 45 ✅ |
+| `kt-secrets` | Encrypted-at-rest secret vault: Argon2id + XChaCha20-Poly1305 for SSH passwords and key passphrases | 6 ✅ |
+| `kt-config` | TOML session profiles & app settings + `~/.ssh/config` parsing/merging | 21 ✅ |
+| `kt-core` | SSH client (`russh`) + terminal engine (`alacritty_terminal`) + session orchestration + SFTP support + remote system monitoring. **No UI dependencies.** | 33 ✅ |
+| `kt-ui` | Dioxus components and UI state: terminal workbench, dialogs, SFTP tree/actions, system monitor, selector-driven main shell | 70 ✅ |
 | `kt-app` | Main binary: GUI-only Dioxus desktop entry, CLI argument validation, app icon integration | 8 ✅ |
 
-**108 tests pass; `clippy` is clean.** The core validation is an **in-process round-trip integration test** ([`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)) that spins up a real `russh` SSH server on loopback and drives the full `SessionManager` path: `connect → password auth → PTY → shell → channel data → TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes actually land in the rendered grid.
+**138 tests pass; `clippy` is clean.** The core validation is an **in-process round-trip integration test** ([`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)) that spins up a real `russh` SSH server on loopback and drives the full `SessionManager` path: `connect → password auth → PTY → shell → channel data → TermEngine → GridSnapshot`, asserting that server output and echoed keystrokes actually land in the rendered grid.
 
 ### What works today
 
@@ -26,8 +26,8 @@ A lightweight, cross-platform SSH terminal client built in **Rust** with [Dioxus
 - **Multiple Sessions & Split Panes**: Tabbed interface with per-session scrollback and resize, plus horizontal/vertical terminal split views
 - **Terminal Features**: True color, bold/italic/underline/strikethrough, block/bar/underline cursor
 - **Interactive Auth Prompts**: Password, private-key passphrase, and keyboard-interactive prompts can be collected mid-handshake when saved secrets are missing
-- **Session Persistence**: Save connections to `config.toml`; passwords and key passphrases are encrypted in the master-password vault
-- **Master Password Vault**: Vault unlock is explicit; skipping unlock allows connections but disables saved-secret read/write
+- **Session Persistence**: Save connections to `config.toml`; passwords and key passphrases are encrypted in the local vault
+- **Automatic Secret Vault**: The local vault is created/opened automatically, so saved passwords can be reused on reconnect without an extra vault password prompt
 - **SFTP Panel**: Browse remote filesystem, upload/download files, create directories, delete/rename, and edit remote files via a local editor upload flow
 - **System Monitoring**: Real-time remote CPU, memory, network, disk, load, uptime, and latency summary
 - **SSH Config Integration**: Reads `~/.ssh/config` for host aliases, defaults, and single-hop `ProxyJump`
@@ -63,9 +63,9 @@ The terminal **engine** (VT parsing, grid, scrollback) is fully decoupled from *
 ### Session & secrets storage
 
 - **Sessions** (`SessionProfile`: host/port/user/auth/…) are **non-secret** and stored plaintext in `config.toml`.
-- **Secrets** (passwords, key passphrases) are indexed by vault id (`user@host:port`) and encrypted in the vault, never plaintext on disk.
+- **Secrets** (passwords, key passphrases) are indexed by vault id (`user@host:port`) and encrypted in the local vault, never plaintext on disk.
 - **Host keys** (host/port/fingerprint) are stored in `known_hosts.toml` to detect changed remote host keys.
-- On startup the vault is **locked** until the master password is entered in the unlock dialog; skipping unlock allows connections but disables saved-password reading/writing.
+- On startup the vault is opened automatically. Legacy master-password vaults that cannot be opened are backed up as `secrets.vault.legacy*`; new saved passwords continue into a fresh encrypted vault.
 
 ## Tech stack
 
@@ -114,7 +114,6 @@ cargo run -p kt-app
 cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
 # Removed entries fail clearly: --safe, --system-ssh, --show-log, --list
-#   First run: set a master password (skippable)
 #   Click ➕ New → enter host / user / auth → Connect
 #   Tick "Save session" to persist it; password encrypted in vault
 #   Click sidebar session to reconnect (password auto-filled)
@@ -130,7 +129,7 @@ cargo run -p kt-core --example headless -- user@host
 
 - [x] **Phase 1** — Core engine (SSH + terminal + sessions), verified end-to-end
 - [x] **Phase 2** — Dioxus desktop UI: terminal rendering, input, connect dialog, multi-tab
-- [x] **Phase 3** — Session persistence (TOML + vault), master password, SFTP panel, system monitor
+- [x] **Phase 3** — Session persistence (TOML + encrypted vault), SFTP panel, system monitor
 - [x] **Phase 4** — `known_hosts` trust store, split panes, ssh-agent forwarding, ProxyJump, triggers/highlighting
 - [x] **Phase 5** — UI modularization: state controller, main shell split, selector-driven SFTP/monitor/status views
 - [x] **Phase 6** — Documentation and engineering convergence: README/architecture/QA paths/release notes

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
-use kt_core::term::{GridSnapshot, SnapshotCell};
+use kt_core::term::{CursorShape, GridSnapshot, SnapshotCell};
 use kt_core::{SessionId, ToCore};
 
 use crate::components::icons::Icon;
@@ -230,9 +230,21 @@ pub fn Terminal(
                                 let cell = &snapshot.cells[idx];
 
                                 if cell.attrs.wide_spacer {
-                                    rsx! { span { key: "{idx}" } }
+                                    rsx! {
+                                        span {
+                                            key: "{idx}",
+                                            style: "{terminal_spacer_style()}"
+                                        }
+                                    }
                                 } else {
-                                    render_cell(cell, idx, row == snapshot.cursor.line && col == snapshot.cursor.column)
+                                    render_cell(
+                                        cell,
+                                        idx,
+                                        terminal_cursor_class(
+                                            row == snapshot.cursor.line && col == snapshot.cursor.column,
+                                            snapshot.cursor.shape,
+                                        ),
+                                    )
                                 }
                             }
                         }
@@ -515,57 +527,74 @@ fn line_matches_trigger(line: &str, triggers: &[String]) -> bool {
         .any(|trigger| line.contains(&trigger))
 }
 
-fn render_cell(cell: &SnapshotCell, idx: usize, is_cursor: bool) -> Element {
-    let style = terminal_cell_style(cell, is_cursor);
+fn render_cell(cell: &SnapshotCell, idx: usize, cursor_class: &'static str) -> Element {
+    let style = terminal_cell_style(cell);
     let char_to_display = terminal_cell_text(cell);
 
     rsx! {
         span {
             key: "{idx}",
             style: "{style}",
-            class: if is_cursor { "terminal-cursor" } else { "" },
-            dangerous_inner_html: "{char_to_display}"
+            class: "{cursor_class}",
+            "{char_to_display}"
         }
     }
 }
 
-fn terminal_cell_style(cell: &SnapshotCell, is_cursor: bool) -> String {
+fn terminal_cursor_class(is_cursor: bool, shape: CursorShape) -> &'static str {
+    if !is_cursor || shape == CursorShape::Hidden {
+        return "";
+    }
+
+    match shape {
+        CursorShape::Block => "terminal-cursor terminal-cursor-block",
+        CursorShape::Bar => "terminal-cursor terminal-cursor-bar",
+        CursorShape::Underline => "terminal-cursor terminal-cursor-underline",
+        CursorShape::Hidden => "",
+    }
+}
+
+fn terminal_cell_style(cell: &SnapshotCell) -> String {
     let fg_color = format!("rgb({}, {}, {})", cell.fg.r, cell.fg.g, cell.fg.b);
     let bg_color = format!("rgb({}, {}, {})", cell.bg.r, cell.bg.g, cell.bg.b);
-    let mut style = format!("color: {fg_color}; display: inline-block; width: 1ch;");
+    let bg_value = if cell_has_visible_background(cell) {
+        bg_color.as_str()
+    } else {
+        "transparent"
+    };
+    let font_weight = if cell.attrs.bold { "700" } else { "400" };
+    let font_style = if cell.attrs.italic {
+        "italic"
+    } else {
+        "normal"
+    };
+    let text_decoration = terminal_text_decoration(cell);
+    let opacity = if cell.attrs.dim { "0.7" } else { "1" };
 
-    if cell_has_visible_background(cell) {
-        style.push_str(&format!(" background: {bg_color};"));
+    format!(
+        "color: {fg_color}; background: {bg_value}; display: inline-block; position: relative; width: 1ch; font-weight: {font_weight}; font-style: {font_style}; text-decoration: {text_decoration}; opacity: {opacity};"
+    )
+}
+
+fn terminal_spacer_style() -> &'static str {
+    "background: transparent; display: inline-block; position: relative; width: 0; font-weight: 400; font-style: normal; text-decoration: none; opacity: 1;"
+}
+
+fn terminal_text_decoration(cell: &SnapshotCell) -> &'static str {
+    if is_blank_cell(cell) {
+        return "none";
     }
-    if cell.attrs.bold {
-        style.push_str(" font-weight: bold;");
+
+    match (cell.attrs.underline, cell.attrs.strikeout) {
+        (true, true) => "underline line-through",
+        (true, false) => "underline",
+        (false, true) => "line-through",
+        (false, false) => "none",
     }
-    if cell.attrs.italic {
-        style.push_str(" font-style: italic;");
-    }
-    if cell.attrs.underline && !is_blank_cell(cell) {
-        style.push_str(" text-decoration: underline;");
-    }
-    if cell.attrs.strikeout && !is_blank_cell(cell) {
-        style.push_str(" text-decoration: line-through;");
-    }
-    if cell.attrs.dim {
-        style.push_str(" opacity: 0.7;");
-    }
-    if cell.attrs.inverse {
-        style = format!(
-            "color: {bg_color}; background: {fg_color}; display: inline-block; width: 1ch;"
-        );
-    }
-    if is_cursor {
-        style.push_str(" background: #c0caf5; color: #1a1b26;");
-    }
-    style
 }
 
 fn cell_has_visible_background(cell: &SnapshotCell) -> bool {
-    cell.attrs.inverse
-        || cell.bg.r != kt_core::term::color::DEFAULT_BG.r
+    cell.bg.r != kt_core::term::color::DEFAULT_BG.r
         || cell.bg.g != kt_core::term::color::DEFAULT_BG.g
         || cell.bg.b != kt_core::term::color::DEFAULT_BG.b
 }
@@ -628,11 +657,89 @@ mod tests {
             ..Default::default()
         };
 
-        let style = terminal_cell_style(&cell, false);
+        let style = terminal_cell_style(&cell);
 
         assert!(!style.contains("background: rgb"));
-        assert!(!style.contains("text-decoration"));
+        assert!(style.contains("background: transparent"));
+        assert!(!style.contains("text-decoration: underline"));
+        assert!(style.contains("text-decoration: none"));
         assert!(style.contains("width: 1ch"));
+        assert!(style.contains("position: relative"));
+    }
+
+    #[test]
+    fn terminal_style_uses_snapshot_colors_without_second_inverse_pass() {
+        let cell = SnapshotCell {
+            c: 'X',
+            fg: kt_core::term::color::DEFAULT_BG,
+            bg: kt_core::term::color::DEFAULT_FG,
+            attrs: kt_core::term::snapshot::CellAttrs {
+                inverse: true,
+                ..Default::default()
+            },
+        };
+
+        let style = terminal_cell_style(&cell);
+
+        assert!(style.contains("color: rgb(26, 27, 38)"));
+        assert!(style.contains("background: rgb(208, 208, 208)"));
+    }
+
+    #[test]
+    fn terminal_default_style_explicitly_resets_mutable_properties() {
+        let cell = SnapshotCell::default();
+
+        let style = terminal_cell_style(&cell);
+
+        assert!(style.contains("background: transparent"));
+        assert!(style.contains("font-weight: 400"));
+        assert!(style.contains("font-style: normal"));
+        assert!(style.contains("text-decoration: none"));
+        assert!(style.contains("opacity: 1"));
+    }
+
+    #[test]
+    fn terminal_text_decoration_can_reset_or_combine_flags() {
+        let cell = SnapshotCell {
+            c: 'X',
+            attrs: kt_core::term::snapshot::CellAttrs {
+                underline: true,
+                strikeout: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(terminal_text_decoration(&cell), "underline line-through");
+        assert_eq!(terminal_text_decoration(&SnapshotCell::default()), "none");
+    }
+
+    #[test]
+    fn terminal_cell_text_preserves_html_sensitive_characters() {
+        let cell = SnapshotCell {
+            c: '<',
+            ..Default::default()
+        };
+
+        assert_eq!(terminal_cell_text(&cell), "<");
+    }
+
+    #[test]
+    fn cursor_class_tracks_shape_without_repainting_cell_style() {
+        assert_eq!(
+            terminal_cursor_class(true, CursorShape::Block),
+            "terminal-cursor terminal-cursor-block"
+        );
+        assert_eq!(
+            terminal_cursor_class(true, CursorShape::Bar),
+            "terminal-cursor terminal-cursor-bar"
+        );
+        assert_eq!(
+            terminal_cursor_class(true, CursorShape::Underline),
+            "terminal-cursor terminal-cursor-underline"
+        );
+        assert_eq!(terminal_cursor_class(true, CursorShape::Hidden), "");
+        assert_eq!(terminal_cursor_class(false, CursorShape::Block), "");
     }
 
     #[test]

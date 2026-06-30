@@ -8,12 +8,6 @@ use crate::components::icons::Icon;
 use crate::i18n::texts;
 use crate::store::PendingHostKey;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingSecretSave {
-    pub vault_id: String,
-    pub password: String,
-}
-
 #[component]
 pub fn AuthChallengeDialog(
     session_title: String,
@@ -224,75 +218,6 @@ pub fn HostKeyConfirmDialog(
                         class: "primary",
                         onclick: move |_| on_trust.call(trust_prompt.clone()),
                         "{dialog_t.host_key_trust}"
-                    }
-                    button {
-                        onclick: move |_| on_cancel.call(()),
-                        "{dialog_t.cancel}"
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-pub fn VaultUnlockDialog(
-    pending: PendingSecretSave,
-    language: AppLanguage,
-    master_password: Signal<String>,
-    error: Option<String>,
-    on_unlock: EventHandler<String>,
-    on_cancel: EventHandler<()>,
-) -> Element {
-    let dialog_t = texts(language).dialog;
-
-    rsx! {
-        div {
-            class: "settings-overlay",
-
-            section {
-                class: "settings-panel external-edit-dialog",
-                onclick: move |evt| evt.stop_propagation(),
-
-                div {
-                    class: "settings-head",
-                    h2 { "{dialog_t.vault_unlock_title}" }
-                    button {
-                        class: "icon-button slim",
-                        title: "{dialog_t.cancel}",
-                        onclick: move |_| on_cancel.call(()),
-                        Icon { name: "close" }
-                    }
-                }
-
-                div {
-                    class: "external-edit-dialog-body",
-                    Icon { name: "shield" }
-                    div {
-                        strong { "{pending.vault_id}" }
-                        p { "{dialog_t.vault_unlock_body}" }
-                        label {
-                            class: "dialog-field",
-                            span { "{dialog_t.vault_master_password}" }
-                            input {
-                                r#type: "password",
-                                value: "{master_password()}",
-                                placeholder: "{dialog_t.vault_master_password_placeholder}",
-                                oninput: move |evt| master_password.set(evt.value().clone()),
-                            }
-                        }
-                        if let Some(error) = error.as_ref() {
-                            p { class: "dialog-error", "{error}" }
-                        }
-                    }
-                }
-
-                div {
-                    class: "external-edit-dialog-actions",
-                    button {
-                        class: "primary",
-                        onclick: move |_| on_unlock.call(master_password()),
-                        "{dialog_t.vault_unlock}"
                     }
                     button {
                         onclick: move |_| on_cancel.call(()),

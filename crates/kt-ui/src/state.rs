@@ -130,9 +130,7 @@ impl AppState {
                 }
             }
             FromCore::Title { id, title } => {
-                if let Some(sess) = self.sessions.get_mut(&id) {
-                    sess.title = title;
-                }
+                tracing::debug!("忽略远端终端标题更新，会话 {:?}: {:?}", id, title);
             }
             FromCore::Bell { .. } => {}
             FromCore::Closed { id, error } => {
@@ -425,6 +423,38 @@ mod tests {
             sess.connection_error.as_deref(),
             Some("authentication failed")
         );
+    }
+
+    #[test]
+    fn terminal_title_event_does_not_clear_session_name() {
+        let mut app_state = app_state();
+        let sess = session_state(true);
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::Title {
+            id,
+            title: String::new(),
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert_eq!(sess.title, "demo");
+    }
+
+    #[test]
+    fn terminal_title_event_does_not_replace_session_name() {
+        let mut app_state = app_state();
+        let sess = session_state(true);
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::Title {
+            id,
+            title: "htop".to_string(),
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert_eq!(sess.title, "demo");
     }
 
     #[test]

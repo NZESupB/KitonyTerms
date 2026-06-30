@@ -23,7 +23,7 @@ use crate::components::app_logic::{
     ActiveMonitorView, ActiveSftpView, ActiveTerminalView, SessionTabView, StatusBarSessionView,
 };
 use crate::components::dialog::first_public_key_path;
-use crate::components::sidebar::ContextMenuState;
+use crate::components::sidebar::{ContextMenuState, SftpEntryContext};
 use crate::i18n::texts;
 use crate::state::AppState;
 use crate::store::Store;
@@ -102,6 +102,8 @@ pub struct MainShellArgs {
     pub context_menu: Signal<Option<ContextMenuState>>,
     pub collapsed_server_groups: Signal<BTreeSet<String>>,
     pub split_mode: Signal<Option<SplitMode>>,
+    pub on_sftp_entry_open: Callback<SftpEntryContext>,
+    pub on_sftp_entry_external_edit: Callback<SftpEntryContext>,
 }
 
 #[derive(Clone, Copy)]
@@ -198,6 +200,8 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         context_menu,
         collapsed_server_groups,
         split_mode,
+        on_sftp_entry_open,
+        on_sftp_entry_external_edit,
     } = args;
 
     let t = texts(language).app;
@@ -245,6 +249,8 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
                 active_resize,
                 context_menu,
                 collapsed_server_groups,
+                on_sftp_entry_open,
+                on_sftp_entry_external_edit,
             })}
 
             div {

@@ -732,9 +732,19 @@ impl SessionTask {
                                     Ok(Ok(session)) => {
                                         let out = self.out.clone();
                                         let internal_tx = internal_tx.clone();
+                                        let latency_target =
+                                            crate::monitor::LatencyProbeTarget::new(
+                                                self.params.host.clone(),
+                                                self.params.port,
+                                            );
                                         tokio::spawn(async move {
-                                            let exit =
-                                                crate::monitor::monitor_task(id, session, out).await;
+                                            let exit = crate::monitor::monitor_task(
+                                                id,
+                                                session,
+                                                latency_target,
+                                                out,
+                                            )
+                                            .await;
                                             let _ = internal_tx.send(SessionInternal::MonitorExited(exit));
                                         });
                                         monitor_started = true;

@@ -12,13 +12,13 @@
 
 | Crate | 职责 | 测试 |
 |-------|------|------|
-| `kt-secrets` | 主密码保险库：Argon2id + XChaCha20-Poly1305 加密存储机密（SSH 密码、私钥口令） | 6 ✅ |
-| `kt-config` | TOML 会话配置与应用设置 + `~/.ssh/config` 解析/合并 | 20 ✅ |
-| `kt-core` | SSH 客户端 (`russh`) + 终端引擎 (`alacritty_terminal`) + 会话编排 + SFTP 支持 + 远端系统监控。**无 UI 依赖。** | 29 ✅ |
-| `kt-ui` | Dioxus 组件与 UI 状态：终端工作台、对话框、SFTP 树/操作、系统监控、selector 驱动的主界面 | 45 ✅ |
+| `kt-secrets` | 加密机密保险库：Argon2id + XChaCha20-Poly1305 加密存储 SSH 密码与私钥口令 | 6 ✅ |
+| `kt-config` | TOML 会话配置与应用设置 + `~/.ssh/config` 解析/合并 | 21 ✅ |
+| `kt-core` | SSH 客户端 (`russh`) + 终端引擎 (`alacritty_terminal`) + 会话编排 + SFTP 支持 + 远端系统监控。**无 UI 依赖。** | 33 ✅ |
+| `kt-ui` | Dioxus 组件与 UI 状态：终端工作台、对话框、SFTP 树/操作、系统监控、selector 驱动的主界面 | 70 ✅ |
 | `kt-app` | 主二进制：GUI-only Dioxus desktop 入口、CLI 参数校验、应用图标集成 | 8 ✅ |
 
-**108 个测试通过；`clippy` 干净。** 核心验证是一个**进程内往返集成测试**（[`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)）：在回环地址上启动真实的 `russh` SSH 服务端，驱动完整的 `SessionManager` 路径：`连接 → 密码认证 → PTY → shell → 通道数据 → TermEngine → GridSnapshot`，断言服务端输出和回显的按键确实落入渲染网格。
+**138 个测试通过；`clippy` 干净。** 核心验证是一个**进程内往返集成测试**（[`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)）：在回环地址上启动真实的 `russh` SSH 服务端，驱动完整的 `SessionManager` 路径：`连接 → 密码认证 → PTY → shell → 通道数据 → TermEngine → GridSnapshot`，断言服务端输出和回显的按键确实落入渲染网格。
 
 ### 当前功能
 
@@ -26,8 +26,8 @@
 - **多会话与分屏**：标签页界面，每个会话独立 scrollback 和 resize，终端区支持水平/垂直双视图
 - **终端特性**：真彩色、加粗/斜体/下划线/删除线、块状/竖线/下划线光标
 - **交互式认证提示**：保存的机密缺失时，可在握手过程中采集密码、私钥口令和 keyboard-interactive 输入
-- **会话持久化**：保存连接到 `config.toml`；密码和私钥口令加密存入主密码保险库
-- **主密码保险库**：保险库解锁是显式操作；跳过解锁仍可连接，但禁用已保存机密的读写
+- **会话持久化**：保存连接到 `config.toml`；密码和私钥口令加密存入本机保险库
+- **自动机密保险库**：本机保险库会自动创建/打开，重连时可直接复用已保存密码，不再额外提示保险库主密码
 - **SFTP 面板**：浏览远程文件系统、上传/下载文件、创建目录、删除/重命名，并支持通过本地编辑器编辑远端文件后回传
 - **系统监控**：实时展示远端 CPU、内存、网络、磁盘、负载、运行时长和延迟摘要
 - **SSH 配置集成**：读取 `~/.ssh/config` 获取主机别名、默认设置和单跳 `ProxyJump`
@@ -63,9 +63,9 @@ kt-app (Dioxus desktop 二进制)
 ### 会话与机密存储
 
 - **会话**（`SessionProfile`：host/port/user/auth/…）为**非机密**，明文存储在 `config.toml` 中。
-- **机密**（密码、私钥口令）按 vault id（`user@host:port`）索引并加密存入保险库，永不明文落盘。
+- **机密**（密码、私钥口令）按 vault id（`user@host:port`）索引并加密存入本机保险库，永不明文落盘。
 - **主机密钥**（host/port/fingerprint）存储在 `known_hosts.toml`，用于检测远端主机密钥变化。
-- 启动时保险库处于**锁定**状态，直到在解锁对话框输入主密码；跳过解锁仍可连接，但禁用已保存机密的读写。
+- 启动时保险库会自动打开。无法打开的旧主密码保险库会备份为 `secrets.vault.legacy*`，新的保存密码继续写入新建的加密保险库。
 
 ## 技术栈
 
@@ -114,7 +114,6 @@ cargo run -p kt-app
 cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
 # 已移除入口会明确失败：--safe、--system-ssh、--show-log、--list
-#   首次运行：设置主密码（可跳过）
 #   点击 ➕ 新建 → 输入 host / user / 认证 → 连接
 #   勾选"保存会话"以持久化；密码加密存入保险库
 #   点击侧栏会话以重连（密码自动填充）
@@ -130,7 +129,7 @@ cargo run -p kt-core --example headless -- user@host
 
 - [x] **阶段一** —— 核心引擎（SSH + 终端 + 会话），端到端验证
 - [x] **阶段二** —— Dioxus desktop UI：终端渲染、输入、连接对话框、多标签
-- [x] **阶段三** —— 会话持久化（TOML + 保险库）、主密码、SFTP 面板、系统监控
+- [x] **阶段三** —— 会话持久化（TOML + 加密保险库）、SFTP 面板、系统监控
 - [x] **阶段四** —— `known_hosts` 信任库、分屏、ssh-agent 转发、ProxyJump、触发器/高亮
 - [x] **阶段五** —— UI 模块化：状态控制器、主界面拆分、selector 驱动的 SFTP/监控/状态栏视图
 - [x] **阶段六** —— 文档与工程收敛：README/架构/QA 路径/release note

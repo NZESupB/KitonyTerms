@@ -13,7 +13,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
 - **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`KnownHosts`、`SessionProfile`、`AppSettings`、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
-- **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。空密码可正常派生(无长度校验),但 UI Store 不再用空密码静默解锁。
+- **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。UI Store 不暴露主密码流程，而是使用应用托管固定保护因子自动打开/创建本机 vault。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
 - **kt-app**:Dioxus Desktop 启动入口,二进制 `kitonyterms`,见下。当前入口能力为 GUI-only:无参数或 `--gui` 启动 GUI,`--help` 输出用法;`--safe`、`--system-ssh`、`--show-log`、`--list` 等历史稳定终端/降级入口不在当前代码中提供。
@@ -65,6 +65,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 文件:`crates/kt-core/src/term/`(`mod.rs`/`color.rs`/`snapshot.rs`)
 
 - `TermEngine` 包装 `alacritty_terminal`,产出 `GridSnapshot`(行列单元格 + 光标 + 颜色),`advance(bytes)` 喂入输出,`resize/scroll`,`take_events()` 取 Bell/Title 等。
+- `GridSnapshot` 中的单元格颜色是 core 层解析后的最终显示色:反色、DIM 等属性在快照生成时完成颜色计算,UI 不应再次反转前景/背景。终端字符必须以普通文本节点渲染,不得使用 HTML 注入式渲染,避免 `<`、`&` 等字符破坏 DOM。终端 cell 的 inline style 必须显式写出可跨帧变化属性的默认值(如 `background: transparent`、`text-decoration: none`、`opacity: 1`),避免 WebView/Dioxus 样式 diff 后残留备用屏程序的色块。
 
 ## kt-ui / kt-app:GUI
 
@@ -76,8 +77,9 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - **selector 边界**:`app_logic.rs` 中的 `SessionTabView / ActiveSftpView / ActiveMonitorView / StatusBarSessionView / ActiveTerminalView` 是主工作台的轻量视图模型。SFTP、Monitor、状态栏和会话标签不应直接依赖完整 `SessionState`;终端区域可以通过 `ActiveTerminalView` 持有 `GridSnapshot`,但不要为了比较或 memo 强行给大快照引入伪等价语义。`state_controller::resolve_active_session_id` 统一处理 active session 缺失、过期和空列表,会话列表同步时按 `SessionId` 排序以保持 UI 顺序稳定。
 - **UI 抽离约定**:接收 `Arc<Mutex<AppState>>`、`Arc<Store>`、大量 `Signal` 或闭包的重状态入口优先使用普通函数返回 `Element`,不要默认写成 Dioxus `#[component]`;只有 props 天然适合 `PartialEq`、边界清晰且可复用的展示单元才使用组件。这样避免为了通过 props 派生而给运行时对象引入伪等价语义。
 - **终端渲染**:[terminal.rs](../crates/kt-ui/src/components/terminal.rs) 使用 `GridSnapshot` 渲染 HTML 行列，并把键盘、滚轮输入转成 `ToCore::Input`/`Scroll`。
+- **会话标题边界**:`SessionState.title` 是用户保存的服务器/会话名称,用于标签、侧边栏高亮与状态栏;远端 OSC title/ResetTitle 事件不得覆盖它。若后续需要展示远端窗口标题,应新增独立字段。
 - **分屏与触发器高亮**:终端工具栏可切换水平/垂直双视图,当前为同一 session 的本地双视图;`AppSettings.trigger_highlights` 提供行级文本触发器,由 [terminal.rs](../crates/kt-ui/src/components/terminal.rs) 做大小写不敏感匹配并加高亮 class。
 - **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 发送 `ToCore::Sftp(List)`，并从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。连接成功后的自动加载由 `AppState` 触发；`SftpStopped` 清理 loading/progress 但不覆盖已有错误。同步全局状态到本地 signal 前必须比较差异，避免 effect 订阅与定时同步造成重复请求或重连循环。侧边栏 SFTP 树、条目格式化和右键菜单在 [sidebar.rs](../crates/kt-ui/src/components/sidebar.rs)。外部编辑器状态机、临时文件命名、打开本地编辑器与状态栏文案在 [external_edit.rs](../crates/kt-ui/src/components/external_edit.rs);App 只负责触发下载/上传和弹出保存确认。
-- **资源监控**:[state.rs](../crates/kt-ui/src/state.rs) 收到 `Connected` 后自动发送 `StartMonitor` 并进入 `monitor_loading`;core 成功采样返回 `Monitor`,失败/超时返回 `MonitorError`;正常通道关闭返回 `MonitorStopped` 清理等待态,不展示为错误。监控子任务退出后会通知会话重置启动状态,允许后续重新 `StartMonitor`。[monitor.rs](../crates/kt-ui/src/components/monitor.rs) 只展示 `monitor_loading`、`monitor_error` 与 `monitor` 三态。
+- **资源监控**:[state.rs](../crates/kt-ui/src/state.rs) 收到 `Connected` 后自动发送 `StartMonitor` 并进入 `monitor_loading`;core 成功采样返回 `Monitor`,失败/超时返回 `MonitorError`;正常通道关闭返回 `MonitorStopped` 清理等待态,不展示为错误。监控子任务退出后会通知会话重置启动状态,允许后续重新 `StartMonitor`。延迟采样优先 TCP connect 当前会话 SSH `host:port`,失败时回退到已连接 SSH monitor 通道心跳,不得阻塞资源采样。[monitor.rs](../crates/kt-ui/src/components/monitor.rs) 只展示 `monitor_loading`、`monitor_error` 与 `monitor` 三态。
 - **连接失败展示**:`FromCore::Closed{error}` 必须写入 `SessionState.connection_error`;终端占位、状态栏和会话状态点都要把错误会话显示为失败/断开,不得继续使用 connecting 文案或黄色连接中状态。
-- **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。Store 使用 `VaultState::{Missing,Locked,Unlocked}` 管理机密状态;未创建或锁定时读取/写入机密必须返回明确结果,不得静默吞掉保存失败。保存连接后按 `effective_vault_id()` 写入 vault 中的密码;若 vault 缺失或锁定,UI 保留本次待保存密码并弹出主密码解锁/创建对话框,解锁成功后自动重试写入,成功/取消/失败都通过状态栏提示。
+- **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。Store 启动时自动打开或创建应用托管 vault,保存连接后按 `effective_vault_id()` 写入密码;Store-backed `AuthProvider` 重连时直接读取 `user@host:port` 或配置的 `vault_id`。旧主密码 vault 无法自动打开时会备份为 `secrets.vault.legacy` 并创建新的托管 vault,状态栏提示旧保存密码暂不可用;若初始化/备份失败则保持 `VaultState::Locked` 并让读写返回明确错误。secret 值不得写入 `config.toml` 或日志。
