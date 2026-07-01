@@ -76,6 +76,11 @@ pub struct GridSnapshot {
     pub revision: u64,
     /// Current scrollback offset (0 = viewing the live bottom).
     pub display_offset: usize,
+    /// Per-row wrap flag: `wrapped[r]` is true when row `r`'s content overflowed
+    /// into row `r+1` (alacritty sets `WRAPLINE` on the row's last cell). The UI
+    /// uses this to mark continuation rows in the line-number gutter. Length =
+    /// `rows`; entries default to `false`.
+    pub wrapped: Vec<bool>,
 }
 
 impl GridSnapshot {

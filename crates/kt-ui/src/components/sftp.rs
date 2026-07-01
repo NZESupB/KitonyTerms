@@ -519,6 +519,7 @@ mod tests {
             sftp_error: None,
             sftp_last_done: None,
             sftp_progress: None,
+            terminal_cwd: None,
             monitor: None,
             monitor_loading: false,
             monitor_error: None,

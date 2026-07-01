@@ -227,6 +227,38 @@ button:disabled {
     background: rgba(15, 23, 42, 0.22);
 }
 
+/* 连接对话框亮色覆盖：输入/下拉/选项卡随主题切换 */
+.kt-window.theme-light .dialog-field select,
+.kt-window.theme-light .dialog-field-row input,
+.kt-window.theme-light .dialog-select,
+.kt-window.theme-light .dialog-field input {
+    background: rgba(241, 245, 249, 0.9);
+    color: var(--text);
+}
+
+.kt-window.theme-light .dialog-tab,
+.kt-window.theme-light .dialog-btn,
+.kt-window.theme-light .dialog-check,
+.kt-window.theme-light .dialog-fieldset legend,
+.kt-window.theme-light .dialog-hint {
+    color: var(--muted);
+}
+
+.kt-window.theme-light .dialog-tab.is-active,
+.kt-window.theme-light .dialog-check {
+    color: var(--text);
+}
+
+.kt-window.theme-light .dialog-btn {
+    background: rgba(148, 163, 184, 0.18);
+    color: var(--text);
+}
+
+.kt-window.theme-light .dialog-btn.primary {
+    background: rgba(37, 99, 235, 0.22);
+    color: #ffffff;
+}
+
 .kt-content {
     display: flex;
     min-height: 0;
@@ -922,6 +954,7 @@ button:disabled {
     overflow: auto;
     padding: 18px;
     outline: none;
+    position: relative;
     background:
         radial-gradient(circle at 74% 0%, rgba(56, 106, 154, 0.12), transparent 32%),
         #081018;
@@ -930,6 +963,48 @@ button:disabled {
     font-family: "SF Mono", "Menlo", "Consolas", "PingFang SC", monospace;
     font-size: 15px;
     line-height: 1.25;
+}
+
+/* 行号/时间戳 gutter：绝对定位在 surface 左内边距带内，与终端行等高对齐。
+   surface 的左内边距已加宽为 gutter 宽度，resize 脚本会自动扣除该内边距，
+   保证 PTY 列数不受影响。 */
+.terminal-gutter {
+    position: absolute;
+    top: 18px;
+    left: 0;
+    padding-left: 8px;
+    display: flex;
+    flex-direction: column;
+    color: rgba(140, 156, 178, 0.7);
+    font-size: 15px;
+    line-height: 1.25;
+    user-select: none;
+    pointer-events: none;
+    white-space: pre;
+}
+
+.terminal-gutter-row {
+    height: 1.25em;
+    line-height: 1.25;
+    display: flex;
+    gap: 0.5ch;
+}
+
+.terminal-gutter-lineno {
+    display: inline-block;
+    width: 5ch;
+    text-align: right;
+    color: rgba(120, 136, 158, 0.65);
+}
+
+.terminal-gutter-lineno.is-continuation {
+    color: rgba(120, 136, 158, 0.38);
+}
+
+.terminal-gutter-time {
+    display: inline-block;
+    min-width: 10ch;
+    color: rgba(120, 152, 190, 0.7);
 }
 
 .terminal-row {
@@ -1621,6 +1696,36 @@ button:disabled {
     background: rgba(148, 163, 184, 0.16);
 }
 
+/* 右键"打开方式"子菜单：悬停触发的横向飞出面板 */
+.context-submenu {
+    position: relative;
+}
+
+.context-submenu-panel {
+    position: absolute;
+    top: -5px;
+    left: 100%;
+    z-index: 1201;
+    min-width: 180px;
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    margin-left: 2px;
+    padding: 5px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 8px;
+    background: #121a25;
+    box-shadow: 0 18px 46px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    display: none;
+}
+
+.context-submenu:hover .context-submenu-panel {
+    display: block;
+}
+
+.context-submenu-trigger small {
+    flex: none;
+}
+
 .group-dialog {
     width: min(420px, 100%);
 }
@@ -1735,7 +1840,10 @@ button:disabled {
     font-weight: 700;
 }
 
-.dialog-field input {
+.dialog-field input,
+.dialog-field select,
+.dialog-field-row input,
+.dialog-select {
     width: min(340px, 100%);
     min-height: 34px;
     border: 1px solid var(--border);
@@ -1743,6 +1851,135 @@ button:disabled {
     background: rgba(8, 13, 19, 0.64);
     color: #f4f8ff;
     font-size: 13px;
+}
+
+.dialog-field-row {
+    display: flex;
+    gap: 10px;
+}
+
+.dialog-field-row input {
+    width: 100%;
+}
+
+.dialog-hint {
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--muted);
+}
+
+.dialog-fieldset {
+    border: 1px solid var(--border-soft);
+    border-radius: 7px;
+    padding: 10px 12px;
+    margin: 14px 0 0;
+}
+
+.dialog-fieldset legend {
+    padding: 0 4px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.dialog-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.dialog-check:last-child {
+    margin-bottom: 0;
+}
+
+/* 连接对话框：左侧选项卡 + 右侧表单 */
+.connection-dialog {
+    width: min(560px, 100%);
+    display: flex;
+    flex-direction: column;
+}
+
+.dialog-content {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    min-height: 0;
+}
+
+.dialog-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 8px;
+    border-right: 1px solid var(--border-soft);
+    min-width: 116px;
+}
+
+.dialog-tab {
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-left: 2px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.dialog-tab:hover {
+    color: var(--text);
+    background: rgba(148, 163, 184, 0.10);
+}
+
+.dialog-tab.is-active {
+    color: var(--text);
+    border-left-color: var(--blue);
+    background: rgba(90, 167, 255, 0.12);
+}
+
+.dialog-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 18px 16px;
+    max-height: 56vh;
+    overflow-y: auto;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 18px 18px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.dialog-btn {
+    min-height: 32px;
+    padding: 0 14px;
+    border-radius: 7px;
+    background: rgba(148, 163, 184, 0.14);
+    color: #dce7f6;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.dialog-btn:hover {
+    background: rgba(148, 163, 184, 0.22);
+}
+
+.dialog-btn.primary {
+    background: rgba(90, 167, 255, 0.28);
+    color: #f8fbff;
+}
+
+.dialog-btn.primary:hover {
+    background: rgba(90, 167, 255, 0.38);
 }
 
 .external-edit-dialog-body p.dialog-error {
@@ -1795,6 +2032,8 @@ button:disabled {
 
 .settings-panel {
     width: min(520px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: #111822;
@@ -1860,6 +2099,106 @@ button:disabled {
 .segmented-control button.is-selected {
     background: rgba(90, 167, 255, 0.22);
     color: #f4f8ff;
+}
+
+/* 设置：堆叠行 / 编辑器与终端显示项 */
+.settings-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.settings-row-stacked p {
+    max-width: none;
+}
+
+.settings-text-input,
+.settings-editor-add input {
+    width: 100%;
+    height: 32px;
+    margin-top: 8px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(8, 13, 19, 0.7);
+    color: #eef4ff;
+    font-size: 13px;
+}
+
+.settings-toggle-group {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 16px;
+}
+
+.settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #eef4ff;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.settings-editor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.settings-editor-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    background: rgba(8, 13, 19, 0.5);
+}
+
+.settings-editor-name {
+    flex: 0 0 auto;
+    color: #eef4ff;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.settings-editor-command {
+    flex: 1;
+    overflow: hidden;
+    color: var(--muted);
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-editor-add {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.settings-editor-add input,
+.settings-editor-add select {
+    flex: 1;
+    margin-top: 0;
+}
+
+.settings-editor-empty {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.settings-editor-add button.primary {
+    flex: 0 0 auto;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 6px;
+    background: rgba(90, 167, 255, 0.22);
+    color: #f4f8ff;
+    cursor: pointer;
+    white-space: nowrap;
 }
 
 /* ========== 滚动条 ========== */

@@ -6,20 +6,22 @@
 `maintenance.md` - 长期维护规程，记录功能更新影响清单、轻量回归套件与季度治理核对；修改功能、协议、UI 状态或持久化语义前必读。
 
 ## 当前任务文档
-`workflow/260628-implementation-roadmap.md` - 统一优化路线图：cover 安全、并发、性能、UI 模块化与文档治理，支持分阶段落地。
+（暂无）
 
 ## 已归档完成任务文档
-`workflow/done/260630-urgent-connection-ui-polish.md` - 紧急连接与界面体验修复：认证/vault 简化、TCP 延迟显示与高延迟颜色、监控色块、浅色主题、终端/SFTP/标签栏体验。
-`workflow/done/260629-menu-polish-followup.md` - 菜单与终端编辑入口跟进：移除应用内顶栏、精简 macOS 系统菜单、将编辑操作放入 SSH 终端右键菜单。
-`workflow/done/260629-polish-menu-terminal-auth.md` - 顶部入口、终端渲染与密码保存修正：macOS 系统菜单设置入口、终端横线、认证弹窗密码保存。
-`workflow/done/260628-functional-optimizations.md` - 功能性问题优化：终端键位/尺寸、监控延迟与占用、主题入口、文件管理、服务器分组、SSH 密码保存与密钥登录。
-`workflow/done/260627-architecture-evolution.md` - 架构演进框架：记录早期入口能力对齐、Monitor 闭环、UI 拆分、安全策略与背压治理计划。
+`workflow/done/260701-feature-batch.md` - 功能批次：SFTP 粘贴修复与路径双向同步、默认编辑器与右键"打开方式"、SSH TCP 代理(system/socks5/http)、终端时间戳与行号、Alpha 滚动预发布 CI。
+`workflow/done/260701-connection-dialog-redesign.md` - 新建/编辑连接对话框：左侧 会话/代理 选项卡、修复切换空白 bug、会话页 host+port 横排、代理页竖向统一下拉(含跳转服务器)。
+`workflow/done/260701-editor-settings-picker.md` - 编辑器设置改选择式：探测系统编辑器(PATH/macOS app/$EDITOR) + 下拉替代路径文本输入，既有自定义命令保留不丢失。
 
 ## 已归档完成任务摘要
 - 稳定连接基线：补齐连接、会话生命周期与错误收敛的早期方案。
 - README 第四阶段：同步功能里程碑、README 状态与功能声明。
 - SFTP 文件管理：沉淀右键菜单、外部编辑菜单、保存确认对话和回传策略。
 - 架构审查：确认项目适合继续维护，指出 UI 主组件过大、通道背压、vault 解锁、known_hosts 安全语义与认证能力缺口。
+- 功能性问题优化(`260628-functional-optimizations`)：终端键位/尺寸、监控延迟与占用、主题入口、文件管理、服务器分组、SSH 密码保存与密钥登录。
+- 架构演进框架(`260627-architecture-evolution`)：早期入口能力对齐、Monitor 闭环、UI 拆分、安全策略与背压治理计划。
+- 统一优化路线图(`260628-implementation-roadmap`)：阶段 1~7 完成——安全、并发、认证、UI 模块化、文档收敛与长期维护规程。
+- 界面与菜单体验修复批次(`260629-polish-menu-terminal-auth`/`260629-menu-polish-followup`/`260630-urgent-connection-ui-polish`)：macOS 系统菜单与设置入口、认证弹窗密码保存、TCP 延迟显示与高延迟颜色、监控色块、浅色主题、应用内顶栏移除与右键编辑入口等体验打磨。
 
 ## 测试与验证要求
 - Rust 代码变更后至少运行 `cargo fmt --all -- --check`、`cargo check --workspace --all-targets`、`cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`。
@@ -33,3 +35,9 @@
 - 每次功能更新前先按 `maintenance.md` 填写影响清单；新增 `app.rs` 之外模块逻辑时优先补纯逻辑单测，再接入渲染或副作用。
 - Store 启动时自动打开或创建应用托管加密 vault，不再向用户暴露 vault 主密码流程；旧主密码 vault 无法自动打开时备份为 `secrets.vault.legacy*` 后重建新 vault。
 - Monitor 延迟优先 TCP connect 当前 SSH `host:port`，失败时回退 SSH 心跳；UI 中延迟合并到网络标题展示并用颜色分级提示高延迟。
+- SSH 支持 TCP 级代理（`kt_config::ProxyConfig`：Direct/System/Socks5/Http）：`crates/kt-core/src/ssh/proxy.rs` 经代理建立到目标的 `TcpStream` 后交给 `russh::client::connect_stream` 握手，`connect_direct` 统一分派，`Direct`/System 未解析出代理时回退直连。System 读取 `ALL_PROXY/HTTPS_PROXY/HTTP_PROXY/SOCKS_PROXY`（大小写各一），支持 `socks5/socks5h/socks/http/https` scheme。代理与 ProxyJump 组合时代理仅作用于最外层(连跳板机)TCP，目标段走 direct-tcpip 不再经代理。代理凭证不接入 vault，仅以 username+空密码尝试认证。
+- 终端当前工作目录通过 OSC 7 获取：`session.rs::parse_osc7_cwd` 扫描 PTY 原始字节解析 `ESC]7;file://host/path`，发 `FromCore::Cwd` 写入 `SessionState.terminal_cwd`，供 SFTP 侧「跟随终端目录」按钮使用；无 shell 集成时为空。反向的 SFTP→终端用 `sidebar.rs::cd_command_for_path` 生成单引号安全的 `cd` 命令发送到终端。
+- SFTP 外部编辑支持自定义编辑器：`AppSettings.default_editor`（默认编辑器命令，`{file}` 占位）与 `AppSettings.editors: Vec<EditorEntry>`（右键"打开方式"列表）。`external_edit.rs::open_local_file_with` + `build_editor_command` 解析命令模板，`ExternalEdit.editor_command` 贯穿下载→打开链路，缺省回退系统默认程序。设置 UI 用 `external_edit.rs::detect_editors`（PATH + macOS `.app` bundle + Linux/Windows 候选，按名去重）与 `env_editor_command`（`$VISUAL`/`$EDITOR`）下拉选择编辑器，不再让用户手填命令；既有非空命令以「自定义」option 保留不丢失。
+- 终端行号/时间戳 gutter：`AppSettings.show_line_numbers/show_timestamps`，`terminal.rs` 在 surface 左内边距带内绝对定位 gutter（resize 脚本按 padding 自动扣减，PTY 列数不受影响）；时间戳为尽力而为，用 `Rc<RefCell>` 跨帧记录每行内容签名与首见时刻。
+- macOS 输入框粘贴依赖原生「编辑」菜单：`desktop_menu.rs::app_menu` 必须包含 Undo/Redo/Cut/Copy/Paste/SelectAll 预定义项，否则 WebView 中 `<input>` 无法响应 Cmd+V。Windows/Linux WebView 原生处理。
+- CI 双轨：`.github/workflows/release.yml`（v* tag→正式 Release）与 `alpha.yml`（分支 push→滚动更新固定 `alpha` tag 的 Alpha 预发布），触发条件互斥；两者共用同一套 6 平台 build matrix 与打包逻辑，改打包流程需同步两个文件。

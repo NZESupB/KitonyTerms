@@ -12,7 +12,7 @@ kt-app (Dioxus Desktop 入口) ──▶ kt-ui ──▶ kt-core ──▶ kt-co
 kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
-- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`KnownHosts`、`SessionProfile`、`AppSettings`、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
+- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`ProxyConfig`(Direct/System/Socks5/Http，TCP 层代理，独立于 SSH 跳板 `proxy_jump`)、`KnownHosts`、`SessionProfile`、`AppSettings`(含 language/font/theme/scrollback/cursor/use_ssh_config/trigger_highlights/default_editor/editors/show_line_numbers/show_timestamps)、`EditorEntry`(打开方式命令模板)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。
 - **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。UI Store 不暴露主密码流程，而是使用应用托管固定保护因子自动打开/创建本机 vault。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
@@ -25,7 +25,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 `SessionManager` 持有一个多线程 tokio 运行时,每个会话一个 task。调用方(GUI / headless 示例)**只**通过两条 channel 通信:
 
 - `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,req}`、`StartMonitor{id}`、`AuthResponse{id,response}`、`Disconnect{id}`。
-- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`Closed{error}`。
+- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Cwd{path}`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`Closed{error}`。其中 `Cwd` 由 `session.rs` 扫描 PTY 原始字节解析 OSC 7(`ESC]7;file://host/path`)得到,写入 `SessionState.terminal_cwd`,供 SFTP「跟随终端目录」使用。
 
 要点:
 - `SessionManager::spawn(verifier, auth_factory)` 启动 `core_loop`,后者按 `id` 把命令路由到各 `SessionTask`。
@@ -46,6 +46,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - 认证:按 `params.auth` 顺序尝试 password / publickey / keyboard-interactive / agent。ssh-agent 不可用、公钥文件不可用或 key 认证失败时应继续后续认证方式,避免 `~/.ssh/config` 中的默认 `IdentityFile` 或 agent 环境破坏密码 fallback。`AuthProvider::password` 必须按实际 `user@host:port` 请求密码,以支持 ProxyJump 和非 22 端口。GUI 认证缺口统一走 `AuthChallenge`/`AuthResponse`:password 返回单个隐藏输入,加密私钥返回私钥口令输入,keyboard-interactive 按服务端 prompts 逐项采集。
 - 主机密钥:GUI 使用持久化 `KnownHostsVerifier`。未知主机或已知主机指纹变化时,verifier 记录 `PendingHostKey` 并拒绝本次握手;UI 弹窗展示主机、已保存指纹与本次指纹,用户可选择“仅允许一次”(内存态,下次连接消费后失效,不写入 `known_hosts.toml`)或“信任此主机”(持久写入/更新 `known_hosts.toml`)。由于 russh 主机密钥 verifier 为同步回调,确认后需要用户重新发起连接。测试和显式 opt-in 才使用 `AcceptAllVerifier`。`Trusted` 与 `NewlyTrusted` 都要保存 `known_hosts.toml`,确保 `last_seen_unix` 可追踪。
 - ProxyJump: `ConnectParams.proxy_jump` 支持单跳 `[user@]host[:port]`;core 先认证跳板,再通过 `channel_open_direct_tcpip` 建立目标 SSH 握手,并保留跳板 handle 直到目标连接结束。
+- TCP 层代理: `ConnectParams.proxy`(`ssh/proxy.rs`)在 SSH 握手前建立经代理的 TCP 流,再交给 `client::connect_stream`。`System` 解析环境变量代理 URL(ALL_PROXY/HTTPS_PROXY/HTTP_PROXY 等);`Socks5` 走 `tokio-socks`;`Http` 手写 CONNECT 请求/响应解析。与 ProxyJump 组合时代理作用于最外层(连接跳板机那段),目标段仍走 direct-tcpip。代理凭证不入 vault。
 - ssh-agent: `AuthMethod::Agent` 会读取本机 ssh-agent/Pageant identities 逐个尝试公钥认证;`ConnectParams.forward_agent` 会在 shell channel 上请求 agent forwarding。
 - `open_sftp(&self) -> SftpSession`:在**同一 handle** 上 `channel_open_session` → `request_subsystem(true,"sftp")` → `russh_sftp::client::SftpSession::new(channel.into_stream())`。返回独立拥有通道流的会话,可 move 进子任务;底层 TCP 由 `SshShell` 的 handle 维持。
 

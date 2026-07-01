@@ -141,6 +141,8 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     session_id: sess.id,
                                     pane_id: "primary".to_string(),
                                     trigger_highlights: settings().trigger_highlights,
+                                    show_line_numbers: settings().show_line_numbers,
+                                    show_timestamps: settings().show_timestamps,
                                     language,
                                 }
                             }
@@ -152,6 +154,8 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         session_id: sess.id,
                                         pane_id: "secondary".to_string(),
                                         trigger_highlights: settings().trigger_highlights,
+                                        show_line_numbers: settings().show_line_numbers,
+                                        show_timestamps: settings().show_timestamps,
                                         language,
                                     }
                                 }

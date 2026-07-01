@@ -189,6 +189,8 @@ impl TermEngine {
         let palette = self.term.colors();
 
         let mut cells = vec![SnapshotCell::default(); rows * cols];
+        // 行级 wrap 标志：行尾单元格带 WRAPLINE 表示该行内容溢出到下一行。
+        let mut wrapped = vec![false; rows];
 
         let content = self.term.renderable_content();
         let display_offset = content.display_offset;
@@ -209,6 +211,9 @@ impl TermEngine {
 
             let cell = indexed.cell;
             let flags = cell.flags;
+            if flags.contains(Flags::WRAPLINE) {
+                wrapped[row] = true;
+            }
 
             let mut attrs = CellAttrs {
                 bold: flags.contains(Flags::BOLD),
@@ -268,6 +273,7 @@ impl TermEngine {
             cursor,
             revision: self.revision,
             display_offset,
+            wrapped,
         }
     }
 }

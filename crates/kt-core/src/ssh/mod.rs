@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use kt_config::{AuthMethod, ConnectParams};
 
 mod handler;
+mod proxy;
 pub use handler::{AcceptAllVerifier, ClientHandler, HostKeyDecision, HostKeyVerifier};
 
 /// SSH-layer errors.
@@ -48,6 +49,9 @@ pub enum SshError {
 
     #[error("ProxyJump error: {0}")]
     ProxyJump(String),
+
+    #[error("proxy error: {0}")]
+    Proxy(String),
 
     #[error("sftp error: {0}")]
     Sftp(String),
@@ -312,6 +316,14 @@ async fn connect_direct(
         port: params.port,
         verifier,
     };
+
+    // 若配置了 TCP 级代理（SOCKS5 / HTTP / System），先经代理建立到目标的
+    // TCP 流，再交给 russh 完成握手；`Direct`/未解析出代理时返回 None 走直连。
+    if let Some(stream) = proxy::connect_via_proxy(&params.proxy, &params.host, params.port).await?
+    {
+        let connect_fut = client::connect_stream(config, stream, handler);
+        return timeout_connect(connect_fut).await;
+    }
 
     let addr = (params.host.as_str(), params.port);
     // 给 TCP 连接 + 握手设上限,避免不可达主机长时间卡在 "Connecting"。

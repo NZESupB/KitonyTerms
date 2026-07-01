@@ -1,0 +1,264 @@
+# 滚动开发版打包与发布 / Rolling alpha packaging & release
+#
+# 触发方式:
+#   - 推送到任意分支(不含 tag)→ 构建各端产物并更新固定的 "Alpha" 预发布。
+#
+# 说明:
+#   - 与 release.yml 互补:release.yml 仅在 v* tag 时创建正式 Release;
+#     本工作流仅在分支 push 时更新滚动预发布,两者触发条件互斥、互不干扰。
+#   - tag_name 固定为 alpha,产物文件名的 version 段亦固定为 alpha,
+#     使每次 push 覆盖同名资产,实现滚动更新。
+#   - 平台覆盖与打包逻辑与 release.yml 保持一致。
+name: alpha
+
+on:
+  push:
+    branches:
+      - "**"
+
+# 允许 publish job 创建/更新预发布并上传资产。
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x86_64。
+          - name: macos-x86_64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Dioxus Desktop (基于 Tauri/WebView) 在 Linux 上的构建依赖。
+      # 原生 ARM runner 会自动安装 arm64 版本,无需额外处理。
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --locked --release -p kt-app --target ${{ matrix.target }}
+
+      # ---- 打包 / Packaging ----
+      # 滚动预发布无 tag,version 段固定为 alpha,确保资产名稳定、可被覆盖。
+
+      # Linux:打包可执行文件、桌面入口与 hicolor 图标为 .tar.gz。
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version="alpha"
+          staging="kitonyterms-${version}-${{ matrix.name }}"
+          mkdir -p dist "$staging/bin" "$staging/share/applications" "$staging/share/icons"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/bin/"
+          cp "crates/kt-app/assets/linux/kitonyterms.desktop" "$staging/share/applications/"
+          cp -R "crates/kt-app/assets/linux/hicolor" "$staging/share/icons/"
+          tar -czf "dist/${staging}.tar.gz" "$staging"
+
+      # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="alpha"
+          # 预发布无语义化版本号,plist 版本段用占位 0.0.0。
+          version_clean="0.0.0"
+          base="kitonyterms-${version}-${{ matrix.name }}"
+          app="KitonyTerms.app"
+          mkdir -p dist "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/kitonyterms"
+          cp "crates/kt-app/assets/macos/KitonyTerms.icns" "$app/Contents/Resources/KitonyTerms.icns"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>KitonyTerms</string>
+            <key>CFBundleDisplayName</key><string>KitonyTerms</string>
+            <key>CFBundleIdentifier</key><string>com.kitonyterms.app</string>
+            <key>CFBundleExecutable</key><string>kitonyterms</string>
+            <key>CFBundleIconFile</key><string>KitonyTerms</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${version_clean}</string>
+            <key>CFBundleShortVersionString</key><string>${version_clean}</string>
+            <key>LSMinimumSystemVersion</key><string>10.15</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x86_64、
+          # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
+          # 详见预发布说明。
+          codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
+          codesign --force --sign - "$app"
+          codesign --verify --verbose "$app"
+          # .zip:直接归档应用包(ditto 保留 macOS 元数据)。
+          ditto -c -k --keepParent "$app" "dist/${base}.zip"
+          # .dmg:含应用包与 /Applications 软链,便于拖拽安装。
+          dmgroot="$(mktemp -d)"
+          cp -R "$app" "$dmgroot/"
+          ln -s /Applications "$dmgroot/Applications"
+          hdiutil create -volname "KitonyTerms" -srcfolder "$dmgroot" \
+            -ov -format UDZO "dist/${base}.dmg"
+
+      # Windows:输出便携版 .zip 与 Inno Setup 安装包 -setup.exe。
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "alpha"
+          $base = "kitonyterms-$version-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path dist, staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" staging
+          # 便携版 zip。
+          Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
+          # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
+          choco install innosetup -y --no-progress
+          # 预发布无语义化版本号,安装包版本段用占位 0.0.0。
+          $appVersion = "0.0.0"
+          $languageDir = "installer-languages"
+          $chineseLanguageFile = Join-Path $languageDir "ChineseSimplified.isl"
+          New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
+          try {
+            Invoke-WebRequest `
+              -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl" `
+              -OutFile $chineseLanguageFile `
+              -UseBasicParsing
+          } catch {
+            Write-Warning "下载 Inno Setup 简体中文语言文件失败,改用最小兜底语言文件: $_"
+          }
+          $hasChineseLanguageFile = (Test-Path $chineseLanguageFile) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern '^\[LangOptions\]' -Quiet) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern 'LanguageID=\$0804' -Quiet)
+          if (-not $hasChineseLanguageFile) {
+            @(
+              "[LangOptions]"
+              "LanguageName=简体中文"
+              "LanguageID=`$0804"
+              "LanguageCodePage=936"
+            ) | Set-Content -Path $chineseLanguageFile -Encoding utf8
+          }
+          $iss = @"
+          [Setup]
+          AppName=KitonyTerms
+          AppVersion=$appVersion
+          DefaultDirName={autopf}\KitonyTerms
+          DefaultGroupName=KitonyTerms
+          LanguageDetectionMethod=uilanguage
+          UninstallDisplayName=KitonyTerms
+          UninstallDisplayIcon={app}\kitonyterms.exe
+          SetupIconFile=crates\kt-app\assets\windows\kitonyterms.ico
+          OutputDir=dist
+          OutputBaseFilename=$base-setup
+          Compression=lzma2
+          SolidCompression=yes
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl,installer-languages\ChineseSimplified.isl"
+          [CustomMessages]
+          english.LaunchProgram=Launch KitonyTerms
+          chinesesimplified.LaunchProgram=启动 KitonyTerms
+          [Files]
+          Source: "staging\kitonyterms.exe"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{group}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          Name: "{autodesktop}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          [Run]
+          Filename: "{app}\kitonyterms.exe"; Description: "{cm:LaunchProgram}"; Flags: nowait postinstall skipifsilent
+          "@
+          $iss | Out-File -FilePath app.iss -Encoding utf8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc app.iss
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+
+  # 汇总所有平台产物,更新固定的 Alpha 滚动预发布。
+  publish:
+    name: publish alpha prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish Alpha prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: alpha
+          name: Alpha
+          prerelease: true
+          # 固定 tag 滚动更新:同名资产会被本次上传覆盖。
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            这是最新开发版本(滚动更新),对应提交 `${{ github.sha }}`(分支 `${{ github.ref_name }}`)。
+            仅供尝鲜与测试,稳定性不作保证,正式版请见 tag 版本 Release。
+
+            ## 安装说明 / Installation notes
+
+            ### macOS
+            应用未经 Apple 公证,首次打开会提示「已损坏」或「无法打开」。这属正常现象,执行一次以下命令移除隔离属性即可:
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/KitonyTerms.app
+            ```
+
+            或前往「系统设置 → 隐私与安全性」,在被拦截提示处点击「仍要打开」。
+
+            ### Windows
+            安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
+

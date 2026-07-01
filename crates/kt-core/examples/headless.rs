@@ -287,6 +287,7 @@ fn build_params(target: &str) -> anyhow::Result<ConnectParams> {
         auth: Vec::new(),
         vault_id: None,
         proxy_jump: None,
+        proxy: kt_config::ProxyConfig::Direct,
         forward_agent: false,
     };
 

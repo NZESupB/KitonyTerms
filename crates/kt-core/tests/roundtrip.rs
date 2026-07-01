@@ -168,6 +168,7 @@ fn full_roundtrip_through_term_engine() {
         auth: vec![AuthMethod::Password],
         vault_id: None,
         proxy_jump: None,
+        proxy: kt_config::ProxyConfig::Direct,
         forward_agent: false,
     };
     mgr.send(ToCore::Connect {

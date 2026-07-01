@@ -19,12 +19,12 @@ use crate::components::app_logic::{
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
 use crate::components::desktop_menu::is_settings_menu_id;
 use crate::components::dialog::{
-    first_public_key_path, ConnectionDialog, GroupDialog, SftpNameDialog,
+    first_public_key_path, saved_connection_refs, ConnectionDialog, GroupDialog, SftpNameDialog,
 };
 use crate::components::external_edit::{
     external_edit_local_path, external_edit_status_text, latest_sftp_completion_revision,
-    local_file_modified, open_local_file, ExternalEdit, ExternalEditAction, ExternalEditSaveDialog,
-    ExternalEditStatus, ExternalEditSyncMode,
+    local_file_modified, open_local_file_with, ExternalEdit, ExternalEditAction,
+    ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
 };
 use crate::components::main_shell::{
     render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
@@ -94,6 +94,10 @@ pub fn App() -> Element {
     let mut edit_password = use_signal(String::new);
     let mut edit_key_path = use_signal(String::new);
     let mut edit_proxy_jump = use_signal(String::new);
+    let mut edit_proxy_type = use_signal(|| String::from("direct"));
+    let mut edit_proxy_host = use_signal(String::new);
+    let mut edit_proxy_port = use_signal(String::new);
+    let mut edit_proxy_username = use_signal(String::new);
     let mut edit_use_agent = use_signal(|| false);
     let mut edit_forward_agent = use_signal(|| false);
 
@@ -150,8 +154,9 @@ pub fn App() -> Element {
                 edit_id,
                 path,
                 file_name,
+                editor_command,
             } => {
-                if let Err(e) = open_local_file(&path) {
+                if let Err(e) = open_local_file_with(&path, editor_command.as_deref()) {
                     tracing::error!("打开外部编辑器失败: {}", e);
                     external_edit_notice.set(Some(format!(
                         "{} {}: {}",
@@ -332,6 +337,10 @@ pub fn App() -> Element {
                 edit_password,
                 edit_key_path,
                 edit_proxy_jump,
+                edit_proxy_type,
+                edit_proxy_host,
+                edit_proxy_port,
+                edit_proxy_username,
                 edit_use_agent,
                 edit_forward_agent,
                 show_group_dialog,
@@ -357,9 +366,11 @@ pub fn App() -> Element {
                 on_sftp_entry_external_edit: {
                     let state = Arc::clone(state);
                     Callback::new(move |ctx: SftpEntryContext| {
+                        let editor = settings.peek().default_editor.clone();
                         start_sftp_external_edit(
                             state.clone(),
                             ctx,
+                            editor,
                             external_edits,
                             next_external_edit_id,
                         );
@@ -371,6 +382,7 @@ pub fn App() -> Element {
                 ContextMenu {
                     menu,
                     language,
+                    editors: current_settings.editors.clone(),
                     on_profile_edit: {
                         let saved_profiles = saved_profiles.clone();
                         move |name: String| {
@@ -385,6 +397,11 @@ pub fn App() -> Element {
                                 edit_password.set(String::new());
                                 edit_key_path.set(first_public_key_path(&profile.params.auth));
                                 edit_proxy_jump.set(profile.params.proxy_jump.clone().unwrap_or_default());
+                                edit_proxy_type.set(crate::components::dialog::proxy_mode(&profile.params).to_string());
+                                let (proxy_host_val, proxy_port_val, proxy_user_val) = crate::components::dialog::proxy_fields(&profile.params.proxy);
+                                edit_proxy_host.set(proxy_host_val);
+                                edit_proxy_port.set(proxy_port_val);
+                                edit_proxy_username.set(proxy_user_val);
                                 edit_use_agent.set(profile.params.auth.contains(&kt_config::AuthMethod::Agent));
                                 edit_forward_agent.set(profile.params.forward_agent);
                                 show_dialog.set(true);
@@ -496,9 +513,24 @@ pub fn App() -> Element {
                     on_sftp_external_edit: {
                         let state = Arc::clone(state);
                         move |ctx: SftpEntryContext| {
+                            let editor = settings.peek().default_editor.clone();
                             start_sftp_external_edit(
                                 state.clone(),
                                 ctx,
+                                editor,
+                                external_edits,
+                                next_external_edit_id,
+                            );
+                            context_menu.set(None);
+                        }
+                    },
+                    on_sftp_open_with: {
+                        let state = Arc::clone(state);
+                        move |(ctx, command): (SftpEntryContext, Option<String>)| {
+                            start_sftp_external_edit(
+                                state.clone(),
+                                ctx,
+                                command,
                                 external_edits,
                                 next_external_edit_id,
                             );
@@ -714,9 +746,14 @@ pub fn App() -> Element {
                 password: edit_password,
                 key_path: edit_key_path,
                 proxy_jump: edit_proxy_jump,
+                proxy_type: edit_proxy_type,
+                proxy_host: edit_proxy_host,
+                proxy_port: edit_proxy_port,
+                proxy_username: edit_proxy_username,
                 use_agent: edit_use_agent,
                 forward_agent: edit_forward_agent,
                 groups: saved_groups.clone(),
+                saved_connections: saved_connection_refs(&saved_profiles, &edit_original_name()),
                 language,
                 on_save: {
                     let store = Arc::clone(store);
@@ -817,7 +854,7 @@ pub fn App() -> Element {
             SettingsPanel {
                 show: show_settings,
                 language,
-                theme: settings().theme.clone(),
+                settings: current_settings.clone(),
                 on_language_change: {
                     let store = Arc::clone(store);
                     move |language| {
@@ -837,6 +874,15 @@ pub fn App() -> Element {
                         match store.update_settings(next.clone()) {
                             Ok(()) => settings.set(next),
                             Err(e) => tracing::error!("保存主题失败: {}", e),
+                        }
+                    }
+                },
+                on_settings_change: {
+                    let store = Arc::clone(store);
+                    move |next: kt_config::AppSettings| {
+                        match store.update_settings(next.clone()) {
+                            Ok(()) => settings.set(next),
+                            Err(e) => tracing::error!("保存设置失败: {}", e),
                         }
                     }
                 },
@@ -865,6 +911,7 @@ pub(crate) fn open_sftp_entry(
 fn start_sftp_external_edit(
     state: Arc<Mutex<AppState>>,
     ctx: SftpEntryContext,
+    editor_command: Option<String>,
     mut external_edits: Signal<Vec<ExternalEdit>>,
     mut next_external_edit_id: Signal<u64>,
 ) {
@@ -891,6 +938,7 @@ fn start_sftp_external_edit(
         after_revision,
         status: ExternalEditStatus::Downloading,
         sync_mode: ExternalEditSyncMode::Ask,
+        editor_command,
         last_seen_modified: None,
         pending_modified: None,
     };

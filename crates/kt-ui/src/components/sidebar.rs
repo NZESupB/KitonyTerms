@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use kt_config::{AppLanguage, SessionProfile};
-use kt_core::{SessionId, SftpEntry};
+use kt_core::{SessionId, SftpEntry, ToCore};
 
 use crate::components::app::get_state;
 use crate::components::app_logic::DEFAULT_GROUP_NAME;
@@ -46,6 +46,68 @@ pub fn sftp_entry_open_action(entry: &SftpEntry) -> SftpEntryOpenAction {
     } else {
         SftpEntryOpenAction::ExternalEdit
     }
+}
+
+/// 向指定会话的终端发送 `cd` 命令，把终端切换到 SFTP 当前浏览目录。
+fn send_cd_to_terminal(
+    state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
+    session_id: SessionId,
+    sftp_path: &str,
+) {
+    let command = cd_command_for_path(sftp_path);
+    if command.is_empty() {
+        return;
+    }
+    if let Ok(app_state) = state.lock() {
+        app_state.manager.send(ToCore::Input {
+            id: session_id,
+            data: command.into_bytes(),
+        });
+    }
+}
+
+/// 让 SFTP 跟随终端当前目录（依赖 shell 通过 OSC 7 上报的 cwd）。
+fn follow_terminal_directory(
+    state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
+    session_id: SessionId,
+    language: AppLanguage,
+) {
+    let cwd = state
+        .lock()
+        .ok()
+        .and_then(|app_state| {
+            app_state
+                .sessions
+                .get(&session_id)
+                .and_then(|sess| sess.terminal_cwd.clone())
+        })
+        .filter(|cwd| !cwd.trim().is_empty());
+
+    match cwd {
+        Some(cwd) => {
+            if let Err(e) = request_directory(state.clone(), session_id, cwd, language) {
+                tracing::error!("跟随终端目录失败: {}", e);
+            }
+        }
+        None => {
+            tracing::info!("尚未收到终端目录（需要 shell 支持 OSC 7 上报 cwd）");
+        }
+    }
+}
+
+/// 构造发送到终端的 `cd` 命令，对路径做单引号安全转义。
+fn cd_command_for_path(path: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return String::new();
+    }
+    // `~` 与 `.` 表示 home，直接执行 `cd` 回到 home。
+    if path == "~" || path == "." {
+        return "cd\n".to_string();
+    }
+    // 单引号包裹并转义内部单引号：' -> '\''。
+    let escaped = path.replace('\'', "'\\''");
+    format!("cd '{escaped}'\n")
 }
 
 pub fn format_sftp_size(size: u64, is_dir: bool) -> String {
@@ -251,6 +313,33 @@ pub fn SidebarSftpTree(
                     },
                     Icon { name: "refresh" }
                 }
+                // SFTP → 终端：把当前终端切换到文件管理所在目录。
+                button {
+                    title: "{t.sync_to_terminal}",
+                    disabled: !connected,
+                    onclick: {
+                        let path = path.clone();
+                        let state = state.clone();
+                        move |evt| {
+                            evt.stop_propagation();
+                            send_cd_to_terminal(&state, session_id, &path);
+                        }
+                    },
+                    Icon { name: "split-vertical" }
+                }
+                // 终端 → SFTP：跟随终端当前目录（依赖 shell 的 OSC 7 上报）。
+                button {
+                    title: "{t.sync_from_terminal}",
+                    disabled: !connected,
+                    onclick: {
+                        let state = state.clone();
+                        move |evt| {
+                            evt.stop_propagation();
+                            follow_terminal_directory(&state, session_id, language);
+                        }
+                    },
+                    Icon { name: "split-horizontal" }
+                }
             }
 
             div {
@@ -392,6 +481,7 @@ pub fn SidebarSftpEntry(
 pub fn ContextMenu(
     menu: ContextMenuState,
     language: AppLanguage,
+    editors: Vec<kt_config::EditorEntry>,
     on_profile_edit: EventHandler<String>,
     on_profile_delete: EventHandler<String>,
     on_profile_copy: EventHandler<String>,
@@ -404,6 +494,7 @@ pub fn ContextMenu(
     on_sftp_rename: EventHandler<SftpEntryContext>,
     on_sftp_delete: EventHandler<SftpEntryContext>,
     on_sftp_external_edit: EventHandler<SftpEntryContext>,
+    on_sftp_open_with: EventHandler<(SftpEntryContext, Option<String>)>,
     on_copy_text: EventHandler<String>,
 ) -> Element {
     let t = texts(language).app;
@@ -534,6 +625,37 @@ pub fn ContextMenu(
                                 },
                                 Icon { name: "edit" }
                                 span { "{sftp_t.edit_external}" }
+                            }
+                            div {
+                                class: "context-submenu",
+                                button {
+                                    class: "context-submenu-trigger",
+                                    Icon { name: "edit" }
+                                    span { "{sftp_t.open_with}" }
+                                    small { "▸" }
+                                }
+                                div {
+                                    class: "context-submenu-panel",
+                                    button {
+                                        onclick: {
+                                            let ctx = ctx.clone();
+                                            move |_| on_sftp_open_with.call((ctx.clone(), None))
+                                        },
+                                        Icon { name: "file" }
+                                        span { "{sftp_t.open_with_system}" }
+                                    }
+                                    for editor in editors.clone() {
+                                        button {
+                                            onclick: {
+                                                let ctx = ctx.clone();
+                                                let command = editor.command.clone();
+                                                move |_| on_sftp_open_with.call((ctx.clone(), Some(command.clone())))
+                                            },
+                                            Icon { name: "edit" }
+                                            span { "{editor.name}" }
+                                        }
+                                    }
+                                }
                             }
                         }
                         div { class: "context-separator" }
@@ -675,6 +797,18 @@ pub fn ConnectionCard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cd_command_quotes_paths_safely() {
+        assert_eq!(cd_command_for_path("."), "cd\n");
+        assert_eq!(cd_command_for_path("~"), "cd\n");
+        assert_eq!(cd_command_for_path("/var/log"), "cd '/var/log'\n");
+        assert_eq!(
+            cd_command_for_path("/tmp/it's here"),
+            "cd '/tmp/it'\\''s here'\n"
+        );
+        assert_eq!(cd_command_for_path("   "), "");
+    }
 
     #[test]
     fn sftp_permissions_are_rendered_like_unix_modes() {

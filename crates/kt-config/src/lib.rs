@@ -54,6 +54,46 @@ pub enum AuthMethod {
     Agent,
 }
 
+/// TCP-layer proxy used to reach the SSH server, applied before the SSH
+/// handshake. This is orthogonal to [`ConnectParams::proxy_jump`] (an SSH
+/// bastion): the proxy tunnels the raw TCP connection, while ProxyJump opens a
+/// nested SSH session.
+///
+/// Secret values (proxy credentials) are never stored here — only host/port
+/// and non-secret metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProxyConfig {
+    /// Connect directly, no proxy.
+    #[default]
+    Direct,
+    /// Use the operating system / environment proxy settings
+    /// (`ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`SOCKS_PROXY` and, on desktop
+    /// platforms, the system network proxy).
+    System,
+    /// SOCKS5 proxy at `host:port`, optional username auth.
+    Socks5 {
+        host: String,
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+    },
+    /// HTTP CONNECT proxy at `host:port`, optional username auth.
+    Http {
+        host: String,
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+    },
+}
+
+impl ProxyConfig {
+    /// True when this config actually routes through a proxy.
+    pub fn is_direct(&self) -> bool {
+        matches!(self, ProxyConfig::Direct)
+    }
+}
+
 /// Everything needed to establish one SSH connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectParams {
@@ -74,6 +114,9 @@ pub struct ConnectParams {
     /// Optional single-hop ProxyJump target, formatted as `[user@]host[:port]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_jump: Option<String>,
+    /// TCP-layer proxy applied before the SSH handshake (system/SOCKS5/HTTP).
+    #[serde(default, skip_serializing_if = "ProxyConfig::is_direct")]
+    pub proxy: ProxyConfig,
     /// Request OpenSSH agent forwarding for the interactive shell.
     #[serde(default)]
     pub forward_agent: bool,
@@ -93,6 +136,7 @@ impl ConnectParams {
             auth: vec![AuthMethod::Password],
             vault_id: None,
             proxy_jump: None,
+            proxy: ProxyConfig::Direct,
             forward_agent: false,
         }
     }
@@ -358,6 +402,17 @@ pub fn normalize_theme_name(theme: &str) -> &'static str {
     }
 }
 
+/// One user-configured external editor entry for the "open with" menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorEntry {
+    /// Display name shown in the menu (e.g. "VS Code").
+    pub name: String,
+    /// Launch command template. `{file}` is replaced with the local file path;
+    /// when absent, the path is appended as the last argument. Split on spaces
+    /// into program + args (simple whitespace tokenization).
+    pub command: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Display language for the desktop UI.
@@ -378,6 +433,19 @@ pub struct AppSettings {
     /// Case-insensitive row-level terminal highlight triggers.
     #[serde(default)]
     pub trigger_highlights: Vec<String>,
+    /// Default external editor command for SFTP "open in editor". `{file}` is
+    /// replaced with the local path. Empty/None = use the OS default handler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_editor: Option<String>,
+    /// Extra named editors offered in the SFTP file "open with" submenu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editors: Vec<EditorEntry>,
+    /// Show a line-number gutter in the terminal.
+    #[serde(default)]
+    pub show_line_numbers: bool,
+    /// Show a per-line timestamp gutter (`[HH:MM:SS]`) in the terminal.
+    #[serde(default)]
+    pub show_timestamps: bool,
 }
 
 impl Default for AppSettings {
@@ -391,6 +459,10 @@ impl Default for AppSettings {
             cursor_style: CursorStyle::Block,
             use_ssh_config: true,
             trigger_highlights: default_trigger_highlights(),
+            default_editor: None,
+            editors: Vec::new(),
+            show_line_numbers: false,
+            show_timestamps: false,
         }
     }
 }
@@ -645,6 +717,7 @@ mod tests {
                 }],
                 vault_id: None,
                 proxy_jump: None,
+                proxy: ProxyConfig::Direct,
                 forward_agent: false,
             },
         });
@@ -681,6 +754,48 @@ use_ssh_config = true
             settings.language,
             AppLanguage::Chinese | AppLanguage::English
         ));
+    }
+
+    #[test]
+    fn proxy_config_defaults_to_direct_and_is_skipped_in_toml() {
+        let params = ConnectParams::new("example.com", "alice");
+        assert_eq!(params.proxy, ProxyConfig::Direct);
+        assert!(params.proxy.is_direct());
+
+        let toml = toml::to_string_pretty(&params).unwrap();
+        assert!(!toml.contains("[proxy]"));
+        let back: ConnectParams = toml::from_str(&toml).unwrap();
+        assert_eq!(back.proxy, ProxyConfig::Direct);
+    }
+
+    #[test]
+    fn proxy_config_socks5_roundtrips() {
+        let mut params = ConnectParams::new("example.com", "alice");
+        params.proxy = ProxyConfig::Socks5 {
+            host: "127.0.0.1".into(),
+            port: 1080,
+            username: Some("me".into()),
+        };
+        let toml = toml::to_string_pretty(&params).unwrap();
+        let back: ConnectParams = toml::from_str(&toml).unwrap();
+        assert_eq!(back.proxy, params.proxy);
+    }
+
+    #[test]
+    fn app_settings_editor_fields_are_backward_compatible() {
+        let toml = r#"
+font_family = "Mono"
+font_size = 13.0
+theme = "default-dark"
+scrollback_lines = 10000
+cursor_style = "block"
+use_ssh_config = true
+"#;
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        assert_eq!(settings.default_editor, None);
+        assert!(settings.editors.is_empty());
+        assert!(!settings.show_line_numbers);
+        assert!(!settings.show_timestamps);
     }
 
     #[test]
@@ -774,6 +889,7 @@ use_ssh_config = true
             auth: vec![AuthMethod::Password],
             vault_id: None,
             proxy_jump: None,
+            proxy: ProxyConfig::Direct,
             forward_agent: false,
         };
         let cfg = SshConfigHost {

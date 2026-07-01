@@ -168,6 +168,9 @@ pub enum FromCore {
     },
     /// Title changed (OSC).
     Title { id: SessionId, title: String },
+    /// 远端 shell 通过 OSC 7 上报的当前工作目录（用于文件管理跟随终端目录）。
+    /// The remote shell's current working directory, reported via OSC 7.
+    Cwd { id: SessionId, path: String },
     /// Terminal bell.
     Bell { id: SessionId },
     /// SFTP 目录列表就绪。SFTP directory listing is ready.
@@ -591,6 +594,10 @@ impl SessionTask {
 
         let mut close_error: Option<String> = None;
 
+        // 最近一次通过 OSC 7 上报的工作目录，用于去重，避免重复投递 Cwd。
+        // Last CWD reported via OSC 7, used to dedupe repeated Cwd events.
+        let mut last_cwd: Option<String> = None;
+
         // SFTP 子任务的命令发送端,首次收到 SFTP 请求时惰性建立。
         // Command sender to the SFTP subtask, created lazily on first request.
         let mut sftp_tx: Option<mpsc::UnboundedSender<SftpRequest>> = None;
@@ -779,6 +786,12 @@ impl SessionTask {
                 msg = shell.next_message() => {
                     match msg {
                         Some(russh::ChannelMsg::Data { data }) => {
+                            if let Some(path) = parse_osc7_cwd(&data) {
+                                if last_cwd.as_deref() != Some(path.as_str()) {
+                                    last_cwd = Some(path.clone());
+                                    let _ = self.out.send(FromCore::Cwd { id, path }).await;
+                                }
+                            }
                             term.advance(&data);
                             handle_term_events(self.id, self.out.clone(), term.take_events()).await;
                             self.emit_render(&term);
@@ -829,6 +842,67 @@ impl SessionTask {
     }
 }
 
+/// 从 PTY 原始字节中解析 OSC 7 上报的工作目录。
+///
+/// OSC 7 形如 `ESC ] 7 ; file://<host>/<path> ST`，其中 ST 为 `ESC \` 或 BEL。
+/// 现代 shell（bash/zsh 的 vte 集成、fish 等）会在目录变化时发送该序列。
+/// 返回解码后的绝对路径；未找到时返回 None。
+fn parse_osc7_cwd(data: &[u8]) -> Option<String> {
+    // 逐字节扫描 `ESC ] 7 ;` 起始，取到 BEL(0x07) 或 ST(ESC \) 结束。
+    let mut i = 0;
+    while i < data.len() {
+        // 匹配前缀 ESC ] 7 ;
+        if data[i] == 0x1b
+            && data.get(i + 1) == Some(&b']')
+            && data.get(i + 2) == Some(&b'7')
+            && data.get(i + 3) == Some(&b';')
+        {
+            let start = i + 4;
+            let mut end = start;
+            while end < data.len() && data[end] != 0x07 && data[end] != 0x1b {
+                end += 1;
+            }
+            let payload = std::str::from_utf8(&data[start..end]).ok()?;
+            return osc7_payload_to_path(payload);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 把 OSC 7 的 `file://host/path` 载荷解析为本地路径，并做百分号解码。
+fn osc7_payload_to_path(payload: &str) -> Option<String> {
+    let rest = payload.strip_prefix("file://")?;
+    // 去掉 host 部分（第一个 `/` 之前）。
+    let path = match rest.find('/') {
+        Some(pos) => &rest[pos..],
+        None => return None,
+    };
+    let decoded = percent_decode(path);
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+/// 最小百分号解码（%XX → 字节），非法转义原样保留。
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Forward terminal events (bell/title/pty-write) to the UI / back to PTY.
 async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: Vec<TermEvent>) {
     for ev in events {
@@ -871,6 +945,24 @@ mod tests {
     use crate::term::{Cursor, CursorShape, SnapshotCell};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn osc7_cwd_parsed_from_bel_terminated_sequence() {
+        let seq = b"prefix\x1b]7;file://myhost/home/me/project\x07suffix";
+        assert_eq!(parse_osc7_cwd(seq), Some("/home/me/project".to_string()));
+    }
+
+    #[test]
+    fn osc7_cwd_parsed_from_st_terminated_and_percent_decoded() {
+        let seq = b"\x1b]7;file://h/tmp/a%20b\x1b\\";
+        assert_eq!(parse_osc7_cwd(seq), Some("/tmp/a b".to_string()));
+    }
+
+    #[test]
+    fn osc7_cwd_absent_returns_none() {
+        assert_eq!(parse_osc7_cwd(b"just terminal output\n"), None);
+        assert_eq!(parse_osc7_cwd(b"\x1b]0;window title\x07"), None);
+    }
 
     struct NoopAuth;
 
@@ -934,6 +1026,7 @@ mod tests {
             },
             revision,
             display_offset: 0,
+            wrapped: vec![false],
         })
     }
 

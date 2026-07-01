@@ -1,5 +1,7 @@
 //! 终端渲染组件（核心性能组件）
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dioxus::prelude::*;
@@ -10,6 +12,17 @@ use kt_core::{SessionId, ToCore};
 use crate::components::icons::Icon;
 use crate::i18n::texts;
 use crate::state::AppState;
+
+/// 单行 gutter 元数据：内容签名 + 首次出现该内容时的时钟时间戳。
+#[derive(Clone, Default)]
+struct RowMeta {
+    signature: u64,
+    time: String,
+    /// 该行是上一行 wrap 的续行（上一行行尾带 WRAPLINE），行号位置渲染 `-`。
+    is_continuation: bool,
+    /// live 视图下光标下方的未使用行：不渲染时间戳与行号。滚动历史视图下恒为 false。
+    unused: bool,
+}
 
 /// GridSnapshot 的包装器，实现 PartialEq
 #[derive(Clone)]
@@ -27,6 +40,8 @@ pub fn Terminal(
     session_id: SessionId,
     pane_id: String,
     trigger_highlights: Vec<String>,
+    show_line_numbers: bool,
+    show_timestamps: bool,
     language: AppLanguage,
 ) -> Element {
     let snapshot = &snapshot.0;
@@ -42,6 +57,28 @@ pub fn Terminal(
     let terminal_screen_id = terminal_screen_id(&terminal_id);
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
+
+    // 行号/时间戳 gutter：用非响应式内部状态跨帧保存每行内容签名与首见时刻，
+    // 避免在 render 中写响应式信号造成重渲染循环。时间戳为尽力而为的近似值。
+    let show_gutter = show_line_numbers || show_timestamps;
+    let row_meta_store = use_hook(|| Rc::new(RefCell::new(Vec::<RowMeta>::new())));
+    let gutter_rows = if show_gutter {
+        compute_gutter_rows(
+            &row_meta_store,
+            snapshot,
+            show_line_numbers,
+            show_timestamps,
+        )
+    } else {
+        row_meta_store.borrow_mut().clear();
+        Vec::new()
+    };
+    let surface_class = if show_gutter {
+        "terminal-surface has-gutter"
+    } else {
+        "terminal-surface"
+    };
+    let surface_style = gutter_surface_style(show_line_numbers, show_timestamps);
 
     use_effect({
         let terminal_id = terminal_id.clone();
@@ -161,7 +198,8 @@ pub fn Terminal(
     rsx! {
         div {
             id: "{terminal_id}",
-            class: "terminal-surface",
+            class: "{surface_class}",
+            style: "{surface_style}",
             tabindex: "0",
             autofocus: true,
 
@@ -211,6 +249,30 @@ pub fn Terminal(
             },
 
             // 渲染每一行
+            if show_gutter {
+                div {
+                    class: "terminal-gutter",
+                    for (idx, meta) in gutter_rows.iter().enumerate() {
+                        div {
+                            key: "gutter-{idx}",
+                            class: "terminal-gutter-row",
+                            // 光标下方未使用的行不显示时间戳与行号。
+                            if show_timestamps && !meta.unused {
+                                span { class: "terminal-gutter-time", "{meta.time}" }
+                            }
+                            if show_line_numbers && !meta.unused {
+                                if meta.is_continuation {
+                                    // wrap 续行：用 `-` 占位，物理行号在此跳过。
+                                    span { class: "terminal-gutter-lineno is-continuation", "-" }
+                                } else {
+                                    span { class: "terminal-gutter-lineno", "{idx + 1}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             div {
                 id: "{terminal_screen_id}",
                 class: "terminal-screen",
@@ -313,6 +375,89 @@ struct TerminalContextMenuState {
 
 fn terminal_screen_id(terminal_id: &str) -> String {
     format!("{terminal_id}-screen")
+}
+
+/// gutter 宽度（以 ch 为单位）：行号约 5ch，时间戳 `[HH:MM:SS] ` 约 11ch。
+/// 通过给 surface 增加等宽的左内边距实现，resize 脚本会自动扣除该内边距，
+/// 从而保证 PTY 列数计算不受 gutter 影响。
+fn gutter_width_ch(show_line_numbers: bool, show_timestamps: bool) -> u32 {
+    let mut width = 0;
+    if show_line_numbers {
+        width += 6;
+    }
+    if show_timestamps {
+        width += 11;
+    }
+    width
+}
+
+fn gutter_surface_style(show_line_numbers: bool, show_timestamps: bool) -> String {
+    let width = gutter_width_ch(show_line_numbers, show_timestamps);
+    if width == 0 {
+        String::new()
+    } else {
+        // 覆盖左内边距为 gutter 宽度 + 原有 8px 视觉留白。
+        format!("padding-left: calc({width}ch + 8px);")
+    }
+}
+
+/// 计算每行 gutter 元数据。内容未变化的行沿用旧时间戳；变化或新出现的行
+/// （含空行）记录当前时钟时间。wrap 续行标记 `is_continuation` 供行号位渲染 `-`。
+fn compute_gutter_rows(
+    store: &Rc<RefCell<Vec<RowMeta>>>,
+    snapshot: &GridSnapshot,
+    _show_line_numbers: bool,
+    show_timestamps: bool,
+) -> Vec<RowMeta> {
+    let rows = snapshot.rows;
+    let cols = snapshot.cols;
+    let mut prev = store.borrow_mut();
+    let now_label = if show_timestamps {
+        current_clock_label()
+    } else {
+        String::new()
+    };
+
+    let mut next = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let signature = row_signature(snapshot, row, cols);
+        // 续行判定：上一行行尾带 WRAPLINE 表示其内容溢出到本行。
+        let is_continuation = row > 0 && snapshot.wrapped.get(row - 1).copied().unwrap_or(false);
+        // live 视图下，光标下方为尚未使用的空白区，不显示时间戳与行号；
+        // 滚动历史视图下所有可见行都是已使用内容，全部显示。
+        let unused = snapshot.display_offset == 0 && row > snapshot.cursor.line;
+        // 空行同样显示时间戳：未变化时沿用旧值，变化或新行用当前时刻。
+        let time = match prev.get(row) {
+            Some(existing) if existing.signature == signature => existing.time.clone(),
+            _ => now_label.clone(),
+        };
+        next.push(RowMeta {
+            signature,
+            time,
+            is_continuation,
+            unused,
+        });
+    }
+
+    *prev = next.clone();
+    next
+}
+
+/// 计算某可见行的内容签名，用于判断行内容是否变化。
+fn row_signature(snapshot: &GridSnapshot, row: usize, cols: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let start = row * cols;
+    let end = (start + cols).min(snapshot.cells.len());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for cell in &snapshot.cells[start..end] {
+        cell.c.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn current_clock_label() -> String {
+    let now: chrono::DateTime<chrono::Local> = chrono::Local::now();
+    now.format("[%H:%M:%S]").to_string()
 }
 
 fn terminal_context_menu_style(menu: TerminalContextMenuState) -> String {
@@ -761,5 +906,135 @@ mod tests {
             b"one\ntwo\nthree"
         );
         assert!(terminal_paste_input("").is_empty());
+    }
+
+    #[test]
+    fn gutter_width_and_style_track_enabled_columns() {
+        assert_eq!(gutter_width_ch(false, false), 0);
+        assert_eq!(gutter_width_ch(true, false), 6);
+        assert_eq!(gutter_width_ch(false, true), 11);
+        assert_eq!(gutter_width_ch(true, true), 17);
+        assert!(gutter_surface_style(false, false).is_empty());
+        assert!(gutter_surface_style(true, true).contains("17ch"));
+    }
+
+    #[test]
+    fn gutter_timestamps_persist_for_unchanged_rows() {
+        use kt_core::term::snapshot::{Cursor, CursorShape};
+        let store = Rc::new(RefCell::new(Vec::<RowMeta>::new()));
+        let mut cells = vec![SnapshotCell::default(); 2];
+        cells[0].c = 'a';
+        let snapshot = GridSnapshot {
+            rows: 2,
+            cols: 1,
+            cells,
+            cursor: Cursor {
+                line: 1,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision: 1,
+            display_offset: 0,
+            wrapped: vec![false, false],
+        };
+
+        let first = compute_gutter_rows(&store, &snapshot, true, true);
+        // 光标在底部（line 1），两行都已使用，均显示时间戳。
+        assert!(!first[0].unused);
+        assert!(!first[1].unused);
+        assert!(!first[0].time.is_empty());
+        assert!(!first[1].time.is_empty());
+
+        // 内容未变化时，时间戳保持不变（不刷新为当前时刻）。
+        let first_time = first[0].time.clone();
+        let first_blank_time = first[1].time.clone();
+        let second = compute_gutter_rows(&store, &snapshot, true, true);
+        assert_eq!(second[0].time, first_time);
+        assert_eq!(second[0].signature, first[0].signature);
+        assert_eq!(second[1].time, first_blank_time);
+    }
+
+    #[test]
+    fn gutter_marks_wrap_continuation_rows() {
+        use kt_core::term::snapshot::{Cursor, CursorShape};
+        let store = Rc::new(RefCell::new(Vec::<RowMeta>::new()));
+        // 两行非空内容，第 0 行 wrap 到第 1 行；光标在底部使两行均显示。
+        let mut cells = vec![SnapshotCell::default(); 2];
+        cells[0].c = 'a';
+        cells[1].c = 'b';
+        let snapshot = GridSnapshot {
+            rows: 2,
+            cols: 1,
+            cells,
+            cursor: Cursor {
+                line: 1,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision: 1,
+            display_offset: 0,
+            wrapped: vec![true, false],
+        };
+
+        let rows = compute_gutter_rows(&store, &snapshot, true, true);
+        // 第 0 行是逻辑行首，第 1 行是 wrap 续行；两行均已使用。
+        assert!(!rows[0].is_continuation);
+        assert!(rows[1].is_continuation);
+        assert!(!rows[0].unused);
+        assert!(!rows[1].unused);
+    }
+
+    #[test]
+    fn gutter_hides_unused_rows_below_cursor_in_live_view() {
+        use kt_core::term::snapshot::{Cursor, CursorShape};
+        let store = Rc::new(RefCell::new(Vec::<RowMeta>::new()));
+        // 3 行，光标在 line 0（刚启动/清屏后），line 1、2 为未使用区。
+        let mut cells = vec![SnapshotCell::default(); 3];
+        cells[0].c = '$';
+        let snapshot = GridSnapshot {
+            rows: 3,
+            cols: 1,
+            cells,
+            cursor: Cursor {
+                line: 0,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision: 1,
+            display_offset: 0,
+            wrapped: vec![false, false, false],
+        };
+
+        let rows = compute_gutter_rows(&store, &snapshot, true, true);
+        assert!(!rows[0].unused);
+        assert!(rows[1].unused);
+        assert!(rows[2].unused);
+    }
+
+    #[test]
+    fn gutter_shows_all_rows_when_scrolling_history() {
+        use kt_core::term::snapshot::{Cursor, CursorShape};
+        let store = Rc::new(RefCell::new(Vec::<RowMeta>::new()));
+        // 滚动历史视图（display_offset > 0）：即使光标在顶部，所有可见行都显示。
+        let mut cells = vec![SnapshotCell::default(); 2];
+        cells[0].c = 'a';
+        cells[1].c = 'b';
+        let snapshot = GridSnapshot {
+            rows: 2,
+            cols: 1,
+            cells,
+            cursor: Cursor {
+                line: 0,
+                column: 0,
+                shape: CursorShape::Block,
+            },
+            revision: 1,
+            display_offset: 5,
+            wrapped: vec![false, false],
+        };
+
+        let rows = compute_gutter_rows(&store, &snapshot, true, true);
+        assert!(!rows[0].unused);
+        assert!(!rows[1].unused);
     }
 }

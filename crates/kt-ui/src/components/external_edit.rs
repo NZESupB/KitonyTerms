@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::prelude::*;
-use kt_config::AppLanguage;
+use kt_config::{AppLanguage, EditorEntry};
 use kt_core::{SessionId, SftpOp};
 
 use crate::components::icons::Icon;
@@ -39,6 +39,8 @@ pub struct ExternalEdit {
     pub after_revision: u64,
     pub status: ExternalEditStatus,
     pub sync_mode: ExternalEditSyncMode,
+    /// 打开本地文件所用的编辑器命令；None 表示使用系统默认程序。
+    pub editor_command: Option<String>,
     pub last_seen_modified: Option<SystemTime>,
     pub pending_modified: Option<SystemTime>,
 }
@@ -49,6 +51,8 @@ pub enum ExternalEditAction {
         edit_id: u64,
         path: PathBuf,
         file_name: String,
+        /// 使用的编辑器命令；None 表示系统默认程序。
+        editor_command: Option<String>,
     },
     Upload {
         session_id: SessionId,
@@ -91,6 +95,7 @@ pub fn sync_external_edits(
                     edit_id: edit.id,
                     path: edit.local_path.clone(),
                     file_name: edit.file_name.clone(),
+                    editor_command: edit.editor_command.clone(),
                 });
                 next.push(edit);
             }
@@ -231,31 +236,250 @@ pub fn sanitize_local_file_name(name: &str) -> String {
     }
 }
 
+/// 用系统默认程序打开本地文件。
 pub fn open_local_file(path: &Path) -> Result<(), String> {
+    open_local_file_with(path, None)
+}
+
+/// 打开本地文件；`editor_command` 为空时用系统默认程序，否则用该命令模板。
+///
+/// 命令模板中的 `{file}` 会被替换为本地文件路径；若模板不含 `{file}`，
+/// 则把路径作为最后一个参数追加。模板按空白切分为程序名 + 参数。
+pub fn open_local_file_with(path: &Path, editor_command: Option<&str>) -> Result<(), String> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
+    match editor_command.map(str::trim).filter(|cmd| !cmd.is_empty()) {
+        Some(command) => {
+            let (program, args) = build_editor_command(command, &path);
+            Command::new(&program)
+                .args(&args)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("{program}: {e}"))
+        }
+        None => open_with_system_default(&path),
+    }
+}
+
+fn open_with_system_default(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("/usr/bin/open");
-        command.arg(&path);
+        command.arg(path);
         command
     };
 
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = Command::new("cmd");
-        command.arg("/C").arg("start").arg("").arg(&path);
+        command.arg("/C").arg("start").arg("").arg(path);
         command
     };
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let mut command = {
         let mut command = Command::new("xdg-open");
-        command.arg(&path);
+        command.arg(path);
         command
     };
 
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// 把编辑器命令模板与文件路径解析为 (程序, 参数列表)。
+fn build_editor_command(command: &str, path: &Path) -> (String, Vec<String>) {
+    let path_str = path.to_string_lossy().to_string();
+    let mut tokens = command.split_whitespace();
+    let program = tokens.next().unwrap_or_default().to_string();
+
+    let mut args = Vec::new();
+    let mut substituted = false;
+    for token in tokens {
+        if token.contains("{file}") {
+            args.push(token.replace("{file}", &path_str));
+            substituted = true;
+        } else {
+            args.push(token.to_string());
+        }
+    }
+    // 程序名本身也可能是占位符（少见），或整条命令只有程序名时把路径追加为参数。
+    if program.contains("{file}") {
+        return (program.replace("{file}", &path_str), args);
+    }
+    if !substituted {
+        args.push(path_str);
+    }
+    (program, args)
+}
+
+/// 在 `PATH` 中查找可执行程序；Windows 自动尝试 `exe`/`cmd`/`bat` 后缀。
+pub fn find_in_path(program: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(program);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            for ext in ["exe", "cmd", "bat"] {
+                let with_ext = dir.join(format!("{program}.{ext}"));
+                if with_ext.is_file() {
+                    return Some(with_ext);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 命令模板的首个程序是否可用（PATH 中存在）。
+fn editor_command_available(command: &str) -> bool {
+    let program = command.split_whitespace().next().unwrap_or(command);
+    !program.is_empty() && find_in_path(program).is_some()
+}
+
+/// 跨平台 CLI 编辑器候选：(显示名, 命令模板)。
+fn cli_editor_candidates() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("VS Code", "code {file}"),
+        ("Cursor", "cursor {file}"),
+        ("Zed", "zed {file}"),
+        ("Sublime Text", "subl {file}"),
+        ("Helix", "hx {file}"),
+        ("Neovim", "nvim {file}"),
+        ("Vim", "vim {file}"),
+        ("Emacs", "emacs {file}"),
+        ("nano", "nano {file}"),
+        ("Micro", "micro {file}"),
+    ]
+}
+
+/// macOS `.app` bundle 候选：(显示名, `open -a` 命令模板, bundle 路径)。
+#[cfg(target_os = "macos")]
+fn macos_app_candidates() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        (
+            "VS Code",
+            "open -a \"Visual Studio Code\" {file}",
+            "/Applications/Visual Studio Code.app",
+        ),
+        (
+            "Cursor",
+            "open -a Cursor {file}",
+            "/Applications/Cursor.app",
+        ),
+        (
+            "Sublime Text",
+            "open -a \"Sublime Text\" {file}",
+            "/Applications/Sublime Text.app",
+        ),
+        ("Zed", "open -a Zed {file}", "/Applications/Zed.app"),
+        (
+            "TextEdit",
+            "open -a TextEdit {file}",
+            "/System/Applications/TextEdit.app",
+        ),
+        (
+            "BBEdit",
+            "open -a BBEdit {file}",
+            "/Applications/BBEdit.app",
+        ),
+        (
+            "TextMate",
+            "open -a TextMate {file}",
+            "/Applications/TextMate.app",
+        ),
+        ("Xcode", "open -a Xcode {file}", "/Applications/Xcode.app"),
+    ]
+}
+
+/// Linux 桌面环境编辑器候选。
+#[cfg(target_os = "linux")]
+fn linux_gui_candidates() -> Vec<(&'static str, &'static str)> {
+    vec![("gedit", "gedit {file}"), ("Kate", "kate {file}")]
+}
+
+/// Windows 编辑器候选。
+#[cfg(target_os = "windows")]
+fn windows_candidates() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Notepad++", "notepad++ {file}"),
+        ("Notepad", "notepad {file}"),
+    ]
+}
+
+/// 探测系统中可用的编辑器，返回带 `{file}` 占位的命令模板；按显示名去重(CLI 优先)。
+pub fn detect_editors() -> Vec<EditorEntry> {
+    let mut found: Vec<EditorEntry> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+
+    for (name, command) in cli_editor_candidates() {
+        if editor_command_available(command) && !names.contains(&name.to_string()) {
+            names.push(name.to_string());
+            found.push(EditorEntry {
+                name: name.to_string(),
+                command: command.to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    for (name, command, bundle) in macos_app_candidates() {
+        if Path::new(bundle).is_dir() && !names.contains(&name.to_string()) {
+            names.push(name.to_string());
+            found.push(EditorEntry {
+                name: name.to_string(),
+                command: command.to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    for (name, command) in linux_gui_candidates() {
+        if editor_command_available(command) && !names.contains(&name.to_string()) {
+            names.push(name.to_string());
+            found.push(EditorEntry {
+                name: name.to_string(),
+                command: command.to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    for (name, command) in windows_candidates() {
+        if editor_command_available(command) && !names.contains(&name.to_string()) {
+            names.push(name.to_string());
+            found.push(EditorEntry {
+                name: name.to_string(),
+                command: command.to_string(),
+            });
+        }
+    }
+
+    found
+}
+
+/// 清洗环境变量取值：去首尾空白，空串视为未设置。
+fn clean_env_editor(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 读取 `$VISUAL`/`$EDITOR` 作为编辑器命令；两者都未设或为空时返回 `None`。
+pub fn env_editor_command() -> Option<String> {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(value) = std::env::var(var) {
+            if let Some(cleaned) = clean_env_editor(&value) {
+                return Some(cleaned);
+            }
+        }
+    }
+    None
 }
 
 pub fn external_edit_status_text(
@@ -389,6 +613,7 @@ mod tests {
             sftp_error: None,
             sftp_last_done: None,
             sftp_progress: None,
+            terminal_cwd: None,
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
@@ -417,6 +642,64 @@ mod tests {
     }
 
     #[test]
+    fn build_editor_command_substitutes_placeholder() {
+        let path = PathBuf::from("/tmp/a.txt");
+        let (program, args) = build_editor_command("code -g {file}:1", &path);
+        assert_eq!(program, "code");
+        assert_eq!(args, vec!["-g".to_string(), "/tmp/a.txt:1".to_string()]);
+    }
+
+    #[test]
+    fn build_editor_command_appends_path_without_placeholder() {
+        let path = PathBuf::from("/tmp/a.txt");
+        let (program, args) = build_editor_command("vim", &path);
+        assert_eq!(program, "vim");
+        assert_eq!(args, vec!["/tmp/a.txt".to_string()]);
+    }
+
+    #[test]
+    fn find_in_path_returns_none_for_missing_program() {
+        assert!(find_in_path("kitonyterms-definitely-missing-bin").is_none());
+    }
+
+    #[test]
+    fn editor_command_available_false_for_missing_program() {
+        assert!(!editor_command_available("kitonyterms-missing-bin {file}"));
+    }
+
+    #[test]
+    fn clean_env_editor_trims_and_drops_empty() {
+        assert_eq!(clean_env_editor("vim"), Some("vim".to_string()));
+        assert_eq!(clean_env_editor("  nvim  "), Some("nvim".to_string()));
+        assert_eq!(clean_env_editor(""), None);
+        assert_eq!(clean_env_editor("   "), None);
+    }
+
+    #[test]
+    fn cli_editor_candidates_include_known_editors() {
+        let names: Vec<&str> = cli_editor_candidates().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"Vim"));
+        assert!(names.contains(&"VS Code"));
+        // 所有候选命令都带 {file} 占位
+        assert!(cli_editor_candidates()
+            .iter()
+            .all(|(_, cmd)| cmd.contains("{file}")));
+    }
+
+    #[test]
+    fn detect_editors_entries_use_file_placeholder() {
+        let detected = detect_editors();
+        // 不应 panic，且每条命令都含 {file}
+        assert!(detected.iter().all(|e| e.command.contains("{file}")));
+        // 显示名唯一
+        let mut names: Vec<&str> = detected.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        let mut deduped = names.clone();
+        deduped.dedup();
+        assert_eq!(names, deduped, "编辑器显示名应去重");
+    }
+
+    #[test]
     fn external_edit_download_completion_opens_local_file() {
         let mut session = session_state(SessionId(1));
         session.sftp_last_done = Some(crate::state::SftpCompletion {
@@ -434,6 +717,7 @@ mod tests {
             after_revision: 1,
             status: ExternalEditStatus::Downloading,
             sync_mode: ExternalEditSyncMode::Ask,
+            editor_command: None,
             last_seen_modified: None,
             pending_modified: None,
         };
@@ -448,6 +732,7 @@ mod tests {
                 edit_id: 1,
                 path: PathBuf::from("/tmp/demo.txt"),
                 file_name: "demo.txt".to_string(),
+                editor_command: None,
             }]
         );
     }
@@ -470,6 +755,7 @@ mod tests {
             after_revision: 4,
             status: ExternalEditStatus::UploadingOnce,
             sync_mode: ExternalEditSyncMode::Ask,
+            editor_command: None,
             last_seen_modified: None,
             pending_modified: None,
         };
@@ -502,6 +788,7 @@ mod tests {
             after_revision: 0,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::Ask,
+            editor_command: None,
             last_seen_modified: Some(UNIX_EPOCH),
             pending_modified: None,
         };
@@ -529,6 +816,7 @@ mod tests {
             after_revision: 0,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::AutoUpload,
+            editor_command: None,
             last_seen_modified: Some(UNIX_EPOCH),
             pending_modified: None,
         };

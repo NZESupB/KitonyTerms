@@ -33,6 +33,10 @@ russh = "0.61"
 russh-config = "0.58"
 russh-sftp = "2.3"
 
+# --- TCP proxy (SOCKS5 / HTTP CONNECT before SSH handshake) ---
+tokio-socks = "0.5.3"
+base64 = "0.22.1"
+
 # --- terminal backend (API not stability-guaranteed → pinned) ---
 alacritty_terminal = "=0.26.0"
 

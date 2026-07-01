@@ -41,6 +41,8 @@ pub struct SessionState {
     pub sftp_error: Option<String>,
     pub sftp_last_done: Option<SftpCompletion>,
     pub sftp_progress: Option<SftpProgressState>,
+    /// 远端 shell 通过 OSC 7 上报的当前工作目录（供"跟随终端目录"使用）。
+    pub terminal_cwd: Option<String>,
 
     /// 最近一次资源监控采样。
     pub monitor: Option<MonitorStats>,
@@ -131,6 +133,11 @@ impl AppState {
             }
             FromCore::Title { id, title } => {
                 tracing::debug!("忽略远端终端标题更新，会话 {:?}: {:?}", id, title);
+            }
+            FromCore::Cwd { id, path } => {
+                if let Some(sess) = self.sessions.get_mut(&id) {
+                    sess.terminal_cwd = Some(path);
+                }
             }
             FromCore::Bell { .. } => {}
             FromCore::Closed { id, error } => {
@@ -319,6 +326,7 @@ mod tests {
             sftp_error: None,
             sftp_last_done: None,
             sftp_progress: None,
+            terminal_cwd: None,
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
