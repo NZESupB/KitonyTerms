@@ -4,7 +4,7 @@
 #   - 推送 v* 标签(如 v0.0.2)→ 构建各端产物并创建 GitHub Release
 #   - 手动触发(workflow_dispatch)→ 仅构建并上传 artifacts,便于验证打包流程
 #
-# 产物覆盖:Linux(x86_64 + aarch64)、macOS(aarch64 + x86_64)、Windows(x86_64 + aarch64)。
+# 产物覆盖:Linux(x64 + aarch64)、macOS(aarch64 + x64)、Windows(x64 + aarch64)。
 # 二进制名为 kitonyterms(来自 kt-app crate)。
 #
 # 打包格式:
@@ -13,7 +13,7 @@
 #   - Windows→ .zip(便携版)与 -setup.exe(Inno Setup 安装包)
 #
 # 备注:
-#   - macOS x86_64 在 Apple Silicon(macos-14)上交叉编译 —— Intel runner(macos-13)
+#   - macOS x64 在 Apple Silicon(macos-14)上交叉编译 —— Intel runner(macos-13)
 #     已进入淘汰期、排队严重,交叉编译可避免长时间 "Waiting for a runner"。
 #   - Linux/Windows ARM 使用原生 ARM 托管 runner,无需交叉工具链。
 name: release
@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
+          - name: linux-x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - name: linux-aarch64
@@ -50,11 +50,11 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
-          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x86_64。
-          - name: macos-x86_64
+          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x64。
+          - name: macos-x64
             os: macos-14
             target: x86_64-apple-darwin
-          - name: windows-x86_64
+          - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
           - name: windows-aarch64
@@ -140,7 +140,7 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x86_64、
+          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x64、
           # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
           # 详见 Release 说明。
           codesign --force --sign - "$app/Contents/MacOS/kitonyterms"

@@ -326,6 +326,10 @@ pub fn App() -> Element {
                 status_session,
                 session_tabs,
                 status_detail: status_detail.clone(),
+                on_settings_open: {
+                    let mut show_settings = show_settings;
+                    Callback::new(move |_| show_settings.set(true))
+                },
                 show_dialog,
                 dialog_mode,
                 edit_original_name,

@@ -52,11 +52,24 @@ fn desktop_config() -> dioxus::desktop::Config {
     if let Some(window_icon) = icon::kitony_window_icon() {
         config = config.with_icon(window_icon);
     }
-    #[cfg(target_os = "macos")]
-    {
-        config = config.with_menu(kt_ui::components::desktop_menu::app_menu());
+    if should_use_kitonyterms_desktop_menu(std::env::consts::OS) {
+        config = with_kitonyterms_desktop_menu(config);
     }
     icon::with_platform_icon_hooks(config)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn with_kitonyterms_desktop_menu(config: dioxus::desktop::Config) -> dioxus::desktop::Config {
+    config.with_menu(kt_ui::components::desktop_menu::app_menu())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn with_kitonyterms_desktop_menu(config: dioxus::desktop::Config) -> dioxus::desktop::Config {
+    config
+}
+
+fn should_use_kitonyterms_desktop_menu(target_os: &str) -> bool {
+    matches!(target_os, "macos" | "windows" | "linux")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +144,14 @@ mod tests {
     fn help_is_supported() {
         assert_eq!(parse(&["--help"]).unwrap(), AppCommand::Help);
         assert_eq!(parse(&["-h"]).unwrap(), AppCommand::Help);
+    }
+
+    #[test]
+    fn custom_desktop_menu_is_used_on_desktop_release_platforms() {
+        assert!(should_use_kitonyterms_desktop_menu("windows"));
+        assert!(should_use_kitonyterms_desktop_menu("macos"));
+        assert!(should_use_kitonyterms_desktop_menu("linux"));
+        assert!(!should_use_kitonyterms_desktop_menu("android"));
     }
 
     #[test]

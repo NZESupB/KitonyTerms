@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
+          - name: linux-x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - name: linux-aarch64
@@ -41,11 +41,11 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
-          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x86_64。
-          - name: macos-x86_64
+          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x64。
+          - name: macos-x64
             os: macos-14
             target: x86_64-apple-darwin
-          - name: windows-x86_64
+          - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
           - name: windows-aarch64
@@ -132,7 +132,7 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x86_64、
+          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x64、
           # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
           # 详见预发布说明。
           codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
@@ -261,4 +261,3 @@ jobs:
 
             ### Windows
             安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
-

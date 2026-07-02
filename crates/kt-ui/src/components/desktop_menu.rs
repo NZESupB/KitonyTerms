@@ -26,11 +26,8 @@ pub fn app_menu() -> dioxus::desktop::muda::Menu {
         .expect("无法创建应用菜单");
     settings_menu.append(&settings).expect("无法创建设置菜单");
 
-    // 编辑菜单：macOS WebView(wry/tao) 依赖原生菜单的快捷键等价项来路由
-    // Cmd+X/C/V/A、撤销/重做到聚焦的 <input>；缺少该菜单时输入框无法粘贴。
-    // Edit menu: on macOS the WebView relies on these predefined items' key
-    // equivalents to route Cut/Copy/Paste/SelectAll/Undo/Redo into the focused
-    // <input>. Without it, pasting into text fields silently fails.
+    // Windows/macOS/Linux 统一覆盖 Dioxus 默认 Window/Edit 菜单，并保留编辑快捷键
+    // 等价项，确保 WebView 聚焦输入框能正确处理撤销、复制、粘贴和全选。
     let edit_menu = Submenu::new("编辑", true);
     edit_menu
         .append_items(&[
