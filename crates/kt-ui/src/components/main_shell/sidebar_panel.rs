@@ -22,6 +22,21 @@ use crate::i18n::texts;
 use crate::state::AppState;
 use crate::store::Store;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarHeaderAction {
+    NewGroup,
+    NewConnection,
+    Settings,
+}
+
+pub(crate) const fn sidebar_header_actions() -> [SidebarHeaderAction; 3] {
+    [
+        SidebarHeaderAction::NewGroup,
+        SidebarHeaderAction::NewConnection,
+        SidebarHeaderAction::Settings,
+    ]
+}
+
 pub(super) struct SidebarPanelArgs {
     pub(super) state: Arc<Mutex<AppState>>,
     pub(super) store: Arc<Store>,
@@ -31,6 +46,7 @@ pub(super) struct SidebarPanelArgs {
     pub(super) saved_groups: Vec<String>,
     pub(super) active_profile_title: Option<String>,
     pub(super) active_sftp: Option<ActiveSftpView>,
+    pub(super) on_settings_open: Callback<()>,
     pub(super) dialog_signals: ConnectionDialogSignals,
     pub(super) show_group_dialog: Signal<bool>,
     pub(super) group_dialog_mode: Signal<String>,
@@ -57,6 +73,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
         saved_groups,
         active_profile_title,
         active_sftp,
+        on_settings_open,
         dialog_signals,
         mut show_group_dialog,
         mut group_dialog_mode,
@@ -95,25 +112,43 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                 div {
                     class: "sidebar-section-head",
                     span { "{t.groups}" }
-                    button {
-                        class: "sidebar-add-btn",
-                        title: "{t.new_group}",
-                        onclick: move |evt| {
-                            evt.stop_propagation();
-                            group_dialog_mode.set("new".to_string());
-                            group_dialog_original.set(String::new());
-                            group_dialog_name.set(String::new());
-                            show_group_dialog.set(true);
-                        },
-                        Icon { name: "folder" }
-                    }
-                    button {
-                        class: "sidebar-add-btn",
-                        title: "{t.new_connection}",
-                        onclick: move |_| {
-                            dialog_signals.open_new();
-                        },
-                        Icon { name: "add" }
+                    for action in sidebar_header_actions() {
+                        match action {
+                            SidebarHeaderAction::NewGroup => rsx! {
+                                button {
+                                    class: "sidebar-add-btn",
+                                    title: "{t.new_group}",
+                                    onclick: move |evt| {
+                                        evt.stop_propagation();
+                                        group_dialog_mode.set("new".to_string());
+                                        group_dialog_original.set(String::new());
+                                        group_dialog_name.set(String::new());
+                                        show_group_dialog.set(true);
+                                    },
+                                    Icon { name: "folder" }
+                                }
+                            },
+                            SidebarHeaderAction::NewConnection => rsx! {
+                                button {
+                                    class: "sidebar-add-btn",
+                                    title: "{t.new_connection}",
+                                    onclick: move |_| {
+                                        dialog_signals.open_new();
+                                    },
+                                    Icon { name: "add" }
+                                }
+                            },
+                            SidebarHeaderAction::Settings => rsx! {
+                                button {
+                                    class: "sidebar-add-btn",
+                                    title: "{t.settings}",
+                                    onclick: move |_| {
+                                        on_settings_open.call(());
+                                    },
+                                    Icon { name: "settings" }
+                                }
+                            },
+                        }
                     }
                 }
 
@@ -317,5 +352,17 @@ mod tests {
 
         assert!(!toggle_collapsed_group(&mut collapsed_groups, "生产"));
         assert!(!collapsed_groups.contains("生产"));
+    }
+
+    #[test]
+    fn sidebar_header_actions_include_settings_entry() {
+        assert_eq!(
+            sidebar_header_actions(),
+            [
+                SidebarHeaderAction::NewGroup,
+                SidebarHeaderAction::NewConnection,
+                SidebarHeaderAction::Settings,
+            ]
+        );
     }
 }

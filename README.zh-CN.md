@@ -2,85 +2,56 @@
 
 [English](README.md) | **中文**
 
-一个轻量、跨平台的 SSH 终端客户端，用 **Rust** 编写，采用 [Dioxus](https://dioxuslabs.com/) 构建——一个利用系统原生 WebView 作为 UI 层的现代桌面框架，同时保持 SSH/终端逻辑为纯 Rust 实现。
+KitonyTerms 是一个用 **Rust** 与 [Dioxus Desktop](https://dioxuslabs.com/)
+构建的跨平台 SSH 桌面客户端。SSH、终端模拟、SFTP、监控、配置和机密存储
+都保留在 Rust crate 中；桌面界面通过系统原生 WebView 栈渲染。
 
-> **目标：** 快速启动、低内存占用、原生系统集成，在 macOS / Windows / Linux (x86_64 + aarch64) 上都是一个小巧的二进制文件。
+## 当前形态
 
-## 当前状态
+- **主应用：** GUI-only 桌面二进制 `kitonyterms`，由 `kt-app` 提供。
+- **支持平台：** macOS / Windows / Linux 的 `x64` 与 `aarch64` 发布产物。
+  不构建 32 位产物。
+- **核心引擎：** `kt-core` 中实现纯 Rust SSH 客户端、终端网格、SFTP 任务和远端监控，
+  不依赖 UI。
+- **界面：** Dioxus 0.7 desktop，系统窗口、左侧连接/SFTP 侧栏、中央终端工作区、
+  监控横条、状态栏、弹窗与设置面板。
+- **验证：** 当前 workspace 共 182 个测试通过；clippy 以 `-D warnings` 执行。
 
-**功能可用** —— 核心 SSH 引擎、终端模拟、远端系统监控、SFTP 文件管理、主机密钥确认和交互式认证提示均已实现。UI 基于 Dioxus 0.7 desktop 构建。
+## 已实现能力
 
-| Crate | 职责 | 测试 |
-|-------|------|------|
-| `kt-secrets` | 加密机密保险库：Argon2id + XChaCha20-Poly1305 加密存储 SSH 密码与私钥口令 | 6 ✅ |
-| `kt-config` | TOML 会话配置与应用设置 + `~/.ssh/config` 解析/合并 | 21 ✅ |
-| `kt-core` | SSH 客户端 (`russh`) + 终端引擎 (`alacritty_terminal`) + 会话编排 + SFTP 支持 + 远端系统监控。**无 UI 依赖。** | 33 ✅ |
-| `kt-ui` | Dioxus 组件与 UI 状态：终端工作台、对话框、SFTP 树/操作、系统监控、selector 驱动的主界面 | 70 ✅ |
-| `kt-app` | 主二进制：GUI-only Dioxus desktop 入口、CLI 参数校验、应用图标集成 | 8 ✅ |
+- SSH 终端会话：支持密码、公钥、keyboard-interactive、ssh-agent/Pageant 认证。
+- 侧栏保存会话与分组：支持重连、编辑、复制、删除，并可合并 `~/.ssh/config`。
+- 主机密钥信任流程：使用 `known_hosts.toml` 记录指纹；未知或变化的主机密钥需要确认，
+  支持“仅允许一次”和“信任此主机”。
+- 本机加密机密保险库：密码与私钥口令加密存储，UI 启动时自动打开。
+- 单跳 `ProxyJump`、TCP 级代理（`Direct`、`System`、`SOCKS5`、`HTTP CONNECT`）
+  和可选 agent forwarding。
+- 终端渲染：RGB 颜色、常见文本属性、光标样式、scrollback、分屏、触发器高亮、
+  可选行号和可选时间戳。
+- SFTP 文件浏览：列表、上传、下载、创建目录、删除、重命名、远端路径导航、跟随终端目录，
+  以及通过本地编辑器编辑远端文件后回传。
+- 编辑器设置：默认编辑器选择和右键“打开方式”条目。
+- 远端 CPU、内存、磁盘、网络、负载、运行时长和延迟监控。
+- 浅色/深色主题与中文/英文界面语言设置。
 
-**138 个测试通过；`clippy` 干净。** 核心验证是一个**进程内往返集成测试**（[`kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)）：在回环地址上启动真实的 `russh` SSH 服务端，驱动完整的 `SessionManager` 路径：`连接 → 密码认证 → PTY → shell → 通道数据 → TermEngine → GridSnapshot`，断言服务端输出和回显的按键确实落入渲染网格。
+## 当前边界
 
-### 当前功能
+- `kt-app` 主二进制只提供 GUI 入口：无参数、`--gui`、`--help`。
+  历史上的 `--safe`、`--system-ssh`、`--show-log`、`--list` 会明确报错。
+- 尚未实现多跳 `ProxyJump` 链。
+- 触发器规则暂不可在 UI 中编辑，完整语法高亮尚未实现。
+- 发布包目前未代码签名 / 未 Apple 公证，因此 macOS Gatekeeper 与 Windows SmartScreen
+  可能需要用户手动确认。
+- headless 客户端仅作为 `kt-core` 示例用于调试核心管线，不是主要产品入口。
 
-- **SSH 终端**：通过密码 / 公钥 / 交互式键盘认证连接
-- **多会话与分屏**：标签页界面，每个会话独立 scrollback 和 resize，终端区支持水平/垂直双视图
-- **终端特性**：真彩色、加粗/斜体/下划线/删除线、块状/竖线/下划线光标
-- **交互式认证提示**：保存的机密缺失时，可在握手过程中采集密码、私钥口令和 keyboard-interactive 输入
-- **会话持久化**：保存连接到 `config.toml`；密码和私钥口令加密存入本机保险库
-- **自动机密保险库**：本机保险库会自动创建/打开，重连时可直接复用已保存密码，不再额外提示保险库主密码
-- **SFTP 面板**：浏览远程文件系统、上传/下载文件、创建目录、删除/重命名，并支持通过本地编辑器编辑远端文件后回传
-- **系统监控**：实时展示远端 CPU、内存、网络、磁盘、负载、运行时长和延迟摘要
-- **SSH 配置集成**：读取 `~/.ssh/config` 获取主机别名、默认设置和单跳 `ProxyJump`
-- **主机密钥信任库**：持久化 `known_hosts.toml`；未知或变化的指纹需要用户确认，可选择“仅允许一次”或“信任此主机”
-- **ssh-agent**：支持本机 ssh-agent/Pageant 公钥认证，并可在 shell 会话中请求 agent forwarding
-- **触发器高亮**：终端行文本按内置触发器规则进行高亮
+## 快速开始
 
-### 尚未实现
+需要 Rust stable 1.85+。
 
-- 多跳 ProxyJump 链
-- 可编辑触发器规则和完整语法高亮
-- 当前二进制不提供 `--safe`、`--system-ssh`、`--show-log`、`--list` 等非 GUI 降级入口
+### Linux 依赖
 
-## 架构
+Ubuntu/Debian：
 
-```
-kt-app (Dioxus desktop 二进制)
-   ├─ kt-ui (Dioxus 组件)
-   │    └─ 终端 / 对话框 / SFTP / 监控视图
-   └─ kt-core (tokio 运行时，后台)
-       ├─ ssh/      russh：连接、认证、PTY shell、SFTP 子系统
-       ├─ term/     alacritty_terminal 封装 → GridSnapshot（已解析 RGB）
-       ├─ monitor/  远端系统资源监控（CPU、内存、磁盘、网络）
-       ├─ sftp/     SFTP 任务：列表/上传/下载/创建目录/删除/重命名
-       └─ session/  SessionManager：每会话一个 task，UI⇄core 消息协议
-            │                         │
-       kt-config             kt-secrets
-       (TOML + ssh_config)   (Argon2id + XChaCha20 保险库)
-```
-
-终端**引擎**（VT 解析、网格、scrollback）与**渲染**完全解耦：核心产出不可变的 `GridSnapshot`，颜色已解析为 24-bit RGB，因此渲染器无需依赖 `alacritty_terminal`。`alacritty_terminal` API（明确*不保证*稳定）完全隔离在 `kt-core/src/term/` 内。
-
-### 会话与机密存储
-
-- **会话**（`SessionProfile`：host/port/user/auth/…）为**非机密**，明文存储在 `config.toml` 中。
-- **机密**（密码、私钥口令）按 vault id（`user@host:port`）索引并加密存入本机保险库，永不明文落盘。
-- **主机密钥**（host/port/fingerprint）存储在 `known_hosts.toml`，用于检测远端主机密钥变化。
-- 启动时保险库会自动打开。无法打开的旧主密码保险库会备份为 `secrets.vault.legacy*`，新的保存密码继续写入新建的加密保险库。
-
-## 技术栈
-
-- **SSH：** [`russh`](https://crates.io/crates/russh) 0.61（纯 Rust、异步）
-- **终端后端：** [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) 0.26（锁定版本）
-- **UI 框架：** [Dioxus](https://dioxuslabs.com/) 0.7 desktop（wry + tao + 原生 WebView）
-- **异步运行时：** `tokio`
-- **加密：** `argon2`、`chacha20poly1305`、`zeroize`
-- **配置：** `serde` + `toml`、`directories`
-
-## 构建与运行
-
-需要 Rust 工具链（stable，1.85+）和平台特定依赖：
-
-### Linux (Ubuntu/Debian)
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev \
   libgtk-3-dev \
@@ -91,49 +62,105 @@ sudo apt install libwebkit2gtk-4.1-dev \
   pkg-config
 ```
 
-### macOS
-无需额外依赖 —— 使用系统 WebKit。
+macOS 和 Windows 本地开发不需要额外系统依赖。
 
-### Windows
-无需额外依赖。
+### 启动应用
 
-### 构建与运行
 ```bash
-# 运行全部测试
-cargo test --workspace
+cargo run -p kt-app
+```
 
-# 维护者使用的质量门禁
+入口检查：
+
+```bash
+cargo run -p kt-app -- --gui
+cargo run -p kt-app -- --help
+```
+
+在 UI 中，从侧栏创建连接，选择认证方式后连接；如需复用连接，可保存会话。
+保存的密码和私钥口令会进入加密保险库，不会写入 `config.toml`。
+
+## 开发者地图
+
+```text
+kt-app
+  Dioxus Desktop 入口、窗口/图标/菜单设置、最小 CLI 参数处理
+
+kt-ui
+  Dioxus 组件、AppState/Store 桥接、终端工作区、SFTP 侧栏、
+  监控 UI、弹窗、设置、主机密钥/认证提示
+
+kt-core
+  SessionManager、russh 连接/认证、PTY shell、终端引擎、
+  SFTP worker、远端监控、UI <-> core 消息协议
+
+kt-config
+  配置路径、TOML 模型、会话、应用设置、known_hosts、ssh_config 合并
+
+kt-secrets
+  Argon2id + XChaCha20-Poly1305 本机机密保险库
+```
+
+关键边界是 `kt-core`：它负责协议和终端行为，并且不依赖 UI。
+`kt-ui` 只通过 `ToCore` / `FromCore` 消息与它通信，并渲染 selector 风格的轻量视图模型。
+
+## 存储模型
+
+- `config.toml`：非机密的会话配置与应用设置。
+- `known_hosts.toml`：受信任主机密钥指纹与最近访问元数据。
+- `secrets.vault`：加密存储密码与私钥口令。
+- 无法自动打开的旧主密码保险库会备份为 `secrets.vault.legacy*`；
+  新机密会继续写入新建的加密保险库。
+
+机密值不应写入配置文件或日志。
+
+## 验证
+
+维护者门禁：
+
+```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-
-# 启动 GUI
-cargo run -p kt-app
-# 或显式指定 GUI 入口 / 查看当前入口用法
-cargo run -p kt-app -- --gui
-cargo run -p kt-app -- --help
-# 已移除入口会明确失败：--safe、--system-ssh、--show-log、--list
-#   点击 ➕ 新建 → 输入 host / user / 认证 → 连接
-#   勾选"保存会话"以持久化；密码加密存入保险库
-#   点击侧栏会话以重连（密码自动填充）
-#   终端视图：点击聚焦，输入；鼠标滚轮滚动；Cmd/Ctrl +/− 缩放
-
-# 试用 headless SSH 客户端（在终端中执行完整核心管道）
-cargo run -p kt-core --example headless -- user@host
-#   认证：尝试 ~/.ssh/config + 默认密钥，然后交互式键盘认证，最后密码
-#   退出：Ctrl-]
 ```
 
-## 路线图
+当前测试分布：
 
-- [x] **阶段一** —— 核心引擎（SSH + 终端 + 会话），端到端验证
-- [x] **阶段二** —— Dioxus desktop UI：终端渲染、输入、连接对话框、多标签
-- [x] **阶段三** —— 会话持久化（TOML + 加密保险库）、SFTP 面板、系统监控
-- [x] **阶段四** —— `known_hosts` 信任库、分屏、ssh-agent 转发、ProxyJump、触发器/高亮
-- [x] **阶段五** —— UI 模块化：状态控制器、主界面拆分、selector 驱动的 SFTP/监控/状态栏视图
-- [x] **阶段六** —— 文档与工程收敛：README/架构/QA 路径/release note
-- [x] **阶段七** —— 维护治理：影响清单、回归套件、季度架构核对
+| 范围 | 测试数 |
+| --- | ---: |
+| `kt-app` | 8 |
+| `kt-config` | 24 |
+| `kt-core` | 50 |
+| `kt-secrets` | 6 |
+| `kt-ui` | 94 |
+| **总计** | **182** |
+
+核心集成测试
+[`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
+会在回环地址启动真实的进程内 `russh` 服务端，验证完整路径：
+连接、密码认证、PTY、shell 数据、`TermEngine` 和 `GridSnapshot`。
+
+## 发布自动化
+
+GitHub Actions 有两条打包流程：
+
+- `.github/workflows/release.yml`：`v*` 标签创建正式 GitHub Release。
+- `.github/workflows/alpha.yml`：分支 push 更新滚动 `alpha` 预发布。
+
+两条 workflow 共用同一套六平台矩阵和产物命名：
+Linux/macOS/Windows x `x64`/`aarch64`。Rust target triple 仍使用标准名称，
+例如 `x86_64-pc-windows-msvc`。
+
+## 路线图快照
+
+- [x] 核心 SSH + 终端引擎
+- [x] Dioxus desktop GUI
+- [x] 会话持久化、加密保险库、SFTP、监控
+- [x] 主机密钥信任流程、分屏、ssh-agent、ProxyJump、触发器高亮
+- [x] UI 模块化与 selector 驱动的主界面面板
+- [x] Release/Alpha 打包与维护治理
+- [ ] 多跳 ProxyJump、可编辑触发器规则、更完整的终端高亮
 
 ## 许可证
 
