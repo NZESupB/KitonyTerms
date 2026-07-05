@@ -121,6 +121,9 @@ messages and renders selector-style view models.
 - `config.toml`: non-secret session profiles and app settings.
 - `known_hosts.toml`: trusted host-key fingerprints and last-seen metadata.
 - `secrets.vault`: encrypted passwords and key passphrases.
+- `secrets.vault.key`: per-install local vault key; keep it private together
+  with the vault.
+- Legacy fixed-key vaults are migrated to the current per-install key at startup.
 - Legacy master-password vaults that cannot be opened automatically are backed
   up as `secrets.vault.legacy*`; new secrets continue in a fresh encrypted
   vault.
@@ -142,12 +145,12 @@ Current test coverage by package:
 
 | Area | Tests |
 | --- | ---: |
-| `kt-app` | 8 |
+| `kt-app` | 9 |
 | `kt-config` | 24 |
-| `kt-core` | 50 |
-| `kt-secrets` | 6 |
-| `kt-ui` | 94 |
-| **Total** | **182** |
+| `kt-core` | 54 |
+| `kt-secrets` | 7 |
+| `kt-ui` | 102 |
+| **Total** | **196** |
 
 The core integration test at
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)

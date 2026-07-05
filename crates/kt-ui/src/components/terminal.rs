@@ -221,24 +221,23 @@ pub fn Terminal(
             // 滚轮事件（滚动查看历史）
             onwheel: move |evt| {
                 let delta_y = evt.delta().strip_units().y;
-                let scroll_lines = if delta_y > 0.0 { 3 } else { -3 }; // 每次滚动3行
-
-                if let Ok(app_state) = state_for_scroll.lock() {
-                    app_state.manager.send(ToCore::Scroll {
-                        id: session_id,
-                        delta: scroll_lines,
-                    });
+                if let Some(scroll_lines) = terminal_scroll_delta_from_wheel(delta_y) {
+                    if let Ok(app_state) = state_for_scroll.lock() {
+                        app_state.manager.send(ToCore::Scroll {
+                            id: session_id,
+                            delta: scroll_lines,
+                        });
+                    }
                 }
             },
             onkeydown: move |evt| {
                 terminal_context_menu.set(None);
-                tracing::debug!("键盘事件: key={:?}, code={:?}", evt.key(), evt.code());
 
                 let data = terminal_input_for_key(&evt.key(), evt.modifiers().ctrl());
 
                 if !data.is_empty() {
                     evt.prevent_default();
-                    tracing::debug!("发送输入: {:?}", data);
+                    tracing::debug!("发送终端输入: {} bytes", data.len());
                     if let Ok(app_state) = state_for_input.lock() {
                         app_state.manager.send(ToCore::Input {
                             id: session_id,
@@ -642,6 +641,15 @@ fn resize_payload_to_pty(payload: &[f64]) -> Option<(u16, u16)> {
     ))
 }
 
+fn terminal_scroll_delta_from_wheel(delta_y: f64) -> Option<i32> {
+    if !delta_y.is_finite() || delta_y == 0.0 {
+        return None;
+    }
+
+    // WebView 的 deltaY 小于 0 表示向上滚；core 中正数表示进入历史。
+    Some(if delta_y < 0.0 { 3 } else { -3 })
+}
+
 fn clamp_pty_dimension(value: f64, min: u16, max: u16) -> u16 {
     if value.is_finite() {
         (value.round() as i32).clamp(min as i32, max as i32) as u16
@@ -789,6 +797,14 @@ mod tests {
         assert_eq!(resize_payload_to_pty(&[900.0, 300.0]), Some((500, 200)));
         assert_eq!(resize_payload_to_pty(&[f64::NAN, 10.0]), Some((20, 10)));
         assert_eq!(resize_payload_to_pty(&[80.0]), None);
+    }
+
+    #[test]
+    fn wheel_scroll_direction_matches_core_scroll_semantics() {
+        assert_eq!(terminal_scroll_delta_from_wheel(-120.0), Some(3));
+        assert_eq!(terminal_scroll_delta_from_wheel(120.0), Some(-3));
+        assert_eq!(terminal_scroll_delta_from_wheel(0.0), None);
+        assert_eq!(terminal_scroll_delta_from_wheel(f64::NAN), None);
     }
 
     #[test]

@@ -22,9 +22,9 @@ use crate::components::dialog::{
     first_public_key_path, saved_connection_refs, ConnectionDialog, GroupDialog, SftpNameDialog,
 };
 use crate::components::external_edit::{
-    external_edit_local_path, external_edit_status_text, latest_sftp_completion_revision,
-    local_file_modified, open_local_file_with, ExternalEdit, ExternalEditAction,
-    ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
+    ensure_private_edit_dir, external_edit_local_path, external_edit_status_text,
+    latest_sftp_completion_revision, local_file_modified, open_local_file_with, ExternalEdit,
+    ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
 };
 use crate::components::main_shell::{
     render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
@@ -46,11 +46,21 @@ static GLOBAL_STORE: OnceLock<Arc<Store>> = OnceLock::new();
 /// 全局 AppState（只初始化一次）。
 static GLOBAL_STATE: OnceLock<Arc<Mutex<AppState>>> = OnceLock::new();
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct PendingAuthSecret {
     session_id: SessionId,
     vault_id: String,
     password: String,
+}
+
+impl std::fmt::Debug for PendingAuthSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingAuthSecret")
+            .field("session_id", &self.session_id)
+            .field("vault_id", &self.vault_id)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -120,7 +130,7 @@ pub fn App() -> Element {
     let mut host_key_prompt = use_signal(|| None::<PendingHostKey>);
     let mut host_key_error = use_signal(|| None::<String>);
     let mut pending_auth_secrets = use_signal(Vec::<PendingAuthSecret>::new);
-    let mut status_notice = use_signal(|| store.vault_status_message());
+    let status_notice = use_signal(|| store.vault_status_message());
     let active_session_id = use_signal(|| None::<SessionId>);
     let all_sessions = use_signal(Vec::<SessionState>::new);
     let mut saved_tick = use_signal(|| 0u64);
@@ -696,12 +706,6 @@ pub fn App() -> Element {
                                     reconnect_host_key_pending_sessions(Arc::clone(&state));
                                     host_key_prompt.set(None);
                                     host_key_error.set(None);
-                                    status_notice.set(Some(
-                                        texts(language)
-                                            .dialog
-                                            .host_key_trusted_hint
-                                            .to_string(),
-                                    ));
                                 }
                                 Err(err) => {
                                     let message = format!(
@@ -724,12 +728,6 @@ pub fn App() -> Element {
                             reconnect_host_key_pending_sessions(Arc::clone(&state));
                             host_key_prompt.set(None);
                             host_key_error.set(None);
-                            status_notice.set(Some(
-                                texts(language)
-                                    .dialog
-                                    .host_key_allowed_once_hint
-                                    .to_string(),
-                            ));
                         }
                     },
                     on_cancel: {
@@ -932,7 +930,7 @@ fn start_sftp_external_edit(
     let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
     let local_path = external_edit_local_path(ctx.session_id, &remote_path);
     if let Some(parent) = local_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = ensure_private_edit_dir(parent) {
             tracing::error!("创建本地编辑目录失败: {}", e);
             return;
         }
@@ -1030,11 +1028,7 @@ fn save_pending_secret(
     }
 
     match store.set_secret(&vault_id, &password) {
-        Ok(()) => {
-            signals.status_notice.set(Some(
-                texts(language).dialog.vault_password_saved.to_string(),
-            ));
-        }
+        Ok(()) => {}
         Err(e) => {
             let message = format!("{}: {}", texts(language).dialog.vault_save_failed, e);
             tracing::error!("{}", message);

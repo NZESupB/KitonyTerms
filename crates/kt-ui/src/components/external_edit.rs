@@ -209,6 +209,17 @@ pub fn external_edit_local_path(session_id: SessionId, remote_path: &str) -> Pat
         ))
 }
 
+pub fn ensure_private_edit_dir(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|err| err.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn remote_file_name(path: &str) -> String {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -244,13 +255,13 @@ pub fn open_local_file(path: &Path) -> Result<(), String> {
 /// 打开本地文件；`editor_command` 为空时用系统默认程序，否则用该命令模板。
 ///
 /// 命令模板中的 `{file}` 会被替换为本地文件路径；若模板不含 `{file}`，
-/// 则把路径作为最后一个参数追加。模板按空白切分为程序名 + 参数。
+/// 则把路径作为最后一个参数追加。模板支持基础引号与反斜杠转义。
 pub fn open_local_file_with(path: &Path, editor_command: Option<&str>) -> Result<(), String> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     match editor_command.map(str::trim).filter(|cmd| !cmd.is_empty()) {
         Some(command) => {
-            let (program, args) = build_editor_command(command, &path);
+            let (program, args) = build_editor_command(command, &path)?;
             Command::new(&program)
                 .args(&args)
                 .spawn()
@@ -287,10 +298,13 @@ fn open_with_system_default(path: &Path) -> Result<(), String> {
 }
 
 /// 把编辑器命令模板与文件路径解析为 (程序, 参数列表)。
-fn build_editor_command(command: &str, path: &Path) -> (String, Vec<String>) {
+fn build_editor_command(command: &str, path: &Path) -> Result<(String, Vec<String>), String> {
     let path_str = path.to_string_lossy().to_string();
-    let mut tokens = command.split_whitespace();
-    let program = tokens.next().unwrap_or_default().to_string();
+    let mut tokens = parse_editor_command(command)?;
+    if tokens.is_empty() {
+        return Err("编辑器命令为空".to_string());
+    }
+    let program = tokens.remove(0);
 
     let mut args = Vec::new();
     let mut substituted = false;
@@ -304,12 +318,66 @@ fn build_editor_command(command: &str, path: &Path) -> (String, Vec<String>) {
     }
     // 程序名本身也可能是占位符（少见），或整条命令只有程序名时把路径追加为参数。
     if program.contains("{file}") {
-        return (program.replace("{file}", &path_str), args);
+        return Ok((program.replace("{file}", &path_str), args));
     }
     if !substituted {
         args.push(path_str);
     }
-    (program, args)
+    Ok((program, args))
+}
+
+fn parse_editor_command(command: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaping = false;
+    let mut token_started = false;
+
+    for ch in command.chars() {
+        if escaping {
+            current.push(ch);
+            escaping = false;
+            token_started = true;
+            continue;
+        }
+
+        match ch {
+            '\\' if !in_single => {
+                escaping = true;
+                token_started = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                token_started = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                token_started = true;
+            }
+            ch if ch.is_whitespace() && !in_single && !in_double => {
+                if token_started {
+                    tokens.push(std::mem::take(&mut current));
+                    token_started = false;
+                }
+            }
+            _ => {
+                current.push(ch);
+                token_started = true;
+            }
+        }
+    }
+
+    if escaping {
+        return Err("编辑器命令不能以反斜杠结尾".to_string());
+    }
+    if in_single || in_double {
+        return Err("编辑器命令引号未闭合".to_string());
+    }
+    if token_started {
+        tokens.push(current);
+    }
+    Ok(tokens)
 }
 
 /// 在 `PATH` 中查找可执行程序；Windows 自动尝试 `exe`/`cmd`/`bat` 后缀。
@@ -335,7 +403,12 @@ pub fn find_in_path(program: &str) -> Option<PathBuf> {
 
 /// 命令模板的首个程序是否可用（PATH 中存在）。
 fn editor_command_available(command: &str) -> bool {
-    let program = command.split_whitespace().next().unwrap_or(command);
+    let Ok(tokens) = parse_editor_command(command) else {
+        return false;
+    };
+    let Some(program) = tokens.first() else {
+        return false;
+    };
     !program.is_empty() && find_in_path(program).is_some()
 }
 
@@ -647,10 +720,23 @@ mod tests {
         assert!(path.to_string_lossy().contains("a_b.txt"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn external_edit_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_edit_path("private-dir");
+        ensure_private_edit_dir(&dir).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode, 0o700);
+    }
+
     #[test]
     fn build_editor_command_substitutes_placeholder() {
         let path = PathBuf::from("/tmp/a.txt");
-        let (program, args) = build_editor_command("code -g {file}:1", &path);
+        let (program, args) = build_editor_command("code -g {file}:1", &path).unwrap();
         assert_eq!(program, "code");
         assert_eq!(args, vec!["-g".to_string(), "/tmp/a.txt:1".to_string()]);
     }
@@ -658,9 +744,33 @@ mod tests {
     #[test]
     fn build_editor_command_appends_path_without_placeholder() {
         let path = PathBuf::from("/tmp/a.txt");
-        let (program, args) = build_editor_command("vim", &path);
+        let (program, args) = build_editor_command("vim", &path).unwrap();
         assert_eq!(program, "vim");
         assert_eq!(args, vec!["/tmp/a.txt".to_string()]);
+    }
+
+    #[test]
+    fn build_editor_command_preserves_quoted_arguments() {
+        let path = PathBuf::from("/tmp/a b.txt");
+        let (program, args) =
+            build_editor_command("open -a \"Visual Studio Code\" {file}", &path).unwrap();
+
+        assert_eq!(program, "open");
+        assert_eq!(
+            args,
+            vec![
+                "-a".to_string(),
+                "Visual Studio Code".to_string(),
+                "/tmp/a b.txt".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_editor_command_rejects_unclosed_quote() {
+        let path = PathBuf::from("/tmp/a.txt");
+        let err = build_editor_command("code \"unterminated {file}", &path).unwrap_err();
+        assert!(err.contains("引号未闭合"));
     }
 
     #[test]

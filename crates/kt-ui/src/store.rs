@@ -4,6 +4,9 @@ use kt_config::{
     normalize_group_name, AppSettings, Config, KnownHostCheck, KnownHosts, Paths, SessionProfile,
 };
 use kt_secrets::Vault;
+use rand_core::{OsRng, RngCore};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -23,7 +26,78 @@ enum VaultAccess {
     },
 }
 
-const APP_MANAGED_VAULT_PASSWORD: &str = "kitonyterms:app-managed-vault:v1";
+const LEGACY_APP_MANAGED_VAULT_PASSWORD: &str = "kitonyterms:app-managed-vault:v1";
+const VAULT_KEY_BYTES: usize = 32;
+
+#[cfg(test)]
+fn vault_key_file_for(vault_file: &Path) -> PathBuf {
+    vault_file.with_file_name("secrets.vault.key")
+}
+
+fn load_or_create_vault_key(vault_key_file: &Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(vault_key_file) {
+        Ok(contents) => parse_vault_key(&contents).ok_or_else(|| {
+            anyhow::anyhow!("本机密码库密钥文件格式无效: {}", vault_key_file.display())
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let key = generate_vault_key();
+            match write_new_vault_key(vault_key_file, &key) {
+                Ok(()) => Ok(key),
+                Err(write_err) if write_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let contents = std::fs::read_to_string(vault_key_file)?;
+                    parse_vault_key(&contents).ok_or_else(|| {
+                        anyhow::anyhow!("本机密码库密钥文件格式无效: {}", vault_key_file.display())
+                    })
+                }
+                Err(write_err) => Err(write_err.into()),
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn parse_vault_key(contents: &str) -> Option<String> {
+    let key = contents.trim();
+    (key.len() == VAULT_KEY_BYTES * 2 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| key.to_ascii_lowercase())
+}
+
+fn generate_vault_key() -> String {
+    let mut bytes = [0u8; VAULT_KEY_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    let mut key = String::with_capacity(VAULT_KEY_BYTES * 2);
+    for byte in bytes {
+        key.push_str(&format!("{byte:02x}"));
+    }
+    key
+}
+
+fn write_new_vault_key(vault_key_file: &Path, key: &str) -> std::io::Result<()> {
+    if let Some(parent) = vault_key_file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(vault_key_file)?;
+    file.write_all(key.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
 
 fn legacy_vault_backup_path(vault_file: &Path) -> PathBuf {
     let file_name = vault_file
@@ -89,20 +163,37 @@ pub struct Store {
 impl Store {
     pub fn load() -> anyhow::Result<Self> {
         let paths = Paths::discover().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        Self::load_from_files(
+        Self::load_from_files_with_vault_key(
             paths.config_file(),
             paths.vault_file(),
+            paths.vault_key_file(),
             paths.known_hosts_file(),
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn load_from_files(
         config_file: PathBuf,
         vault_file: PathBuf,
         known_hosts_file: PathBuf,
     ) -> anyhow::Result<Self> {
+        let vault_key_file = vault_key_file_for(&vault_file);
+        Self::load_from_files_with_vault_key(
+            config_file,
+            vault_file,
+            vault_key_file,
+            known_hosts_file,
+        )
+    }
+
+    fn load_from_files_with_vault_key(
+        config_file: PathBuf,
+        vault_file: PathBuf,
+        vault_key_file: PathBuf,
+        known_hosts_file: PathBuf,
+    ) -> anyhow::Result<Self> {
         let config = Config::load_from(&config_file).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let vault = Self::load_app_managed_vault(&vault_file);
+        let vault = Self::load_app_managed_vault(&vault_file, &vault_key_file);
 
         Ok(Self {
             config_file,
@@ -174,8 +265,17 @@ impl Store {
         }
     }
 
-    fn load_app_managed_vault(vault_file: &Path) -> VaultAccess {
-        match Vault::open_or_create(vault_file, APP_MANAGED_VAULT_PASSWORD) {
+    fn load_app_managed_vault(vault_file: &Path, vault_key_file: &Path) -> VaultAccess {
+        let vault_key = match load_or_create_vault_key(vault_key_file) {
+            Ok(key) => key,
+            Err(err) => {
+                return VaultAccess::Locked {
+                    reason: format!("无法初始化本机密码库密钥，连接密码不会保存: {err}"),
+                };
+            }
+        };
+
+        match Vault::open_or_create(vault_file, &vault_key) {
             Ok(mut vault) => {
                 if vault.is_dirty() {
                     if let Err(err) = vault.save() {
@@ -196,7 +296,17 @@ impl Store {
                     };
                 }
 
-                match Self::replace_legacy_vault(vault_file) {
+                if let Ok(vault) = Self::migrate_legacy_app_managed_vault(vault_file, &vault_key) {
+                    return VaultAccess::Unlocked {
+                        vault,
+                        notice: Some(
+                            "本机密码库已升级为当前安装独立密钥保护；旧固定密钥不再可用"
+                                .to_string(),
+                        ),
+                    };
+                }
+
+                match Self::replace_legacy_vault(vault_file, &vault_key) {
                     Ok((vault, backup_file)) => {
                         VaultAccess::Unlocked {
                             vault,
@@ -216,12 +326,30 @@ impl Store {
         }
     }
 
-    fn replace_legacy_vault(vault_file: &Path) -> anyhow::Result<(Vault, PathBuf)> {
+    fn migrate_legacy_app_managed_vault(
+        vault_file: &Path,
+        vault_key: &str,
+    ) -> anyhow::Result<Vault> {
+        let mut vault = Vault::open(vault_file, LEGACY_APP_MANAGED_VAULT_PASSWORD)
+            .map_err(|err| anyhow::anyhow!("旧固定密钥密码库无法打开: {err}"))?;
+        vault
+            .change_master_password(vault_key)
+            .map_err(|err| anyhow::anyhow!("升级本机密码库密钥失败: {err}"))?;
+        vault
+            .save()
+            .map_err(|err| anyhow::anyhow!("保存升级后的本机密码库失败: {err}"))?;
+        Ok(vault)
+    }
+
+    fn replace_legacy_vault(
+        vault_file: &Path,
+        vault_key: &str,
+    ) -> anyhow::Result<(Vault, PathBuf)> {
         let backup_file = legacy_vault_backup_path(vault_file);
         std::fs::rename(vault_file, &backup_file).map_err(|err| {
             anyhow::anyhow!("备份旧密码库到 {} 失败: {err}", backup_file.display())
         })?;
-        let mut vault = Vault::open_or_create(vault_file, APP_MANAGED_VAULT_PASSWORD)
+        let mut vault = Vault::open_or_create(vault_file, vault_key)
             .map_err(|err| anyhow::anyhow!("创建新的本机密码库失败: {err}"))?;
         vault
             .save()
@@ -427,8 +555,21 @@ mod tests {
 
         assert_eq!(store.vault_state(), VaultState::Unlocked);
         assert!(dir.path().join("secrets.vault").exists());
+        assert!(dir.path().join("secrets.vault.key").exists());
         assert_eq!(store.vault_status_message(), None);
         assert_eq!(store.get_secret("root@example.com:22").unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_vault_key_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, _store) = test_store();
+        let key_path = dir.path().join("secrets.vault.key");
+        let mode = std::fs::metadata(key_path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
@@ -448,6 +589,32 @@ mod tests {
             reloaded.get_secret("root@example.com:22").unwrap(),
             Some("pw".to_string())
         );
+    }
+
+    #[test]
+    fn legacy_fixed_key_vault_is_migrated_to_install_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("secrets.vault");
+        let mut legacy_vault =
+            Vault::create(&vault_path, LEGACY_APP_MANAGED_VAULT_PASSWORD).unwrap();
+        legacy_vault.set("root@example.com:22", "pw");
+        legacy_vault.save().unwrap();
+
+        let store = Store::load_from_files(
+            dir.path().join("config.toml"),
+            vault_path.clone(),
+            dir.path().join("known_hosts.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(store.vault_state(), VaultState::Unlocked);
+        assert_eq!(
+            store.get_secret("root@example.com:22").unwrap(),
+            Some("pw".to_string())
+        );
+        let message = store.vault_status_message().unwrap();
+        assert!(message.contains("独立密钥"));
+        assert!(Vault::open(&vault_path, LEGACY_APP_MANAGED_VAULT_PASSWORD).is_err());
     }
 
     #[test]

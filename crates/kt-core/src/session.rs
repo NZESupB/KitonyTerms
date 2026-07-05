@@ -12,6 +12,7 @@
 //! messages and repaints from [`GridSnapshot`]s.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::future::Future;
 use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::Duration;
@@ -121,14 +122,24 @@ pub enum AuthChallenge {
 
 /// UI 回给 core 的认证答案。
 /// Authentication response returned by the UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AuthResponse {
     Answers(Vec<String>),
     Cancel,
 }
 
+impl fmt::Debug for AuthResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthResponse::Answers(answers) => {
+                write!(f, "Answers(<{} value(s) redacted>)", answers.len())
+            }
+            AuthResponse::Cancel => f.write_str("Cancel"),
+        }
+    }
+}
+
 /// Commands sent from the UI into the core.
-#[derive(Debug)]
 pub enum ToCore {
     /// Open a new connection under `id`.
     Connect {
@@ -154,6 +165,52 @@ pub enum ToCore {
     },
     /// Close / disconnect a session.
     Disconnect { id: SessionId },
+}
+
+impl fmt::Debug for ToCore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ToCore::Connect { id, params, pty } => f
+                .debug_struct("Connect")
+                .field("id", id)
+                .field("host", &params.host)
+                .field("port", &params.port)
+                .field("user", &params.user)
+                .field("auth_methods", &params.auth.len())
+                .field("proxy_jump", &params.proxy_jump.is_some())
+                .field("forward_agent", &params.forward_agent)
+                .field("pty", pty)
+                .finish(),
+            ToCore::Input { id, data } => f
+                .debug_struct("Input")
+                .field("id", id)
+                .field("bytes", &data.len())
+                .finish(),
+            ToCore::Resize { id, cols, rows } => f
+                .debug_struct("Resize")
+                .field("id", id)
+                .field("cols", cols)
+                .field("rows", rows)
+                .finish(),
+            ToCore::Scroll { id, delta } => f
+                .debug_struct("Scroll")
+                .field("id", id)
+                .field("delta", delta)
+                .finish(),
+            ToCore::Sftp { id, req } => f
+                .debug_struct("Sftp")
+                .field("id", id)
+                .field("req", req)
+                .finish(),
+            ToCore::StartMonitor { id } => f.debug_struct("StartMonitor").field("id", id).finish(),
+            ToCore::AuthResponse { id, response } => f
+                .debug_struct("AuthResponse")
+                .field("id", id)
+                .field("response", response)
+                .finish(),
+            ToCore::Disconnect { id } => f.debug_struct("Disconnect").field("id", id).finish(),
+        }
+    }
 }
 
 /// Events emitted from the core out to the UI.
@@ -1111,6 +1168,29 @@ mod tests {
             .send(AuthResponse::Answers(vec!["123456".to_string()]))
             .unwrap();
         assert_eq!(join.join().unwrap(), Some(vec!["123456".to_string()]));
+    }
+
+    #[test]
+    fn to_core_debug_redacts_sensitive_payloads() {
+        let input_debug = format!(
+            "{:?}",
+            ToCore::Input {
+                id: SessionId(1),
+                data: b"secret-input".to_vec(),
+            }
+        );
+        assert!(input_debug.contains("bytes"));
+        assert!(!input_debug.contains("secret-input"));
+
+        let auth_debug = format!(
+            "{:?}",
+            ToCore::AuthResponse {
+                id: SessionId(1),
+                response: AuthResponse::Answers(vec!["secret-password".to_string()]),
+            }
+        );
+        assert!(auth_debug.contains("redacted"));
+        assert!(!auth_debug.contains("secret-password"));
     }
 
     #[test]

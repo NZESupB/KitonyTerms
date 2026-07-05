@@ -18,7 +18,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{point_to_viewport, Config, Term};
 use alacritty_terminal::vte::ansi::{CursorShape as VteCursorShape, Processor};
 
 pub mod color;
@@ -197,13 +197,11 @@ impl TermEngine {
 
         for indexed in content.display_iter {
             let point: Point = indexed.point;
-            // `display_iter` yields points relative to the visible area where
-            // line 0 is the top visible row.
-            let line = point.line.0;
-            if line < 0 {
+            // `display_iter` 使用包含历史行的终端坐标；滚动历史时需要转回可见视口坐标。
+            let Some(point) = point_to_viewport(display_offset, point) else {
                 continue;
-            }
-            let row = line as usize;
+            };
+            let row = point.line;
             let col = point.column.0;
             if row >= rows || col >= cols {
                 continue;
@@ -309,6 +307,23 @@ mod tests {
         let snap = eng.snapshot();
         assert_eq!(snap.row_text(0), "line1");
         assert_eq!(snap.row_text(1), "line2");
+    }
+
+    #[test]
+    fn positive_scroll_delta_moves_into_scrollback_history() {
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        let live = eng.snapshot();
+        let live_top = live.row_text(0);
+        assert_eq!(live.display_offset, 0);
+
+        eng.scroll(2);
+        let history = eng.snapshot();
+        assert!(history.display_offset > 0);
+        assert_ne!(history.row_text(0), live_top);
+
+        eng.scroll(-2);
+        assert_eq!(eng.snapshot().display_offset, 0);
     }
 
     #[test]

@@ -100,7 +100,8 @@ async fn connect_http(
         .await
         .map_err(|e| SshError::Proxy(format!("http proxy connect failed: {e}")))?;
 
-    let request = build_connect_request(target_host, target_port, username);
+    let request = build_connect_request(target_host, target_port, username)
+        .map_err(|e| SshError::Proxy(format!("http proxy CONNECT request invalid: {e}")))?;
     stream
         .write_all(request.as_bytes())
         .await
@@ -152,7 +153,8 @@ async fn read_http_head(stream: &mut TcpStream) -> Result<String, SshError> {
 }
 
 /// 构造 HTTP CONNECT 请求。提供 username 时附带 `Proxy-Authorization: Basic`（空密码）。
-fn build_connect_request(host: &str, port: u16, username: Option<&str>) -> String {
+fn build_connect_request(host: &str, port: u16, username: Option<&str>) -> Result<String, String> {
+    validate_http_authority_host(host)?;
     let authority = format!("{host}:{port}");
     let mut req = format!(
         "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n"
@@ -163,7 +165,20 @@ fn build_connect_request(host: &str, port: u16, username: Option<&str>) -> Strin
         req.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
     }
     req.push_str("\r\n");
-    req
+    Ok(req)
+}
+
+fn validate_http_authority_host(host: &str) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("host is empty".to_string());
+    }
+    if host
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err("host contains whitespace or control characters".to_string());
+    }
+    Ok(())
 }
 
 /// 从 HTTP 响应头首行解析状态码。
@@ -282,7 +297,7 @@ mod tests {
 
     #[test]
     fn build_connect_request_without_auth() {
-        let req = build_connect_request("example.com", 22, None);
+        let req = build_connect_request("example.com", 22, None).unwrap();
         assert!(req.starts_with("CONNECT example.com:22 HTTP/1.1\r\n"));
         assert!(req.contains("Host: example.com:22\r\n"));
         assert!(!req.contains("Proxy-Authorization"));
@@ -291,10 +306,16 @@ mod tests {
 
     #[test]
     fn build_connect_request_with_username_uses_empty_password() {
-        let req = build_connect_request("10.0.0.1", 2222, Some("alice"));
+        let req = build_connect_request("10.0.0.1", 2222, Some("alice")).unwrap();
         // base64("alice:") == "YWxpY2U6"
         assert!(req.contains("Proxy-Authorization: Basic YWxpY2U6\r\n"));
         assert!(req.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn build_connect_request_rejects_header_injection_host() {
+        let err = build_connect_request("example.com\r\nX-Evil: 1", 22, None).unwrap_err();
+        assert!(err.contains("control"));
     }
 
     #[test]

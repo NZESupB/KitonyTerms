@@ -407,9 +407,8 @@ pub fn normalize_theme_name(theme: &str) -> &'static str {
 pub struct EditorEntry {
     /// Display name shown in the menu (e.g. "VS Code").
     pub name: String,
-    /// Launch command template. `{file}` is replaced with the local file path;
-    /// when absent, the path is appended as the last argument. Split on spaces
-    /// into program + args (simple whitespace tokenization).
+    /// 启动命令模板：`{file}` 会替换为本地文件路径；缺省时把路径追加为最后一个参数。
+    /// UI 解析器支持基础引号与反斜杠转义。
     pub command: String,
 }
 
@@ -554,6 +553,11 @@ impl Paths {
     /// Encrypted secrets vault location.
     pub fn vault_file(&self) -> PathBuf {
         self.dirs.data_dir().join("secrets.vault")
+    }
+
+    /// 本机自动密码库的随机密钥文件位置。
+    pub fn vault_key_file(&self) -> PathBuf {
+        self.dirs.data_dir().join("secrets.vault.key")
     }
 
     /// known_hosts-style trust store location.

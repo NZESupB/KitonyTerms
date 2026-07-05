@@ -66,6 +66,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 文件:`crates/kt-core/src/term/`(`mod.rs`/`color.rs`/`snapshot.rs`)
 
 - `TermEngine` 包装 `alacritty_terminal`,产出 `GridSnapshot`(行列单元格 + 光标 + 颜色),`advance(bytes)` 喂入输出,`resize/scroll`,`take_events()` 取 Bell/Title 等。
+- scrollback 方向契约：`ToCore::Scroll`/`TermEngine::scroll` 中正数表示进入历史，负数表示回到底部；WebView 滚轮 `deltaY < 0`（向上滚）应转换为正数。`alacritty_terminal` 的 `display_iter` 使用包含历史行的终端坐标，构建 `GridSnapshot` 时必须用 `point_to_viewport(display_offset, point)` 转成可见视口坐标，不能直接丢弃负 line。
 - `GridSnapshot` 中的单元格颜色是 core 层解析后的最终显示色:反色、DIM 等属性在快照生成时完成颜色计算,UI 不应再次反转前景/背景。终端字符必须以普通文本节点渲染,不得使用 HTML 注入式渲染,避免 `<`、`&` 等字符破坏 DOM。终端 cell 的 inline style 必须显式写出可跨帧变化属性的默认值(如 `background: transparent`、`text-decoration: none`、`opacity: 1`),避免 WebView/Dioxus 样式 diff 后残留备用屏程序的色块。
 
 ## kt-ui / kt-app:GUI

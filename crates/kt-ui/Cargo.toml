@@ -29,5 +29,8 @@ tracing.workspace = true
 # 时间格式化
 chrono = "0.4"
 
+# 本机密码库随机密钥生成
+rand_core.workspace = true
+
 [dev-dependencies]
 tempfile = "3"

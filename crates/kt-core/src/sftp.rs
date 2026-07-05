@@ -6,6 +6,7 @@
 //! errors). A single failed operation reports an error but keeps the task alive.
 
 use russh_sftp::client::SftpSession;
+use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -120,7 +121,7 @@ async fn handle(
                 .await
                 .map_err(|e| e.to_string())?;
             let total = src.metadata().await.ok().and_then(|m| m.size).unwrap_or(0);
-            let mut dst = tokio::fs::File::create(local)
+            let mut dst = create_private_download_file(local)
                 .await
                 .map_err(|e| e.to_string())?;
             copy_with_progress(&mut src, &mut dst, id, &name, total, out).await?;
@@ -213,6 +214,30 @@ async fn handle(
     }
 }
 
+async fn create_private_download_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let path = path.to_path_buf();
+    let file = tokio::task::spawn_blocking(move || {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok::<_, std::io::Error>(file)
+    })
+    .await
+    .map_err(std::io::Error::other)??;
+
+    Ok(tokio::fs::File::from_std(file))
+}
+
 /// 分块拷贝并周期上报进度。完成时补发一条 100% 进度。
 /// Copy in chunks while emitting throttled progress; emit a final 100% tick.
 async fn copy_with_progress<R, W>(
@@ -276,11 +301,38 @@ fn timeout_message(operation: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kitonyterms-sftp-test-{}-{}-{name}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
 
     #[test]
     fn timeout_message_includes_operation_path_and_limit() {
         let message = timeout_message("读取目录", "/root");
         assert!(message.contains("读取目录 /root 超时"));
         assert!(message.contains("12 秒"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_target_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_path("download");
+        let mut file = create_private_download_file(&path).await.unwrap();
+        file.write_all(b"secret").await.unwrap();
+        drop(file);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o600);
     }
 }

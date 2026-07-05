@@ -13,6 +13,7 @@
 //! keychain service.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use argon2::Argon2;
@@ -250,12 +251,7 @@ impl Vault {
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "vault".into())
         ));
-        std::fs::write(&tmp, &encoded)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
+        write_secret_file(&tmp, &encoded)?;
         std::fs::rename(&tmp, &self.path)?;
         self.dirty = false;
         Ok(())
@@ -271,6 +267,26 @@ impl Vault {
         self.dirty = true;
         Ok(())
     }
+}
+
+fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -300,6 +316,20 @@ mod tests {
             Some("passphrase-123")
         );
         assert_eq!(v.get("missing"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_vault_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_dir, path) = tmp_vault_path();
+        let mut v = Vault::create(&path, "pw").unwrap();
+        v.set("a", "b");
+        v.save().unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

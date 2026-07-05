@@ -109,6 +109,8 @@ kt-secrets
 - `config.toml`：非机密的会话配置与应用设置。
 - `known_hosts.toml`：受信任主机密钥指纹与最近访问元数据。
 - `secrets.vault`：加密存储密码与私钥口令。
+- `secrets.vault.key`：当前安装独立生成的本机密码库密钥；应与 vault 一样保持私有。
+- 旧固定密钥密码库会在启动时迁移到当前安装独立密钥。
 - 无法自动打开的旧主密码保险库会备份为 `secrets.vault.legacy*`；
   新机密会继续写入新建的加密保险库。
 
@@ -129,12 +131,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 | 范围 | 测试数 |
 | --- | ---: |
-| `kt-app` | 8 |
+| `kt-app` | 9 |
 | `kt-config` | 24 |
-| `kt-core` | 50 |
-| `kt-secrets` | 6 |
-| `kt-ui` | 94 |
-| **总计** | **182** |
+| `kt-core` | 54 |
+| `kt-secrets` | 7 |
+| `kt-ui` | 102 |
+| **总计** | **196** |
 
 核心集成测试
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
