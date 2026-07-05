@@ -162,7 +162,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                             }
                         } else {
                             TerminalPlaceholder {
-                                connected: sess.connected,
+                                status: sess.status,
                                 title: sess.title.clone(),
                                 error: sess.connection_error.clone(),
                                 language,

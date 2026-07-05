@@ -231,7 +231,8 @@ button:disabled {
 .kt-window.theme-light .dialog-field select,
 .kt-window.theme-light .dialog-field-row input,
 .kt-window.theme-light .dialog-select,
-.kt-window.theme-light .dialog-field input {
+.kt-window.theme-light .dialog-field input,
+.kt-window.theme-light .password-toggle {
     background: rgba(241, 245, 249, 0.9);
     color: var(--text);
 }
@@ -239,8 +240,7 @@ button:disabled {
 .kt-window.theme-light .dialog-tab,
 .kt-window.theme-light .dialog-btn,
 .kt-window.theme-light .dialog-check,
-.kt-window.theme-light .dialog-fieldset legend,
-.kt-window.theme-light .dialog-hint {
+.kt-window.theme-light .dialog-fieldset legend {
     color: var(--muted);
 }
 
@@ -1862,13 +1862,6 @@ button:disabled {
     width: 100%;
 }
 
-.dialog-hint {
-    margin-top: 2px;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--muted);
-}
-
 .dialog-fieldset {
     border: 1px solid var(--border-soft);
     border-radius: 7px;
@@ -1880,6 +1873,47 @@ button:disabled {
     padding: 0 4px;
     font-size: 12px;
     color: var(--muted);
+}
+
+.dialog-auth-methods {
+    display: grid;
+    gap: 10px;
+}
+
+.dialog-auth-methods .dialog-field {
+    margin-top: 0;
+}
+
+.password-input-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    width: min(340px, 100%);
+}
+
+.password-input-wrap input {
+    width: 100%;
+    border-radius: 7px 0 0 7px;
+}
+
+.password-toggle {
+    display: grid;
+    place-items: center;
+    min-height: 34px;
+    border: 1px solid var(--border);
+    border-left: 0;
+    border-radius: 0 7px 7px 0;
+    background: rgba(8, 13, 19, 0.64);
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.password-toggle:hover {
+    color: var(--text);
+}
+
+.password-toggle .kt-icon {
+    width: 16px;
+    height: 16px;
 }
 
 .dialog-check {

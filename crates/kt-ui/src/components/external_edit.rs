@@ -603,9 +603,15 @@ mod tests {
         SessionState {
             id,
             title: "demo".to_string(),
+            connect_params: kt_config::ConnectParams::new("example.com", "root"),
+            pty: kt_core::PtySize {
+                cols: 100,
+                rows: 30,
+            },
             snapshot: None,
             connected: true,
             connection_error: None,
+            host_key_pending: false,
             auth_challenge: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::<SftpEntry>::new(),

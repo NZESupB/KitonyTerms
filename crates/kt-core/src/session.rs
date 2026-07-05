@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use kt_config::ConnectParams;
 
 use crate::monitor::MonitorStats;
-use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshShell};
+use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
 const AUTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -210,6 +210,9 @@ pub enum FromCore {
         id: SessionId,
         challenge: AuthChallenge,
     },
+    /// 主机密钥需要用户确认；本次握手会随后的 Closed 事件结束。
+    /// Host key confirmation is pending; the current handshake will close.
+    HostKeyPending { id: SessionId },
     /// Session ended. `error` is `None` for a clean exit.
     Closed {
         id: SessionId,
@@ -571,7 +574,18 @@ impl SessionTask {
         .await
         {
             Ok(s) => s,
-            Err(error) => {
+            Err(OpenSshShellError::HostKeyPending(error)) => {
+                let _ = self.out.send(FromCore::HostKeyPending { id }).await;
+                let _ = self
+                    .out
+                    .send(FromCore::Closed {
+                        id,
+                        error: Some(error),
+                    })
+                    .await;
+                return;
+            }
+            Err(OpenSshShellError::Failed(error)) => {
                 let _ = self
                     .out
                     .send(FromCore::Closed {
@@ -920,21 +934,29 @@ async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: 
     }
 }
 
-async fn open_ssh_shell_with_timeout<T, E, F>(
+#[derive(Debug)]
+enum OpenSshShellError {
+    HostKeyPending(String),
+    Failed(String),
+}
+
+async fn open_ssh_shell_with_timeout<T, F>(
     timeout: Duration,
     open_fut: F,
-) -> std::result::Result<T, String>
+) -> std::result::Result<T, OpenSshShellError>
 where
-    E: ToString,
-    F: Future<Output = std::result::Result<T, E>>,
+    F: Future<Output = std::result::Result<T, SshError>>,
 {
     match tokio::time::timeout(timeout, open_fut).await {
         Ok(Ok(shell)) => Ok(shell),
-        Ok(Err(err)) => Err(err.to_string()),
-        Err(_) => Err(format!(
+        Ok(Err(SshError::HostKeyRejected)) => Err(OpenSshShellError::HostKeyPending(
+            SshError::HostKeyRejected.to_string(),
+        )),
+        Ok(Err(err)) => Err(OpenSshShellError::Failed(err.to_string())),
+        Err(_) => Err(OpenSshShellError::Failed(format!(
             "SSH 连接超时({} 秒)，连接流程未在限定时间内完成。请检查网络、ProxyJump、认证方式或远端 shell。",
             timeout.as_secs()
-        )),
+        ))),
     }
 }
 
@@ -1272,13 +1294,18 @@ mod tests {
 
     #[tokio::test]
     async fn ssh_open_timeout_turns_pending_connect_into_error() {
-        let result: std::result::Result<(), String> = open_ssh_shell_with_timeout(
+        let result: std::result::Result<(), OpenSshShellError> = open_ssh_shell_with_timeout(
             Duration::from_millis(1),
-            std::future::pending::<std::result::Result<(), &'static str>>(),
+            std::future::pending::<std::result::Result<(), SshError>>(),
         )
         .await;
 
         let err = result.expect_err("pending 连接应当被超时打断");
-        assert!(err.contains("SSH 连接超时"));
+        match err {
+            OpenSshShellError::Failed(message) => assert!(message.contains("SSH 连接超时")),
+            OpenSshShellError::HostKeyPending(message) => {
+                panic!("不应进入主机密钥待确认分支: {message}")
+            }
+        }
     }
 }

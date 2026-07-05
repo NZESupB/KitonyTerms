@@ -209,14 +209,19 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                                                 );
                                                 if let Ok(mut app_state) = state.lock() {
                                                     let id = app_state.next_session_id();
+                                                    let pty = PtySize { cols: 100, rows: 30 };
+                                                    let mut session =
+                                                        session_state_from_profile(id, &profile);
+                                                    session.connect_params = params.clone();
+                                                    session.pty = pty;
                                                     app_state.sessions.insert(
                                                         id,
-                                                        session_state_from_profile(id, &profile),
+                                                        session,
                                                     );
                                                     app_state.manager.send(ToCore::Connect {
                                                         id,
                                                         params: Box::new(params),
-                                                        pty: PtySize { cols: 100, rows: 30 },
+                                                        pty,
                                                     });
                                                     active_session_id.set(Some(id));
                                                 }

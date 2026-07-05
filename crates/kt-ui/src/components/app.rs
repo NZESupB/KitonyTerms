@@ -688,10 +688,12 @@ pub fn App() -> Element {
                     error: host_key_error(),
                     on_trust: {
                         let store = Arc::clone(store);
+                        let state = Arc::clone(state);
                         move |prompt: PendingHostKey| {
                             match store.trust_host_key(&prompt.host, prompt.port, &prompt.fingerprint) {
                                 Ok(_) => {
                                     store.clear_pending_host_key();
+                                    reconnect_host_key_pending_sessions(Arc::clone(&state));
                                     host_key_prompt.set(None);
                                     host_key_error.set(None);
                                     status_notice.set(Some(
@@ -715,9 +717,11 @@ pub fn App() -> Element {
                     },
                     on_allow_once: {
                         let store = Arc::clone(store);
+                        let state = Arc::clone(state);
                         move |prompt: PendingHostKey| {
                             store.allow_host_key_once(prompt);
                             store.clear_pending_host_key();
+                            reconnect_host_key_pending_sessions(Arc::clone(&state));
                             host_key_prompt.set(None);
                             host_key_error.set(None);
                             status_notice.set(Some(
@@ -730,8 +734,10 @@ pub fn App() -> Element {
                     },
                     on_cancel: {
                         let store = Arc::clone(store);
+                        let state = Arc::clone(state);
                         move |_| {
                             store.clear_pending_host_key();
+                            clear_host_key_pending_state(Arc::clone(&state));
                             host_key_prompt.set(None);
                             host_key_error.set(None);
                         }
@@ -966,6 +972,18 @@ fn send_sftp_request(state: Arc<Mutex<AppState>>, session_id: SessionId, req: Sf
             id: session_id,
             req,
         });
+    }
+}
+
+fn clear_host_key_pending_state(state: Arc<Mutex<AppState>>) {
+    if let Ok(mut app_state) = state.lock() {
+        app_state.clear_host_key_pending();
+    }
+}
+
+fn reconnect_host_key_pending_sessions(state: Arc<Mutex<AppState>>) {
+    if let Ok(mut app_state) = state.lock() {
+        app_state.reconnect_host_key_pending_sessions();
     }
 }
 

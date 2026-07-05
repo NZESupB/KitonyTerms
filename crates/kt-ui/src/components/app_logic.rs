@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use kt_config::{lookup_ssh_config, normalize_group_name, ConnectParams, SessionProfile};
 use kt_core::term::GridSnapshot;
-use kt_core::{AuthChallenge, SessionId, SftpEntry};
+use kt_core::{AuthChallenge, PtySize, SessionId, SftpEntry};
 
 use crate::i18n::AppText;
 use crate::state::SessionState;
@@ -15,6 +15,7 @@ pub const DEFAULT_GROUP_NAME: &str = "NoBrand";
 pub enum SessionConnectionStatus {
     Connected,
     Authenticating,
+    HostKeyPending,
     Disconnected,
     Connecting,
 }
@@ -89,9 +90,15 @@ pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Se
     SessionState {
         id,
         title: profile.name.clone(),
+        connect_params: profile.params.clone(),
+        pty: PtySize {
+            cols: 100,
+            rows: 30,
+        },
         snapshot: None,
         connected: false,
         connection_error: None,
+        host_key_pending: false,
         auth_challenge: None,
         sftp_path: ".".to_string(),
         sftp_entries: Vec::new(),
@@ -111,6 +118,8 @@ pub fn session_connection_status(sess: &SessionState) -> SessionConnectionStatus
         SessionConnectionStatus::Connected
     } else if sess.auth_challenge.is_some() {
         SessionConnectionStatus::Authenticating
+    } else if sess.host_key_pending {
+        SessionConnectionStatus::HostKeyPending
     } else if sess.connection_error.is_some() {
         SessionConnectionStatus::Disconnected
     } else {
@@ -125,7 +134,9 @@ pub fn session_dot_class(sess: &SessionState) -> &'static str {
 pub fn session_dot_class_for_status(status: SessionConnectionStatus) -> &'static str {
     match status {
         SessionConnectionStatus::Connected => "status-dot online",
-        SessionConnectionStatus::Authenticating => "status-dot connecting",
+        SessionConnectionStatus::Authenticating | SessionConnectionStatus::HostKeyPending => {
+            "status-dot connecting"
+        }
         SessionConnectionStatus::Disconnected => "status-dot idle",
         SessionConnectionStatus::Connecting => "status-dot connecting",
     }
@@ -135,6 +146,7 @@ pub fn session_status_pill_class(status: SessionConnectionStatus) -> &'static st
     match status {
         SessionConnectionStatus::Connected => "status-pill connected",
         SessionConnectionStatus::Authenticating
+        | SessionConnectionStatus::HostKeyPending
         | SessionConnectionStatus::Disconnected
         | SessionConnectionStatus::Connecting => "status-pill pending",
     }
@@ -144,6 +156,7 @@ pub fn session_status_label(status: SessionConnectionStatus, text: &AppText) -> 
     match status {
         SessionConnectionStatus::Connected => text.connected,
         SessionConnectionStatus::Authenticating => text.authenticating,
+        SessionConnectionStatus::HostKeyPending => text.host_key_pending,
         SessionConnectionStatus::Disconnected => text.disconnected,
         SessionConnectionStatus::Connecting => text.connecting,
     }
@@ -307,6 +320,7 @@ mod tests {
 
         assert_eq!(state.id, SessionId(7));
         assert_eq!(state.title, "Web Server 01");
+        assert_eq!(state.connect_params.host, "10.0.1.10");
         assert!(!state.connected);
         assert_eq!(state.sftp_path, ".");
         assert!(state.sftp_entries.is_empty());
@@ -344,6 +358,14 @@ mod tests {
         assert_eq!(session_dot_class(&state), "status-dot connecting");
 
         state.auth_challenge = None;
+        state.host_key_pending = true;
+        assert_eq!(
+            session_connection_status(&state),
+            SessionConnectionStatus::HostKeyPending
+        );
+        assert_eq!(session_dot_class(&state), "status-dot connecting");
+
+        state.host_key_pending = false;
         state.connection_error = Some("连接失败".to_string());
         assert_eq!(
             session_connection_status(&state),

@@ -6,6 +6,7 @@ use kt_config::{
     DEFAULT_LIGHT_THEME,
 };
 
+use crate::components::app_logic::SessionConnectionStatus;
 use crate::components::external_edit::{detect_editors, env_editor_command};
 use crate::components::icons::{AppLogo, Icon};
 use crate::i18n::texts;
@@ -282,7 +283,7 @@ pub fn SettingsPanel(
 
 #[component]
 pub fn TerminalPlaceholder(
-    connected: bool,
+    status: SessionConnectionStatus,
     title: String,
     error: Option<String>,
     language: AppLanguage,
@@ -290,10 +291,15 @@ pub fn TerminalPlaceholder(
     let t = texts(language).app;
     let state_line = if let Some(error) = error.as_deref() {
         error
-    } else if connected {
-        t.terminal_waiting
     } else {
-        t.terminal_connecting
+        match status {
+            SessionConnectionStatus::Connected => t.terminal_waiting,
+            SessionConnectionStatus::Authenticating => t.authenticating,
+            SessionConnectionStatus::HostKeyPending => t.host_key_pending,
+            SessionConnectionStatus::Disconnected | SessionConnectionStatus::Connecting => {
+                t.terminal_connecting
+            }
+        }
     };
 
     rsx! {

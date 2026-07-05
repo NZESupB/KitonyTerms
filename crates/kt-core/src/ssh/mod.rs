@@ -377,6 +377,7 @@ where
 {
     match tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut).await {
         Ok(res) => res.map_err(|e| match e {
+            russh::Error::UnknownKey | russh::Error::KeyChanged { .. } => SshError::HostKeyRejected,
             russh::Error::IO(io) => SshError::Connect(io.to_string()),
             other => SshError::Connect(other.to_string()),
         }),
@@ -610,5 +611,12 @@ mod tests {
         assert_eq!(target.user, None);
         assert_eq!(target.host, "2001:db8::1");
         assert_eq!(target.port, 22);
+    }
+
+    #[tokio::test]
+    async fn unknown_server_key_maps_to_host_key_rejected() {
+        let result = timeout_connect(async { Err(russh::Error::UnknownKey) }).await;
+
+        assert!(matches!(result, Err(SshError::HostKeyRejected)));
     }
 }

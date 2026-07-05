@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 
+use kt_config::ConnectParams;
 use kt_core::monitor::MonitorStats;
 use kt_core::term::GridSnapshot;
+use kt_core::PtySize;
 use kt_core::{
     AuthChallenge, FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest, ToCore,
 };
@@ -27,10 +29,14 @@ pub struct SftpProgressState {
 pub struct SessionState {
     pub id: SessionId,
     pub title: String,
+    pub connect_params: ConnectParams,
+    pub pty: PtySize,
     pub snapshot: Option<GridSnapshot>,
     pub connected: bool,
     /// 最近一次连接错误。None 表示仍在连接或已连接。
     pub connection_error: Option<String>,
+    /// 主机密钥正在等待用户确认，不能作为普通连接失败展示。
+    pub host_key_pending: bool,
     /// 当前等待用户输入的认证挑战。
     pub auth_challenge: Option<AuthChallenge>,
 
@@ -98,6 +104,7 @@ impl AppState {
                     if let Some(sess) = self.sessions.get_mut(&id) {
                         sess.connected = true;
                         sess.connection_error = None;
+                        sess.host_key_pending = false;
                         sess.auth_challenge = None;
                         sess.monitor_loading = true;
                         sess.monitor_error = None;
@@ -143,7 +150,11 @@ impl AppState {
             FromCore::Closed { id, error } => {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.connected = false;
-                    sess.connection_error = error.clone();
+                    if sess.host_key_pending {
+                        sess.connection_error = None;
+                    } else {
+                        sess.connection_error = error.clone();
+                    }
                     sess.auth_challenge = None;
                     sess.monitor_loading = false;
                     sess.monitor_error = None;
@@ -244,9 +255,53 @@ impl AppState {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.auth_challenge = Some(challenge);
                     sess.connection_error = None;
+                    sess.host_key_pending = false;
+                }
+            }
+            FromCore::HostKeyPending { id } => {
+                if let Some(sess) = self.sessions.get_mut(&id) {
+                    sess.connected = false;
+                    sess.connection_error = None;
+                    sess.auth_challenge = None;
+                    sess.host_key_pending = true;
+                    sess.monitor_loading = false;
+                    sess.monitor_error = None;
+                    sess.sftp_loading = false;
                 }
             }
         }
+    }
+
+    pub fn clear_host_key_pending(&mut self) {
+        for sess in self.sessions.values_mut() {
+            sess.host_key_pending = false;
+        }
+    }
+
+    pub fn reconnect_host_key_pending_sessions(&mut self) -> usize {
+        let mut reconnects = Vec::new();
+        for sess in self.sessions.values_mut() {
+            if sess.host_key_pending {
+                sess.connected = false;
+                sess.connection_error = None;
+                sess.host_key_pending = false;
+                sess.auth_challenge = None;
+                sess.monitor_loading = false;
+                sess.monitor_error = None;
+                sess.sftp_loading = false;
+                reconnects.push((sess.id, sess.connect_params.clone(), sess.pty));
+            }
+        }
+
+        let reconnect_count = reconnects.len();
+        for (id, params, pty) in reconnects {
+            self.manager.send(ToCore::Connect {
+                id,
+                params: Box::new(params),
+                pty,
+            });
+        }
+        reconnect_count
     }
 }
 
@@ -316,9 +371,15 @@ mod tests {
         SessionState {
             id: SessionId(1),
             title: "demo".to_string(),
+            connect_params: ConnectParams::new("example.com", "root"),
+            pty: PtySize {
+                cols: 100,
+                rows: 30,
+            },
             snapshot: None,
             connected,
             connection_error: None,
+            host_key_pending: false,
             auth_challenge: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::new(),
@@ -431,6 +492,46 @@ mod tests {
             sess.connection_error.as_deref(),
             Some("authentication failed")
         );
+    }
+
+    #[test]
+    fn host_key_pending_suppresses_connection_error_until_user_decides() {
+        let mut app_state = app_state();
+        let sess = session_state(false);
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::HostKeyPending { id });
+        app_state.handle_event(FromCore::Closed {
+            id,
+            error: Some("host key rejected by user".to_string()),
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert!(!sess.connected);
+        assert!(sess.host_key_pending);
+        assert!(sess.connection_error.is_none());
+
+        app_state.clear_host_key_pending();
+        assert!(!app_state.sessions[&id].host_key_pending);
+    }
+
+    #[test]
+    fn reconnect_host_key_pending_sessions_restarts_pending_connection() {
+        let mut app_state = app_state();
+        let mut sess = session_state(false);
+        sess.host_key_pending = true;
+        sess.connection_error = Some("旧错误".to_string());
+        sess.monitor_loading = true;
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        assert_eq!(app_state.reconnect_host_key_pending_sessions(), 1);
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert!(!sess.host_key_pending);
+        assert!(sess.connection_error.is_none());
+        assert!(!sess.monitor_loading);
     }
 
     #[test]

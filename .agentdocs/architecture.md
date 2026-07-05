@@ -25,7 +25,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 `SessionManager` 持有一个多线程 tokio 运行时,每个会话一个 task。调用方(GUI / headless 示例)**只**通过两条 channel 通信:
 
 - `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,req}`、`StartMonitor{id}`、`AuthResponse{id,response}`、`Disconnect{id}`。
-- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Cwd{path}`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`Closed{error}`。其中 `Cwd` 由 `session.rs` 扫描 PTY 原始字节解析 OSC 7(`ESC]7;file://host/path`)得到,写入 `SessionState.terminal_cwd`,供 SFTP「跟随终端目录」使用。
+- `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Cwd{path}`、`Bell`、`SftpListing{path,entries}`、`SftpProgress{name,transferred,total}`、`SftpDone{op,path}`、`SftpError{message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`HostKeyPending{id}`、`Closed{error}`。其中 `Cwd` 由 `session.rs` 扫描 PTY 原始字节解析 OSC 7(`ESC]7;file://host/path`)得到,写入 `SessionState.terminal_cwd`,供 SFTP「跟随终端目录」使用。
 
 要点:
 - `SessionManager::spawn(verifier, auth_factory)` 启动 `core_loop`,后者按 `id` 把命令路由到各 `SessionTask`。
@@ -44,7 +44,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 - `SshShell`(持有 `russh::client::Handle` 与 PTY shell `Channel`):`open()`(connect→auth→request_pty→request_shell)、`write/resize/next_message/disconnect`。
 - 认证:按 `params.auth` 顺序尝试 password / publickey / keyboard-interactive / agent。ssh-agent 不可用、公钥文件不可用或 key 认证失败时应继续后续认证方式,避免 `~/.ssh/config` 中的默认 `IdentityFile` 或 agent 环境破坏密码 fallback。`AuthProvider::password` 必须按实际 `user@host:port` 请求密码,以支持 ProxyJump 和非 22 端口。GUI 认证缺口统一走 `AuthChallenge`/`AuthResponse`:password 返回单个隐藏输入,加密私钥返回私钥口令输入,keyboard-interactive 按服务端 prompts 逐项采集。
-- 主机密钥:GUI 使用持久化 `KnownHostsVerifier`。未知主机或已知主机指纹变化时,verifier 记录 `PendingHostKey` 并拒绝本次握手;UI 弹窗展示主机、已保存指纹与本次指纹,用户可选择“仅允许一次”(内存态,下次连接消费后失效,不写入 `known_hosts.toml`)或“信任此主机”(持久写入/更新 `known_hosts.toml`)。由于 russh 主机密钥 verifier 为同步回调,确认后需要用户重新发起连接。测试和显式 opt-in 才使用 `AcceptAllVerifier`。`Trusted` 与 `NewlyTrusted` 都要保存 `known_hosts.toml`,确保 `last_seen_unix` 可追踪。
+- 主机密钥:GUI 使用持久化 `KnownHostsVerifier`。未知主机或已知主机指纹变化时,verifier 记录 `PendingHostKey` 并拒绝本次握手;core 将 russh 的 `UnknownKey`/`KeyChanged` 映射为主机密钥待确认,先发 `HostKeyPending{id}` 再用 `Closed{error}` 收敛任务。UI 收到 `HostKeyPending` 后设置 `SessionState.host_key_pending`,不得把随后的 host-key 拒绝当普通连接失败展示。UI 弹窗展示主机、已保存指纹与本次指纹,用户可选择“仅允许一次”(内存态,下次连接消费后失效,不写入 `known_hosts.toml`)或“信任此主机”(持久写入/更新 `known_hosts.toml`)。由于 russh 主机密钥 verifier 为同步回调,本次握手会结束;UI 在用户确认后通过 `SessionState.connect_params` 和 `SessionState.pty` 自动重新发起同一会话连接。测试和显式 opt-in 才使用 `AcceptAllVerifier`。`Trusted` 与 `NewlyTrusted` 都要保存 `known_hosts.toml`,确保 `last_seen_unix` 可追踪。
 - ProxyJump: `ConnectParams.proxy_jump` 支持单跳 `[user@]host[:port]`;core 先认证跳板,再通过 `channel_open_direct_tcpip` 建立目标 SSH 握手,并保留跳板 handle 直到目标连接结束。
 - TCP 层代理: `ConnectParams.proxy`(`ssh/proxy.rs`)在 SSH 握手前建立经代理的 TCP 流,再交给 `client::connect_stream`。`System` 解析环境变量代理 URL(ALL_PROXY/HTTPS_PROXY/HTTP_PROXY 等);`Socks5` 走 `tokio-socks`;`Http` 手写 CONNECT 请求/响应解析。与 ProxyJump 组合时代理作用于最外层(连接跳板机那段),目标段仍走 direct-tcpip。代理凭证不入 vault。
 - ssh-agent: `AuthMethod::Agent` 会读取本机 ssh-agent/Pageant identities 逐个尝试公钥认证;`ConnectParams.forward_agent` 会在 shell channel 上请求 agent forwarding。

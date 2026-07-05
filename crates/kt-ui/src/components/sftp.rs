@@ -509,9 +509,15 @@ mod tests {
         let mut sess = crate::state::SessionState {
             id: SessionId(1),
             title: "demo".to_string(),
+            connect_params: kt_config::ConnectParams::new("example.com", "root"),
+            pty: kt_core::PtySize {
+                cols: 100,
+                rows: 30,
+            },
             snapshot: None,
             connected: true,
             connection_error: None,
+            host_key_pending: false,
             auth_challenge: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
