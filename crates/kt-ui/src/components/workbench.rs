@@ -341,7 +341,7 @@ pub fn EmptyWorkbench(language: AppLanguage) -> Element {
 #[component]
 pub fn MonitorPlaceholder(language: AppLanguage) -> Element {
     let t = texts(language).app;
-    let labels = ["CPU", t.memory, t.load, t.network];
+    let labels = ["CPU", t.memory, t.disk, t.load, t.network];
 
     rsx! {
         div {

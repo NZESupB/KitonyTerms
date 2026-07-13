@@ -76,8 +76,8 @@ impl server::Handler for EchoHandler {
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        // Send a recognizable banner once the shell starts.
-        session.data(channel, bytes::Bytes::from_static(b"READY> "))?;
+        // 横幅后发 DSR 光标位置查询，验证终端生成的 PtyWrite 会写回远端 shell。
+        session.data(channel, bytes::Bytes::from_static(b"READY> \x1b[6n"))?;
         Ok(())
     }
 
@@ -87,9 +87,13 @@ impl server::Handler for EchoHandler {
         data: &[u8],
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
-        // Echo back upper-cased.
-        let upper: Vec<u8> = data.iter().map(|b| b.to_ascii_uppercase()).collect();
-        session.data(channel, bytes::Bytes::from(upper))?;
+        if data.starts_with(b"\x1b[") && data.ends_with(b"R") {
+            session.data(channel, bytes::Bytes::from_static(b"DSR_OK "))?;
+        } else {
+            // Echo back upper-cased.
+            let upper: Vec<u8> = data.iter().map(|b| b.to_ascii_uppercase()).collect();
+            session.data(channel, bytes::Bytes::from(upper))?;
+        }
         Ok(())
     }
 }
@@ -180,14 +184,18 @@ fn full_roundtrip_through_term_engine() {
     // 1) Expect Connected, then a Render containing the server banner.
     let mut connected = false;
     let mut saw_banner = false;
+    let mut saw_pty_writeback = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
 
-    while std::time::Instant::now() < deadline && !(connected && saw_banner) {
+    while std::time::Instant::now() < deadline && !(connected && saw_banner && saw_pty_writeback) {
         match recv_timeout(&mut mgr, Duration::from_secs(5)) {
             Some(FromCore::Connected { .. }) => connected = true,
             Some(FromCore::Render { snapshot, .. }) => {
                 if snapshot.to_plain_text().contains("READY>") {
                     saw_banner = true;
+                }
+                if snapshot.to_plain_text().contains("DSR_OK") {
+                    saw_pty_writeback = true;
                 }
             }
             Some(FromCore::Closed { error, .. }) => {
@@ -199,6 +207,10 @@ fn full_roundtrip_through_term_engine() {
     }
     assert!(connected, "never received Connected");
     assert!(saw_banner, "never rendered the server banner");
+    assert!(
+        saw_pty_writeback,
+        "terminal DSR response was not written back to the remote shell"
+    );
 
     // 2) Type "hi" — server echoes "HI"; verify it lands in the grid.
     mgr.send(ToCore::Input {
@@ -211,7 +223,7 @@ fn full_roundtrip_through_term_engine() {
     while std::time::Instant::now() < deadline && !saw_echo {
         match recv_timeout(&mut mgr, Duration::from_secs(5)) {
             Some(FromCore::Render { snapshot, .. }) => {
-                if snapshot.to_plain_text().contains("READY> HI") {
+                if snapshot.to_plain_text().contains("DSR_OK HI") {
                     saw_echo = true;
                 }
             }

@@ -8,6 +8,7 @@
 #     本工作流仅在分支 push 时更新滚动预发布,两者触发条件互斥、互不干扰。
 #   - tag_name 固定为 alpha,产物文件名的 version 段亦固定为 alpha,
 #     使每次 push 覆盖同名资产,实现滚动更新。
+#   - 所有分支共享同一并发组,后触发的构建会取消旧构建,避免旧产物晚到覆盖。
 #   - 平台覆盖与打包逻辑与 release.yml 保持一致。
 name: alpha
 
@@ -16,15 +17,36 @@ on:
     branches:
       - "**"
 
-# 允许 publish job 创建/更新预发布并上传资产。
+# 任意分支均可触发,但固定 Alpha Release 同一时刻只接受最新一次构建。
+concurrency:
+  group: alpha-rolling-release
+  cancel-in-progress: true
+
+# 默认只读仓库内容；仅 publish job 获取发布写权限。
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  audit:
+    name: RustSec audit (warning only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Alpha 扫描只告警不阻断滚动预发布；cargo-audit 自身按锁文件构建。
+      - name: Scan dependencies with RustSec
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
   build:
     name: build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -226,8 +248,10 @@ jobs:
   # 汇总所有平台产物,更新固定的 Alpha 滚动预发布。
   publish:
     name: publish alpha prerelease
-    needs: build
+    needs: [audit, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v6

@@ -3,16 +3,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::prelude::*;
 use kt_config::{AppLanguage, EditorEntry};
-use kt_core::{SessionId, SftpOp};
+use kt_core::{SessionId, SftpOp, SftpRequestId};
 
 use crate::components::icons::Icon;
 use crate::i18n::texts;
-use crate::state::{AppState, SessionState, SftpProgressState};
+use crate::state::{SessionState, SftpProgressState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalEditStatus {
@@ -36,7 +35,8 @@ pub struct ExternalEdit {
     pub remote_path: String,
     pub local_path: PathBuf,
     pub file_name: String,
-    pub after_revision: u64,
+    /// 当前下载或上传请求；Watching/PromptPending 时为 None。
+    pub request_id: Option<SftpRequestId>,
     pub status: ExternalEditStatus,
     pub sync_mode: ExternalEditSyncMode,
     /// 打开本地文件所用的编辑器命令；None 表示使用系统默认程序。
@@ -55,6 +55,7 @@ pub enum ExternalEditAction {
         editor_command: Option<String>,
     },
     Upload {
+        edit_id: u64,
         session_id: SessionId,
         local_path: PathBuf,
         remote_path: String,
@@ -63,6 +64,10 @@ pub enum ExternalEditAction {
     DeleteLocal(PathBuf),
     UploadCompleted {
         file_name: String,
+    },
+    SyncFailed {
+        file_name: String,
+        message: String,
     },
 }
 
@@ -74,20 +79,62 @@ pub fn sync_external_edits(
     let mut actions = Vec::new();
 
     for mut edit in edits {
-        let completion = sessions
-            .get(&edit.session_id)
-            .and_then(|session| session.sftp_last_done.as_ref())
-            .filter(|completion| {
-                completion.revision > edit.after_revision && completion.path == edit.remote_path
-            });
-        let completion_op = completion.map(|completion| completion.op);
-        let completion_revision = completion
-            .map(|completion| completion.revision)
-            .unwrap_or(edit.after_revision);
+        let session = sessions.get(&edit.session_id);
+        let completion = edit.request_id.and_then(|request_id| {
+            session.and_then(|session| {
+                session
+                    .sftp_completions
+                    .iter()
+                    .find(|completion| completion.request_id == request_id)
+            })
+        });
+        let failure = edit.request_id.and_then(|request_id| {
+            session.and_then(|session| {
+                session
+                    .sftp_failures
+                    .iter()
+                    .find(|failure| failure.request_id == request_id)
+            })
+        });
+        let session_closed = session.is_none_or(|session| !session.connected);
 
-        match (&edit.status, completion_op) {
+        if failure.is_some()
+            || (completion.is_none()
+                && session_closed
+                && matches!(
+                    edit.status,
+                    ExternalEditStatus::Downloading
+                        | ExternalEditStatus::UploadingOnce
+                        | ExternalEditStatus::UploadingAuto
+                ))
+        {
+            let message = failure
+                .map(|failure| failure.message.clone())
+                .or_else(|| session.and_then(|session| session.connection_error.clone()))
+                .unwrap_or_else(|| "会话已关闭".to_string());
+            actions.push(ExternalEditAction::SyncFailed {
+                file_name: edit.file_name.clone(),
+                message,
+            });
+            edit.request_id = None;
+            match edit.status {
+                ExternalEditStatus::Downloading => {
+                    actions.push(ExternalEditAction::DeleteLocal(edit.local_path.clone()));
+                }
+                ExternalEditStatus::UploadingOnce | ExternalEditStatus::UploadingAuto => {
+                    edit.status = ExternalEditStatus::PromptPending;
+                    next.push(edit);
+                }
+                ExternalEditStatus::Watching | ExternalEditStatus::PromptPending => {
+                    next.push(edit);
+                }
+            }
+            continue;
+        }
+
+        match (&edit.status, completion.map(|completion| completion.op)) {
             (ExternalEditStatus::Downloading, Some(SftpOp::Download)) => {
-                edit.after_revision = completion_revision;
+                edit.request_id = None;
                 edit.status = ExternalEditStatus::Watching;
                 edit.last_seen_modified = local_file_modified(&edit.local_path);
                 edit.pending_modified = None;
@@ -106,7 +153,7 @@ pub fn sync_external_edits(
                 actions.push(ExternalEditAction::DeleteLocal(edit.local_path.clone()));
             }
             (ExternalEditStatus::UploadingAuto, Some(SftpOp::Upload)) => {
-                edit.after_revision = completion_revision;
+                edit.request_id = None;
                 edit.status = ExternalEditStatus::Watching;
                 edit.last_seen_modified = local_file_modified(&edit.local_path)
                     .or(edit.pending_modified)
@@ -127,13 +174,11 @@ pub fn sync_external_edits(
                         }
                         ExternalEditSyncMode::AutoUpload => {
                             edit.status = ExternalEditStatus::UploadingAuto;
-                            edit.after_revision = latest_sftp_completion_revision_from_sessions(
-                                sessions,
-                                edit.session_id,
-                            );
+                            edit.request_id = None;
                             edit.last_seen_modified = modified;
                             edit.pending_modified = None;
                             actions.push(ExternalEditAction::Upload {
+                                edit_id: edit.id,
                                 session_id: edit.session_id,
                                 local_path: edit.local_path.clone(),
                                 remote_path: edit.remote_path.clone(),
@@ -166,31 +211,6 @@ fn is_newer_modified(current: Option<SystemTime>, previous: Option<SystemTime>) 
         (Some(_), None) => true,
         _ => false,
     }
-}
-
-fn latest_sftp_completion_revision_from_sessions(
-    sessions: &HashMap<SessionId, SessionState>,
-    session_id: SessionId,
-) -> u64 {
-    sessions
-        .get(&session_id)
-        .and_then(|session| session.sftp_last_done.as_ref())
-        .map(|completion| completion.revision)
-        .unwrap_or(0)
-}
-
-pub fn latest_sftp_completion_revision(state: Arc<Mutex<AppState>>, session_id: SessionId) -> u64 {
-    state
-        .lock()
-        .ok()
-        .and_then(|app_state| {
-            app_state
-                .sessions
-                .get(&session_id)
-                .and_then(|session| session.sftp_last_done.as_ref())
-                .map(|completion| completion.revision)
-        })
-        .unwrap_or(0)
 }
 
 pub fn external_edit_local_path(session_id: SessionId, remote_path: &str) -> PathBuf {
@@ -585,7 +605,7 @@ pub fn external_edit_status_text(
     }) {
         let progress = session
             .and_then(|session| session.sftp_progress.as_ref())
-            .filter(|progress| progress.name == edit.file_name)
+            .filter(|progress| edit.request_id == Some(progress.request_id))
             .and_then(format_sftp_progress_percent)
             .map(|percent| format!(" {percent}%"))
             .unwrap_or_default();
@@ -690,7 +710,9 @@ mod tests {
             sftp_entries: Vec::<SftpEntry>::new(),
             sftp_loading: false,
             sftp_error: None,
-            sftp_last_done: None,
+            sftp_list_request_id: None,
+            sftp_completions: std::collections::VecDeque::new(),
+            sftp_failures: std::collections::VecDeque::new(),
             sftp_progress: None,
             terminal_cwd: None,
             monitor: None,
@@ -709,6 +731,27 @@ mod tests {
                 .unwrap_or(0),
             name
         ))
+    }
+
+    fn external_edit(
+        id: u64,
+        status: ExternalEditStatus,
+        request_id: Option<SftpRequestId>,
+        local_path: PathBuf,
+    ) -> ExternalEdit {
+        ExternalEdit {
+            id,
+            session_id: SessionId(1),
+            remote_path: "/root/demo.txt".to_string(),
+            local_path,
+            file_name: "demo.txt".to_string(),
+            request_id,
+            status,
+            sync_mode: ExternalEditSyncMode::Ask,
+            editor_command: None,
+            last_seen_modified: None,
+            pending_modified: None,
+        }
     }
 
     #[test]
@@ -818,30 +861,25 @@ mod tests {
     #[test]
     fn external_edit_download_completion_opens_local_file() {
         let mut session = session_state(SessionId(1));
-        session.sftp_last_done = Some(crate::state::SftpCompletion {
-            op: SftpOp::Download,
-            path: "/root/demo.txt".to_string(),
-            revision: 2,
-        });
+        session
+            .sftp_completions
+            .push_back(crate::state::SftpCompletion {
+                request_id: SftpRequestId(11),
+                op: SftpOp::Download,
+                path: "/root/demo.txt".to_string(),
+            });
         let sessions = HashMap::from([(SessionId(1), session)]);
-        let edit = ExternalEdit {
-            id: 1,
-            session_id: SessionId(1),
-            remote_path: "/root/demo.txt".to_string(),
-            local_path: PathBuf::from("/tmp/demo.txt"),
-            file_name: "demo.txt".to_string(),
-            after_revision: 1,
-            status: ExternalEditStatus::Downloading,
-            sync_mode: ExternalEditSyncMode::Ask,
-            editor_command: None,
-            last_seen_modified: None,
-            pending_modified: None,
-        };
+        let edit = external_edit(
+            1,
+            ExternalEditStatus::Downloading,
+            Some(SftpRequestId(11)),
+            PathBuf::from("/tmp/demo.txt"),
+        );
 
         let (edits, actions) = sync_external_edits(vec![edit], &sessions);
 
         assert_eq!(edits[0].status, ExternalEditStatus::Watching);
-        assert_eq!(edits[0].after_revision, 2);
+        assert_eq!(edits[0].request_id, None);
         assert_eq!(
             actions,
             vec![ExternalEditAction::OpenLocal {
@@ -856,25 +894,20 @@ mod tests {
     #[test]
     fn external_edit_upload_once_completion_removes_pending_item() {
         let mut session = session_state(SessionId(1));
-        session.sftp_last_done = Some(crate::state::SftpCompletion {
-            op: SftpOp::Upload,
-            path: "/root/demo.txt".to_string(),
-            revision: 5,
-        });
+        session
+            .sftp_completions
+            .push_back(crate::state::SftpCompletion {
+                request_id: SftpRequestId(41),
+                op: SftpOp::Upload,
+                path: "/root/demo.txt".to_string(),
+            });
         let sessions = HashMap::from([(SessionId(1), session)]);
-        let edit = ExternalEdit {
-            id: 1,
-            session_id: SessionId(1),
-            remote_path: "/root/demo.txt".to_string(),
-            local_path: PathBuf::from("/tmp/demo.txt"),
-            file_name: "demo.txt".to_string(),
-            after_revision: 4,
-            status: ExternalEditStatus::UploadingOnce,
-            sync_mode: ExternalEditSyncMode::Ask,
-            editor_command: None,
-            last_seen_modified: None,
-            pending_modified: None,
-        };
+        let edit = external_edit(
+            1,
+            ExternalEditStatus::UploadingOnce,
+            Some(SftpRequestId(41)),
+            PathBuf::from("/tmp/demo.txt"),
+        );
 
         let (edits, actions) = sync_external_edits(vec![edit], &sessions);
 
@@ -891,6 +924,187 @@ mod tests {
     }
 
     #[test]
+    fn same_path_downloads_only_consume_matching_request() {
+        let mut session = session_state(SessionId(1));
+        session
+            .sftp_completions
+            .push_back(crate::state::SftpCompletion {
+                request_id: SftpRequestId(22),
+                op: SftpOp::Download,
+                path: "/root/demo.txt".to_string(),
+            });
+        let sessions = HashMap::from([(SessionId(1), session)]);
+        let first = external_edit(
+            1,
+            ExternalEditStatus::Downloading,
+            Some(SftpRequestId(21)),
+            PathBuf::from("/tmp/demo-1.txt"),
+        );
+        let second = external_edit(
+            2,
+            ExternalEditStatus::Downloading,
+            Some(SftpRequestId(22)),
+            PathBuf::from("/tmp/demo-2.txt"),
+        );
+
+        let (edits, actions) = sync_external_edits(vec![first, second], &sessions);
+
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].status, ExternalEditStatus::Downloading);
+        assert_eq!(edits[0].request_id, Some(SftpRequestId(21)));
+        assert_eq!(edits[1].status, ExternalEditStatus::Watching);
+        assert_eq!(
+            actions,
+            vec![ExternalEditAction::OpenLocal {
+                edit_id: 2,
+                path: PathBuf::from("/tmp/demo-2.txt"),
+                file_name: "demo.txt".to_string(),
+                editor_command: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn same_path_uploads_only_consume_matching_request() {
+        let mut session = session_state(SessionId(1));
+        session
+            .sftp_completions
+            .push_back(crate::state::SftpCompletion {
+                request_id: SftpRequestId(52),
+                op: SftpOp::Upload,
+                path: "/root/demo.txt".to_string(),
+            });
+        let sessions = HashMap::from([(SessionId(1), session)]);
+        let first = external_edit(
+            1,
+            ExternalEditStatus::UploadingOnce,
+            Some(SftpRequestId(51)),
+            PathBuf::from("/tmp/demo-1.txt"),
+        );
+        let second = external_edit(
+            2,
+            ExternalEditStatus::UploadingOnce,
+            Some(SftpRequestId(52)),
+            PathBuf::from("/tmp/demo-2.txt"),
+        );
+
+        let (edits, actions) = sync_external_edits(vec![first, second], &sessions);
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].id, 1);
+        assert_eq!(edits[0].request_id, Some(SftpRequestId(51)));
+        assert_eq!(
+            actions,
+            vec![
+                ExternalEditAction::UploadCompleted {
+                    file_name: "demo.txt".to_string(),
+                },
+                ExternalEditAction::DeleteLocal(PathBuf::from("/tmp/demo-2.txt")),
+            ]
+        );
+    }
+
+    #[test]
+    fn download_error_removes_edit_and_cleans_partial_local_file() {
+        let mut session = session_state(SessionId(1));
+        session.sftp_failures.push_back(crate::state::SftpFailure {
+            request_id: SftpRequestId(31),
+            message: "download failed".to_string(),
+        });
+        let sessions = HashMap::from([(SessionId(1), session)]);
+        let edit = external_edit(
+            1,
+            ExternalEditStatus::Downloading,
+            Some(SftpRequestId(31)),
+            PathBuf::from("/tmp/demo.txt"),
+        );
+
+        let (edits, actions) = sync_external_edits(vec![edit], &sessions);
+
+        assert!(edits.is_empty());
+        assert_eq!(
+            actions,
+            vec![
+                ExternalEditAction::SyncFailed {
+                    file_name: "demo.txt".to_string(),
+                    message: "download failed".to_string(),
+                },
+                ExternalEditAction::DeleteLocal(PathBuf::from("/tmp/demo.txt")),
+            ]
+        );
+    }
+
+    #[test]
+    fn upload_error_keeps_local_edit_retryable() {
+        let mut session = session_state(SessionId(1));
+        session.sftp_failures.push_back(crate::state::SftpFailure {
+            request_id: SftpRequestId(61),
+            message: "upload failed".to_string(),
+        });
+        let sessions = HashMap::from([(SessionId(1), session)]);
+        let edit = external_edit(
+            1,
+            ExternalEditStatus::UploadingOnce,
+            Some(SftpRequestId(61)),
+            PathBuf::from("/tmp/demo.txt"),
+        );
+
+        let (edits, actions) = sync_external_edits(vec![edit], &sessions);
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].status, ExternalEditStatus::PromptPending);
+        assert_eq!(edits[0].request_id, None);
+        assert_eq!(
+            actions,
+            vec![ExternalEditAction::SyncFailed {
+                file_name: "demo.txt".to_string(),
+                message: "upload failed".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn closed_session_converges_active_download_and_upload() {
+        let mut session = session_state(SessionId(1));
+        session.connected = false;
+        session.connection_error = Some("connection lost".to_string());
+        let sessions = HashMap::from([(SessionId(1), session)]);
+        let download = external_edit(
+            1,
+            ExternalEditStatus::Downloading,
+            Some(SftpRequestId(71)),
+            PathBuf::from("/tmp/download.txt"),
+        );
+        let upload = external_edit(
+            2,
+            ExternalEditStatus::UploadingAuto,
+            Some(SftpRequestId(72)),
+            PathBuf::from("/tmp/upload.txt"),
+        );
+
+        let (edits, actions) = sync_external_edits(vec![download, upload], &sessions);
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].id, 2);
+        assert_eq!(edits[0].status, ExternalEditStatus::PromptPending);
+        assert_eq!(edits[0].request_id, None);
+        assert_eq!(
+            actions,
+            vec![
+                ExternalEditAction::SyncFailed {
+                    file_name: "demo.txt".to_string(),
+                    message: "connection lost".to_string(),
+                },
+                ExternalEditAction::DeleteLocal(PathBuf::from("/tmp/download.txt")),
+                ExternalEditAction::SyncFailed {
+                    file_name: "demo.txt".to_string(),
+                    message: "connection lost".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn external_edit_saved_file_prompts_before_upload() {
         let path = temp_edit_path("prompt.txt");
         std::fs::write(&path, b"changed").unwrap();
@@ -901,7 +1115,7 @@ mod tests {
             remote_path: "/root/prompt.txt".to_string(),
             local_path: path.clone(),
             file_name: "prompt.txt".to_string(),
-            after_revision: 0,
+            request_id: None,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::Ask,
             editor_command: None,
@@ -929,7 +1143,7 @@ mod tests {
             remote_path: "/root/auto.txt".to_string(),
             local_path: path.clone(),
             file_name: "auto.txt".to_string(),
-            after_revision: 0,
+            request_id: None,
             status: ExternalEditStatus::Watching,
             sync_mode: ExternalEditSyncMode::AutoUpload,
             editor_command: None,
@@ -943,6 +1157,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![ExternalEditAction::Upload {
+                edit_id: 3,
                 session_id: SessionId(1),
                 local_path: path.clone(),
                 remote_path: "/root/auto.txt".to_string(),

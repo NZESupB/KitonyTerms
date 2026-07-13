@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
-use kt_core::{SessionId, SftpEntry, SftpRequest, ToCore};
+use kt_core::{SessionId, SftpEntry, SftpRequest};
 use std::sync::{Arc, Mutex};
 
 use crate::components::icons::Icon;
@@ -276,12 +276,12 @@ pub(crate) fn request_directory(
 ) -> Result<(), String> {
     let requested_path = path.clone();
 
-    {
+    let request_id = {
         let Ok(mut app_state) = state.lock() else {
             return Err(texts(language).sftp.state_unavailable.to_string());
         };
 
-        let Some(sess) = app_state.sessions.get_mut(&session_id) else {
+        let Some(sess) = app_state.sessions.get(&session_id) else {
             return Err(texts(language).sftp.session_missing.to_string());
         };
 
@@ -289,26 +289,30 @@ pub(crate) fn request_directory(
             return Ok(());
         }
 
+        let request_id = app_state.send_sftp_request(session_id, SftpRequest::List { path })?;
+        let sess = app_state
+            .sessions
+            .get_mut(&session_id)
+            .expect("投递前已确认会话存在");
         sess.sftp_path = requested_path.clone();
         sess.sftp_loading = true;
         sess.sftp_error = None;
         sess.sftp_entries.clear();
-
-        app_state.manager.send(ToCore::Sftp {
-            id: session_id,
-            req: SftpRequest::List { path },
-        });
-    }
+        sess.sftp_list_request_id = Some(request_id);
+        request_id
+    };
 
     let state_for_timeout = state.clone();
     spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(UI_SFTP_TIMEOUT_SECS)).await;
         if let Ok(mut app_state) = state_for_timeout.lock() {
             if let Some(sess) = app_state.sessions.get_mut(&session_id) {
-                if sess.sftp_loading && sess.sftp_path == requested_path {
-                    sess.sftp_loading = false;
-                    sess.sftp_error = Some(ui_timeout_message(&requested_path, language));
-                }
+                expire_directory_request(
+                    sess,
+                    request_id,
+                    &requested_path,
+                    ui_timeout_message(&requested_path, language),
+                );
             }
         }
     });
@@ -388,6 +392,25 @@ fn trim_sftp_trailing_slashes(path: &str) -> String {
 
 fn ui_timeout_message(path: &str, language: AppLanguage) -> String {
     sftp_timeout_message(language, path, UI_SFTP_TIMEOUT_SECS)
+}
+
+fn expire_directory_request(
+    sess: &mut crate::state::SessionState,
+    request_id: kt_core::SftpRequestId,
+    requested_path: &str,
+    message: String,
+) -> bool {
+    if !sess.sftp_loading
+        || sess.sftp_path != requested_path
+        || sess.sftp_list_request_id != Some(request_id)
+    {
+        return false;
+    }
+
+    sess.sftp_loading = false;
+    sess.sftp_error = Some(message);
+    sess.sftp_list_request_id = None;
+    true
 }
 
 fn should_skip_duplicate_request(sess: &crate::state::SessionState, path: &str) -> bool {
@@ -523,7 +546,9 @@ mod tests {
             sftp_entries: Vec::new(),
             sftp_loading: true,
             sftp_error: None,
-            sftp_last_done: None,
+            sftp_list_request_id: Some(kt_core::SftpRequestId(1)),
+            sftp_completions: std::collections::VecDeque::new(),
+            sftp_failures: std::collections::VecDeque::new(),
             sftp_progress: None,
             terminal_cwd: None,
             monitor: None,
@@ -536,5 +561,55 @@ mod tests {
 
         sess.sftp_loading = false;
         assert!(!should_skip_duplicate_request(&sess, "/root"));
+    }
+
+    #[test]
+    fn old_timeout_does_not_cancel_newer_request_for_same_path() {
+        let mut sess = crate::state::SessionState {
+            id: SessionId(1),
+            title: "demo".to_string(),
+            connect_params: kt_config::ConnectParams::new("example.com", "root"),
+            pty: kt_core::PtySize {
+                cols: 100,
+                rows: 30,
+            },
+            snapshot: None,
+            connected: true,
+            connection_error: None,
+            host_key_pending: false,
+            auth_challenge: None,
+            sftp_path: "/root".to_string(),
+            sftp_entries: Vec::new(),
+            sftp_loading: true,
+            sftp_error: None,
+            sftp_list_request_id: Some(kt_core::SftpRequestId(2)),
+            sftp_completions: std::collections::VecDeque::new(),
+            sftp_failures: std::collections::VecDeque::new(),
+            sftp_progress: None,
+            terminal_cwd: None,
+            monitor: None,
+            monitor_loading: false,
+            monitor_error: None,
+        };
+
+        assert!(!expire_directory_request(
+            &mut sess,
+            kt_core::SftpRequestId(1),
+            "/root",
+            "old timeout".to_string(),
+        ));
+        assert!(sess.sftp_loading);
+        assert_eq!(sess.sftp_list_request_id, Some(kt_core::SftpRequestId(2)));
+        assert!(sess.sftp_error.is_none());
+
+        assert!(expire_directory_request(
+            &mut sess,
+            kt_core::SftpRequestId(2),
+            "/root",
+            "new timeout".to_string(),
+        ));
+        assert!(!sess.sftp_loading);
+        assert!(sess.sftp_list_request_id.is_none());
+        assert_eq!(sess.sftp_error.as_deref(), Some("new timeout"));
     }
 }

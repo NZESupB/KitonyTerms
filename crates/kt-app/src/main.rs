@@ -3,20 +3,30 @@
 //! KitonyTerms 桌面应用入口
 
 mod icon;
+mod single_instance;
 
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::ExitCode;
 
+use kt_config::{AppLanguage, Config, Paths};
 use kt_ui::App;
+use rfd::{MessageButtons, MessageDialog, MessageLevel};
+
+use crate::single_instance::SingleInstanceLock;
 
 fn main() -> ExitCode {
     init_logging();
 
     match AppCommand::parse(std::env::args_os().skip(1)) {
-        Ok(AppCommand::Gui) => {
-            run_gui();
-            ExitCode::SUCCESS
-        }
+        Ok(AppCommand::Gui) => match run_gui() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                tracing::error!("{message}");
+                show_startup_error(&message);
+                ExitCode::FAILURE
+            }
+        },
         Ok(AppCommand::Help) => {
             attach_console_for_cli();
             println!("{}", usage());
@@ -36,13 +46,68 @@ fn init_logging() {
         .init();
 }
 
-fn run_gui() {
+fn run_gui() -> Result<(), String> {
+    let paths = Paths::discover().map_err(|err| err.to_string())?;
+    let Some(_instance_lock) = SingleInstanceLock::try_acquire(&paths.instance_lock_file())
+        .map_err(|err| format!("single-instance lock: {err}"))?
+    else {
+        show_already_running();
+        return Ok(());
+    };
+    let language = startup_language(&paths.config_file());
+
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(desktop_config())
+        .with_cfg(desktop_config(language))
         .launch(App);
+    Ok(())
 }
 
-fn desktop_config() -> dioxus::desktop::Config {
+fn show_already_running() {
+    let description = already_running_message(AppLanguage::system_default());
+    let _ = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title("KitonyTerms")
+        .set_description(description)
+        .set_buttons(MessageButtons::Ok)
+        .show();
+}
+
+fn already_running_message(language: AppLanguage) -> &'static str {
+    match language {
+        AppLanguage::Chinese => "KitonyTerms 已在运行。请先切换到现有窗口。",
+        AppLanguage::English => {
+            "KitonyTerms is already running. Please switch to the existing window."
+        }
+    }
+}
+
+fn show_startup_error(error: &str) {
+    let description = match AppLanguage::system_default() {
+        AppLanguage::Chinese => format!("KitonyTerms 启动失败：{error}"),
+        AppLanguage::English => format!("KitonyTerms failed to start: {error}"),
+    };
+    let _ = MessageDialog::new()
+        .set_level(MessageLevel::Error)
+        .set_title("KitonyTerms")
+        .set_description(description)
+        .set_buttons(MessageButtons::Ok)
+        .show();
+}
+
+fn startup_language(config_file: &Path) -> AppLanguage {
+    match Config::load_from(config_file) {
+        Ok(config) => config.settings.language,
+        Err(error) => {
+            tracing::warn!(
+                "读取界面语言失败，将使用系统语言: {}: {error}",
+                config_file.display()
+            );
+            AppLanguage::system_default()
+        }
+    }
+}
+
+fn desktop_config(language: AppLanguage) -> dioxus::desktop::Config {
     let mut config = dioxus::desktop::Config::new().with_window(
         dioxus::desktop::WindowBuilder::new()
             .with_title("KitonyTerms")
@@ -53,18 +118,24 @@ fn desktop_config() -> dioxus::desktop::Config {
         config = config.with_icon(window_icon);
     }
     if should_use_kitonyterms_desktop_menu(std::env::consts::OS) {
-        config = with_kitonyterms_desktop_menu(config);
+        config = with_kitonyterms_desktop_menu(config, language);
     }
     icon::with_platform_icon_hooks(config)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn with_kitonyterms_desktop_menu(config: dioxus::desktop::Config) -> dioxus::desktop::Config {
-    config.with_menu(kt_ui::components::desktop_menu::app_menu())
+fn with_kitonyterms_desktop_menu(
+    config: dioxus::desktop::Config,
+    language: AppLanguage,
+) -> dioxus::desktop::Config {
+    config.with_menu(kt_ui::components::desktop_menu::app_menu(language))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn with_kitonyterms_desktop_menu(config: dioxus::desktop::Config) -> dioxus::desktop::Config {
+fn with_kitonyterms_desktop_menu(
+    config: dioxus::desktop::Config,
+    _language: AppLanguage,
+) -> dioxus::desktop::Config {
     config
 }
 
@@ -152,6 +223,35 @@ mod tests {
         assert!(should_use_kitonyterms_desktop_menu("macos"));
         assert!(should_use_kitonyterms_desktop_menu("linux"));
         assert!(!should_use_kitonyterms_desktop_menu("android"));
+    }
+
+    #[test]
+    fn single_instance_notice_follows_system_language() {
+        assert!(already_running_message(AppLanguage::Chinese).contains("已在运行"));
+        assert!(already_running_message(AppLanguage::English).contains("already running"));
+    }
+
+    #[test]
+    fn desktop_menu_language_uses_saved_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config.toml");
+        let mut config = Config::default();
+        config.settings.language = AppLanguage::Chinese;
+        config.save_to(&config_file).unwrap();
+
+        assert_eq!(startup_language(&config_file), AppLanguage::Chinese);
+    }
+
+    #[test]
+    fn desktop_menu_language_falls_back_to_system_for_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config.toml");
+        std::fs::write(&config_file, "invalid = [").unwrap();
+
+        assert_eq!(
+            startup_language(&config_file),
+            AppLanguage::system_default()
+        );
     }
 
     #[test]

@@ -32,10 +32,15 @@ const MONITOR_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SSH_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 const TO_CORE_CAPACITY: usize = 2_048;
 const FROM_CORE_CAPACITY: usize = 2_048;
+const OSC7_MAX_SEQUENCE_LEN: usize = 4 * 1024;
 
 /// Opaque session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub u64);
+
+/// 一次 SFTP 请求的稳定标识，由调用方生成并随请求级事件原样返回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SftpRequestId(pub u64);
 
 /// 远端目录条目(core 内中立类型,不向 UI 暴露 russh-sftp 的类型)。
 /// A remote directory entry (a neutral type; russh-sftp types stay in the core).
@@ -154,7 +159,11 @@ pub enum ToCore {
     /// Scroll the viewport by `delta` lines (positive = into history).
     Scroll { id: SessionId, delta: i32 },
     /// An SFTP request on this session (opens the subsystem lazily on first use).
-    Sftp { id: SessionId, req: SftpRequest },
+    Sftp {
+        id: SessionId,
+        request_id: SftpRequestId,
+        req: SftpRequest,
+    },
     /// 启动该会话的资源监控(首次惰性开启,之后持续到断开)。
     /// Start resource monitoring (lazy on first use, runs until disconnect).
     StartMonitor { id: SessionId },
@@ -197,9 +206,14 @@ impl fmt::Debug for ToCore {
                 .field("id", id)
                 .field("delta", delta)
                 .finish(),
-            ToCore::Sftp { id, req } => f
+            ToCore::Sftp {
+                id,
+                request_id,
+                req,
+            } => f
                 .debug_struct("Sftp")
                 .field("id", id)
+                .field("request_id", request_id)
                 .field("req", req)
                 .finish(),
             ToCore::StartMonitor { id } => f.debug_struct("StartMonitor").field("id", id).finish(),
@@ -233,12 +247,14 @@ pub enum FromCore {
     /// SFTP 目录列表就绪。SFTP directory listing is ready.
     SftpListing {
         id: SessionId,
+        request_id: SftpRequestId,
         path: String,
         entries: Vec<SftpEntry>,
     },
     /// SFTP 传输进度(`total` 为 0 表示未知)。Transfer progress (`total` 0 = unknown).
     SftpProgress {
         id: SessionId,
+        request_id: SftpRequestId,
         name: String,
         transferred: u64,
         total: u64,
@@ -246,11 +262,16 @@ pub enum FromCore {
     /// SFTP 操作完成。An SFTP operation finished successfully.
     SftpDone {
         id: SessionId,
+        request_id: SftpRequestId,
         op: SftpOp,
         path: String,
     },
     /// SFTP 操作失败。An SFTP operation failed.
-    SftpError { id: SessionId, message: String },
+    SftpError {
+        id: SessionId,
+        request_id: SftpRequestId,
+        message: String,
+    },
     /// SFTP 子任务正常停止。SFTP subtask stopped without a per-operation error.
     SftpStopped { id: SessionId },
     /// 资源监控采样。A resource-monitor sample.
@@ -439,12 +460,17 @@ async fn core_loop(
                     let _ = h.cmd_tx.send(SessionCmd::Scroll(delta));
                 }
             }
-            ToCore::Sftp { id, req } => {
+            ToCore::Sftp {
+                id,
+                request_id,
+                req,
+            } => {
                 if let Some(h) = sessions.get(&id) {
-                    if h.cmd_tx.send(SessionCmd::Sftp(req)).is_err() {
+                    if h.cmd_tx.send(SessionCmd::Sftp { request_id, req }).is_err() {
                         let _ = tx
                             .send(FromCore::SftpError {
                                 id,
+                                request_id,
                                 message: "SFTP 请求无法投递，会话任务已结束".to_string(),
                             })
                             .await;
@@ -453,6 +479,7 @@ async fn core_loop(
                     let _ = tx
                         .send(FromCore::SftpError {
                             id,
+                            request_id,
                             message: "SFTP 请求失败：会话不存在或已关闭".to_string(),
                         })
                         .await;
@@ -494,9 +521,15 @@ async fn core_loop(
 /// Control messages routed to a single session task.
 enum SessionCmd {
     Input(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     Scroll(i32),
-    Sftp(SftpRequest),
+    Sftp {
+        request_id: SftpRequestId,
+        req: SftpRequest,
+    },
     StartMonitor,
     Disconnect,
 }
@@ -531,7 +564,19 @@ impl InteractiveAuthProvider {
             return None;
         }
 
-        match self.responses.recv_timeout(AUTH_RESPONSE_TIMEOUT) {
+        let response = match tokio::runtime::Handle::try_current() {
+            Ok(handle)
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) =>
+            {
+                tokio::task::block_in_place(|| self.responses.recv_timeout(AUTH_RESPONSE_TIMEOUT))
+            }
+            _ => self.responses.recv_timeout(AUTH_RESPONSE_TIMEOUT),
+        };
+
+        match response {
             Ok(AuthResponse::Answers(answers)) => Some(answers),
             Ok(AuthResponse::Cancel) => None,
             Err(err) => {
@@ -668,10 +713,11 @@ impl SessionTask {
         // 最近一次通过 OSC 7 上报的工作目录，用于去重，避免重复投递 Cwd。
         // Last CWD reported via OSC 7, used to dedupe repeated Cwd events.
         let mut last_cwd: Option<String> = None;
+        let mut osc7_scanner = Osc7Scanner::default();
 
         // SFTP 子任务的命令发送端,首次收到 SFTP 请求时惰性建立。
         // Command sender to the SFTP subtask, created lazily on first request.
-        let mut sftp_tx: Option<mpsc::UnboundedSender<SftpRequest>> = None;
+        let mut sftp_tx: Option<mpsc::UnboundedSender<(SftpRequestId, SftpRequest)>> = None;
 
         // 资源监控子任务是否已启动(惰性,首次请求时开启)。
         // Whether the monitor subtask has been started (lazy on first request).
@@ -696,6 +742,11 @@ impl SessionTask {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(SessionCmd::Input(data)) => {
+                            // 用户在查看历史输出时开始输入，应立即回到当前命令行；
+                            // 空输入不改变视口，也避免实时视图下每次按键产生额外渲染。
+                            if prepare_terminal_for_input(&mut term, &data) {
+                                self.emit_render(&term);
+                            }
                             if let Err(e) = shell.write(&data).await {
                                 close_error = Some(e.to_string());
                                 break;
@@ -710,7 +761,7 @@ impl SessionTask {
                             term.scroll(delta);
                             self.emit_render(&term);
                         }
-                        Some(SessionCmd::Sftp(req)) => {
+                        Some(SessionCmd::Sftp { request_id, req }) => {
                             // 首次使用时在同一会话上开 SFTP 子系统,并 move 进独立子任务。
                             // Open the SFTP subsystem lazily and move it into a subtask.
                             if sftp_tx.is_none() {
@@ -767,6 +818,7 @@ impl SessionTask {
                                                 .unwrap_or("复用当前 SSH 会话失败");
                                             let _ = self.out.send(FromCore::SftpError {
                                                 id,
+                                                request_id,
                                                 message: format!(
                                                     "打开 SFTP 子系统失败：{prefix}；独立连接也失败：{e}"
                                                 ),
@@ -778,6 +830,7 @@ impl SessionTask {
                                                 .unwrap_or("复用当前 SSH 会话失败");
                                             let _ = self.out.send(FromCore::SftpError {
                                                 id,
+                                                request_id,
                                                 message: format!(
                                                     "打开 SFTP 子系统失败：{prefix}；独立连接超时({} 秒)",
                                                     SFTP_STANDALONE_OPEN_TIMEOUT.as_secs()
@@ -788,10 +841,11 @@ impl SessionTask {
                                 }
                             }
                             if let Some(tx) = &sftp_tx {
-                                if tx.send(req).is_err() {
+                                if tx.send((request_id, req)).is_err() {
                                     sftp_tx = None;
                                     let _ = self.out.send(FromCore::SftpError {
                                         id,
+                                        request_id,
                                         message: "SFTP 子任务已退出，请刷新后重试".to_string(),
                                     }).await;
                                 }
@@ -857,19 +911,36 @@ impl SessionTask {
                 msg = shell.next_message() => {
                     match msg {
                         Some(russh::ChannelMsg::Data { data }) => {
-                            if let Some(path) = parse_osc7_cwd(&data) {
+                            for path in osc7_scanner.feed(&data) {
                                 if last_cwd.as_deref() != Some(path.as_str()) {
                                     last_cwd = Some(path.clone());
                                     let _ = self.out.send(FromCore::Cwd { id, path }).await;
                                 }
                             }
                             term.advance(&data);
-                            handle_term_events(self.id, self.out.clone(), term.take_events()).await;
+                            let writes = handle_term_events(
+                                self.id,
+                                self.out.clone(),
+                                term.take_events(),
+                            ).await;
+                            if let Err(error) = write_pty_responses(&shell, writes).await {
+                                close_error = Some(error.to_string());
+                                break;
+                            }
                             self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
                             // stderr — feed it to the terminal too.
                             term.advance(&data);
+                            let writes = handle_term_events(
+                                self.id,
+                                self.out.clone(),
+                                term.take_events(),
+                            ).await;
+                            if let Err(error) = write_pty_responses(&shell, writes).await {
+                                close_error = Some(error.to_string());
+                                break;
+                            }
                             self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
@@ -913,32 +984,93 @@ impl SessionTask {
     }
 }
 
-/// 从 PTY 原始字节中解析 OSC 7 上报的工作目录。
-///
-/// OSC 7 形如 `ESC ] 7 ; file://<host>/<path> ST`，其中 ST 为 `ESC \` 或 BEL。
-/// 现代 shell（bash/zsh 的 vte 集成、fish 等）会在目录变化时发送该序列。
-/// 返回解码后的绝对路径；未找到时返回 None。
-fn parse_osc7_cwd(data: &[u8]) -> Option<String> {
-    // 逐字节扫描 `ESC ] 7 ;` 起始，取到 BEL(0x07) 或 ST(ESC \) 结束。
-    let mut i = 0;
-    while i < data.len() {
-        // 匹配前缀 ESC ] 7 ;
-        if data[i] == 0x1b
-            && data.get(i + 1) == Some(&b']')
-            && data.get(i + 2) == Some(&b'7')
-            && data.get(i + 3) == Some(&b';')
-        {
-            let start = i + 4;
-            let mut end = start;
-            while end < data.len() && data[end] != 0x07 && data[end] != 0x1b {
-                end += 1;
-            }
-            let payload = std::str::from_utf8(&data[start..end]).ok()?;
-            return osc7_payload_to_path(payload);
+fn prepare_terminal_for_input(term: &mut TermEngine, data: &[u8]) -> bool {
+    !data.is_empty() && term.scroll_to_bottom()
+}
+
+/// 跨 PTY 数据块扫描 OSC 7；只保留当前候选序列，并限制异常输入占用的内存。
+#[derive(Default)]
+struct Osc7Scanner {
+    candidate: Vec<u8>,
+    pending_st: bool,
+}
+
+impl Osc7Scanner {
+    const PREFIX: &'static [u8] = b"\x1b]7;";
+
+    fn feed(&mut self, data: &[u8]) -> Vec<String> {
+        let mut paths = Vec::new();
+        for &byte in data {
+            self.feed_byte(byte, &mut paths);
         }
-        i += 1;
+        paths
     }
-    None
+
+    fn feed_byte(&mut self, byte: u8, paths: &mut Vec<String>) {
+        if self.pending_st {
+            self.pending_st = false;
+            if byte == b'\\' {
+                self.finish(paths);
+                return;
+            }
+
+            // OSC 载荷内出现非 ST 的 ESC，放弃旧候选，并把它当作新序列起点。
+            self.candidate.clear();
+            self.candidate.push(0x1b);
+            self.feed_prefix_byte(byte);
+            return;
+        }
+
+        if self.candidate.len() < Self::PREFIX.len() {
+            self.feed_prefix_byte(byte);
+            return;
+        }
+
+        match byte {
+            0x07 => self.finish(paths),
+            0x1b => self.pending_st = true,
+            _ => {
+                self.candidate.push(byte);
+                if self.candidate.len() > OSC7_MAX_SEQUENCE_LEN {
+                    self.reset();
+                }
+            }
+        }
+    }
+
+    fn feed_prefix_byte(&mut self, byte: u8) {
+        let expected = Self::PREFIX.get(self.candidate.len()).copied();
+        if expected == Some(byte) {
+            self.candidate.push(byte);
+        } else if byte == Self::PREFIX[0] {
+            self.candidate.clear();
+            self.candidate.push(byte);
+        } else {
+            self.reset();
+        }
+    }
+
+    fn finish(&mut self, paths: &mut Vec<String>) {
+        if self.candidate.starts_with(Self::PREFIX) {
+            let payload = &self.candidate[Self::PREFIX.len()..];
+            if let Ok(payload) = std::str::from_utf8(payload) {
+                if let Some(path) = osc7_payload_to_path(payload) {
+                    paths.push(path);
+                }
+            }
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        self.candidate.clear();
+        self.pending_st = false;
+    }
+}
+
+#[cfg(test)]
+fn parse_osc7_cwd(data: &[u8]) -> Option<String> {
+    Osc7Scanner::default().feed(data).into_iter().next()
 }
 
 /// 把 OSC 7 的 `file://host/path` 载荷解析为本地路径，并做百分号解码。
@@ -974,8 +1106,13 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Forward terminal events (bell/title/pty-write) to the UI / back to PTY.
-async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: Vec<TermEvent>) {
+/// 向 UI 转发终端事件，并返回必须写回远端 PTY 的响应字节。
+async fn handle_term_events(
+    id: SessionId,
+    out: mpsc::Sender<FromCore>,
+    events: Vec<TermEvent>,
+) -> Vec<Vec<u8>> {
+    let mut writes = Vec::new();
     for ev in events {
         match ev {
             TermEvent::Bell => {
@@ -984,11 +1121,18 @@ async fn handle_term_events(id: SessionId, out: mpsc::Sender<FromCore>, events: 
             TermEvent::Title(title) => {
                 let _ = out.send(FromCore::Title { id, title }).await;
             }
-            // PtyWrite would be written back to the shell; deferred until
-            // needed (device-status responses etc.).
-            TermEvent::PtyWrite(_) | TermEvent::Wakeup => {}
+            TermEvent::PtyWrite(data) => writes.push(data),
+            TermEvent::Wakeup => {}
         }
     }
+    writes
+}
+
+async fn write_pty_responses(shell: &SshShell, responses: Vec<Vec<u8>>) -> Result<(), SshError> {
+    for data in responses {
+        shell.write(&data).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1041,6 +1185,51 @@ mod tests {
     fn osc7_cwd_absent_returns_none() {
         assert_eq!(parse_osc7_cwd(b"just terminal output\n"), None);
         assert_eq!(parse_osc7_cwd(b"\x1b]0;window title\x07"), None);
+    }
+
+    #[test]
+    fn terminal_input_returns_scrolled_viewport_to_live_bottom() {
+        let mut term = TermEngine::new(20, 3, 20);
+        term.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        term.scroll(2);
+        assert!(term.snapshot().display_offset > 0);
+
+        assert!(prepare_terminal_for_input(&mut term, b"n"));
+        assert_eq!(term.snapshot().display_offset, 0);
+    }
+
+    #[test]
+    fn empty_terminal_input_keeps_scrollback_position() {
+        let mut term = TermEngine::new(20, 3, 20);
+        term.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        term.scroll(2);
+        let before = term.snapshot();
+
+        assert!(!prepare_terminal_for_input(&mut term, b""));
+        let after = term.snapshot();
+        assert_eq!(after.display_offset, before.display_offset);
+        assert_eq!(after.revision, before.revision);
+    }
+
+    #[test]
+    fn osc7_scanner_waits_for_complete_cross_chunk_sequence() {
+        let mut scanner = Osc7Scanner::default();
+        assert!(scanner.feed(b"prefix\x1b]7;file://host/home/").is_empty());
+        assert!(scanner.feed(b"demo\x1b").is_empty());
+        assert_eq!(scanner.feed(b"\\suffix"), vec!["/home/demo".to_string()]);
+    }
+
+    #[test]
+    fn osc7_scanner_discards_oversized_sequence_and_recovers() {
+        let mut scanner = Osc7Scanner::default();
+        let mut oversized = b"\x1b]7;file://host/".to_vec();
+        oversized.extend(std::iter::repeat_n(b'a', OSC7_MAX_SEQUENCE_LEN));
+        oversized.push(0x07);
+        assert!(scanner.feed(&oversized).is_empty());
+        assert_eq!(
+            scanner.feed(b"\x1b]7;file://host/recovered\x07"),
+            vec!["/recovered".to_string()]
+        );
     }
 
     struct NoopAuth;
@@ -1168,6 +1357,99 @@ mod tests {
             .send(AuthResponse::Answers(vec!["123456".to_string()]))
             .unwrap();
         assert_eq!(join.join().unwrap(), Some(vec!["123456".to_string()]));
+    }
+
+    #[test]
+    fn concurrent_auth_challenges_leave_runtime_capacity_for_response_routing() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let (route_tx, mut route_rx) = mpsc::channel::<(SessionId, AuthResponse)>(4);
+        let (response_1_tx, response_1_rx) = std_mpsc::channel();
+        let (response_2_tx, response_2_rx) = std_mpsc::channel();
+        let response_1_cleanup = response_1_tx.clone();
+        let response_2_cleanup = response_2_tx.clone();
+        let (done_tx, done_rx) = std_mpsc::channel();
+
+        runtime.spawn(async move {
+            while let Some((id, response)) = route_rx.recv().await {
+                let sender = if id == SessionId(1) {
+                    &response_1_tx
+                } else {
+                    &response_2_tx
+                };
+                let _ = sender.send(response);
+            }
+        });
+
+        for (id, responses) in [(SessionId(1), response_1_rx), (SessionId(2), response_2_rx)] {
+            let out = out_tx.clone();
+            let done = done_tx.clone();
+            runtime.spawn(async move {
+                let mut provider = InteractiveAuthProvider {
+                    id,
+                    inner: Box::new(NoopAuth),
+                    out,
+                    responses,
+                };
+                let answer = provider.password("root", "example.com", 22);
+                let _ = done.send((id, answer));
+            });
+        }
+        drop(out_tx);
+        drop(done_tx);
+
+        let mut challenged = Vec::new();
+        for _ in 0..2 {
+            match out_rx.blocking_recv() {
+                Some(FromCore::AuthChallenge { id, .. }) => challenged.push(id),
+                other => panic!("期望认证挑战，实际收到 {other:?}"),
+            }
+        }
+        challenged.sort();
+        assert_eq!(challenged, vec![SessionId(1), SessionId(2)]);
+
+        for id in challenged {
+            route_tx
+                .blocking_send((id, AuthResponse::Answers(vec![format!("answer-{}", id.0)])))
+                .unwrap();
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut answers = Vec::new();
+        while answers.len() < 2 && Instant::now() < deadline {
+            if let Ok(result) = done_rx.recv_timeout(Duration::from_millis(50)) {
+                answers.push(result);
+            }
+        }
+        if answers.len() != 2 {
+            let _ = response_1_cleanup.send(AuthResponse::Cancel);
+            let _ = response_2_cleanup.send(AuthResponse::Cancel);
+            panic!("并发认证答案未能在 runtime 内完成路由");
+        }
+        answers.sort_by_key(|(id, _)| *id);
+        assert_eq!(answers[0].1.as_deref(), Some("answer-1"));
+        assert_eq!(answers[1].1.as_deref(), Some("answer-2"));
+    }
+
+    #[tokio::test]
+    async fn terminal_pty_write_events_are_returned_for_shell_writeback() {
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let writes = handle_term_events(
+            SessionId(9),
+            out_tx,
+            vec![TermEvent::Bell, TermEvent::PtyWrite(b"\x1b[1;1R".to_vec())],
+        )
+        .await;
+
+        assert_eq!(writes, vec![b"\x1b[1;1R".to_vec()]);
+        assert!(matches!(
+            out_rx.recv().await,
+            Some(FromCore::Bell { id }) if id == SessionId(9)
+        ));
     }
 
     #[test]
@@ -1324,6 +1606,7 @@ mod tests {
 
         manager.send(ToCore::Sftp {
             id: SessionId(404),
+            request_id: SftpRequestId(77),
             req: SftpRequest::List {
                 path: ".".to_string(),
             },
@@ -1339,12 +1622,68 @@ mod tests {
         };
 
         match event {
-            FromCore::SftpError { id, message } => {
+            FromCore::SftpError {
+                id,
+                request_id,
+                message,
+            } => {
                 assert_eq!(id, SessionId(404));
+                assert_eq!(request_id, SftpRequestId(77));
                 assert!(message.contains("会话不存在"));
             }
             other => panic!("期望 SftpError，实际收到 {other:?}"),
         }
+    }
+
+    #[test]
+    fn try_recv_keeps_late_sftp_listing_request_identity() {
+        let (to_core_tx, _to_core_rx) = mpsc::channel(4);
+        let (from_core_tx, from_core_rx) = mpsc::channel(4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut manager = SessionManager {
+            to_core_tx,
+            from_core_rx,
+            event_buffer: VecDeque::new(),
+            pending_renders: HashMap::new(),
+            _runtime: runtime,
+        };
+
+        from_core_tx
+            .try_send(FromCore::SftpListing {
+                id: SessionId(1),
+                request_id: SftpRequestId(2),
+                path: "/new".to_string(),
+                entries: Vec::new(),
+            })
+            .unwrap();
+        from_core_tx
+            .try_send(FromCore::SftpListing {
+                id: SessionId(1),
+                request_id: SftpRequestId(1),
+                path: "/old".to_string(),
+                entries: Vec::new(),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            manager.try_recv(),
+            Some(FromCore::SftpListing {
+                request_id: SftpRequestId(2),
+                path,
+                ..
+            }) if path == "/new"
+        ));
+        assert!(matches!(
+            manager.try_recv(),
+            Some(FromCore::SftpListing {
+                request_id: SftpRequestId(1),
+                path,
+                ..
+            }) if path == "/old"
+        ));
     }
 
     #[test]

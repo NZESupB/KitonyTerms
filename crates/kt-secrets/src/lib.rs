@@ -196,6 +196,29 @@ impl Vault {
         self.dirty = true;
     }
 
+    /// 写入并立即保存；保存失败时恢复调用前的内存状态。
+    pub fn set_and_save(&mut self, id: &str, secret: &str) -> Result<()> {
+        let previous = self
+            .entries
+            .insert(id.to_string(), Zeroizing::new(secret.to_string()));
+        let was_dirty = self.dirty;
+        self.dirty = true;
+
+        if let Err(err) = self.save() {
+            match previous {
+                Some(previous) => {
+                    self.entries.insert(id.to_string(), previous);
+                }
+                None => {
+                    self.entries.remove(id);
+                }
+            }
+            self.dirty = was_dirty;
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Remove a secret. Returns whether it existed. Marks the vault dirty.
     pub fn remove(&mut self, id: &str) -> bool {
         let existed = self.entries.remove(id).is_some();
@@ -316,6 +339,23 @@ mod tests {
             Some("passphrase-123")
         );
         assert_eq!(v.get("missing"), None);
+    }
+
+    #[test]
+    fn set_and_save_failure_restores_previous_value() {
+        let (dir, path) = tmp_vault_path();
+        let mut vault = Vault::create(&path, "pw").unwrap();
+        vault.set("existing", "old");
+        vault.save().unwrap();
+        std::fs::create_dir(dir.path().join(".secrets.vault.tmp")).unwrap();
+
+        assert!(vault.set_and_save("existing", "new").is_err());
+        assert_eq!(vault.get("existing"), Some("old"));
+        assert!(!vault.is_dirty());
+
+        assert!(vault.set_and_save("new-key", "value").is_err());
+        assert_eq!(vault.get("new-key"), None);
+        assert!(!vault.is_dirty());
     }
 
     #[cfg(unix)]

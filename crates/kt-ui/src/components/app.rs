@@ -23,8 +23,8 @@ use crate::components::dialog::{
 };
 use crate::components::external_edit::{
     ensure_private_edit_dir, external_edit_local_path, external_edit_status_text,
-    latest_sftp_completion_revision, local_file_modified, open_local_file_with, ExternalEdit,
-    ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
+    local_file_modified, open_local_file_with, ExternalEdit, ExternalEditAction,
+    ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
 };
 use crate::components::main_shell::{
     render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
@@ -33,7 +33,7 @@ use crate::components::main_shell::{
 use crate::components::security_dialogs::{AuthChallengeDialog, HostKeyConfirmDialog};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
-use crate::components::state_controller::use_state_controller;
+use crate::components::state_controller::{use_state_controller, StoreSignals};
 use crate::components::workbench::SettingsPanel;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
@@ -157,7 +157,10 @@ pub fn App() -> Element {
         Arc::clone(store),
         all_sessions,
         active_session_id,
-        host_key_prompt,
+        StoreSignals {
+            host_key_prompt,
+            status_notice,
+        },
         external_edits,
         Callback::new(move |action: ExternalEditAction| match action {
             ExternalEditAction::OpenLocal {
@@ -187,6 +190,7 @@ pub fn App() -> Element {
                 }
             }
             ExternalEditAction::Upload {
+                edit_id,
                 session_id,
                 local_path,
                 remote_path,
@@ -197,14 +201,36 @@ pub fn App() -> Element {
                     texts(settings.peek().language).sftp.edit_status_uploading,
                     file_name
                 )));
-                send_sftp_request(
+                match send_sftp_request(
                     Arc::clone(state),
                     session_id,
                     SftpRequest::Upload {
                         local: local_path,
                         remote: remote_path,
                     },
-                );
+                ) {
+                    Ok(request_id) => {
+                        let mut edits = external_edits.peek().clone();
+                        if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
+                            edit.request_id = Some(request_id);
+                        }
+                        external_edits.set(edits);
+                    }
+                    Err(message) => {
+                        let mut edits = external_edits.peek().clone();
+                        if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
+                            edit.status = ExternalEditStatus::PromptPending;
+                            edit.request_id = None;
+                        }
+                        external_edits.set(edits);
+                        external_edit_notice.set(Some(format!(
+                            "{} {}: {}",
+                            texts(settings.peek().language).sftp.edit_status_failed,
+                            file_name,
+                            message
+                        )));
+                    }
+                }
             }
             ExternalEditAction::DeleteLocal(path) => {
                 let _ = std::fs::remove_file(path);
@@ -214,6 +240,14 @@ pub fn App() -> Element {
                     "{} {}",
                     texts(settings.peek().language).sftp.edit_status_uploaded,
                     file_name
+                )));
+            }
+            ExternalEditAction::SyncFailed { file_name, message } => {
+                external_edit_notice.set(Some(format!(
+                    "{} {}: {}",
+                    texts(settings.peek().language).sftp.edit_status_failed,
+                    file_name,
+                    message
                 )));
             }
         }),
@@ -380,14 +414,23 @@ pub fn App() -> Element {
                 on_sftp_entry_external_edit: {
                     let state = Arc::clone(state);
                     Callback::new(move |ctx: SftpEntryContext| {
+                        let file_name = ctx.entry.name.clone();
                         let editor = settings.peek().default_editor.clone();
-                        start_sftp_external_edit(
+                        if let Err(message) = start_sftp_external_edit(
                             state.clone(),
                             ctx,
                             editor,
                             external_edits,
                             next_external_edit_id,
-                        );
+                        ) {
+                            tracing::error!("外部编辑下载启动失败: {}", message);
+                            external_edit_notice.set(Some(format!(
+                                "{} {}: {}",
+                                texts(language).sftp.edit_status_failed,
+                                file_name,
+                                message
+                            )));
+                        }
                     })
                 },
             })}
@@ -513,41 +556,61 @@ pub fn App() -> Element {
                         let state = Arc::clone(state);
                         move |ctx: SftpEntryContext| {
                             let path = join_path(&ctx.base_path, &ctx.entry.name);
-                            send_sftp_request(
+                            if let Err(message) = send_sftp_request(
                                 state.clone(),
                                 ctx.session_id,
                                 SftpRequest::Remove {
                                     path,
                                     is_dir: ctx.entry.is_dir,
                                 },
-                            );
+                            ) {
+                                tracing::error!("SFTP 删除请求投递失败: {}", message);
+                            }
                             context_menu.set(None);
                         }
                     },
                     on_sftp_external_edit: {
                         let state = Arc::clone(state);
                         move |ctx: SftpEntryContext| {
+                            let file_name = ctx.entry.name.clone();
                             let editor = settings.peek().default_editor.clone();
-                            start_sftp_external_edit(
+                            if let Err(message) = start_sftp_external_edit(
                                 state.clone(),
                                 ctx,
                                 editor,
                                 external_edits,
                                 next_external_edit_id,
-                            );
+                            ) {
+                                tracing::error!("外部编辑下载启动失败: {}", message);
+                                external_edit_notice.set(Some(format!(
+                                    "{} {}: {}",
+                                    texts(language).sftp.edit_status_failed,
+                                    file_name,
+                                    message
+                                )));
+                            }
                             context_menu.set(None);
                         }
                     },
                     on_sftp_open_with: {
                         let state = Arc::clone(state);
                         move |(ctx, command): (SftpEntryContext, Option<String>)| {
-                            start_sftp_external_edit(
+                            let file_name = ctx.entry.name.clone();
+                            if let Err(message) = start_sftp_external_edit(
                                 state.clone(),
                                 ctx,
                                 command,
                                 external_edits,
                                 next_external_edit_id,
-                            );
+                            ) {
+                                tracing::error!("外部编辑下载启动失败: {}", message);
+                                external_edit_notice.set(Some(format!(
+                                    "{} {}: {}",
+                                    texts(language).sftp.edit_status_failed,
+                                    file_name,
+                                    message
+                                )));
+                            }
                             context_menu.set(None);
                         }
                     },
@@ -571,7 +634,6 @@ pub fn App() -> Element {
                             let mut edits = external_edits.peek().clone();
                             if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
                                 edit.status = ExternalEditStatus::UploadingOnce;
-                                edit.after_revision = latest_sftp_completion_revision(state.clone(), edit.session_id);
                                 edit.last_seen_modified = edit
                                     .pending_modified
                                     .or_else(|| local_file_modified(&edit.local_path));
@@ -581,14 +643,26 @@ pub fn App() -> Element {
                                     texts(language).sftp.edit_status_uploading,
                                     edit.file_name
                                 )));
-                                send_sftp_request(
+                                match send_sftp_request(
                                     state.clone(),
                                     edit.session_id,
                                     SftpRequest::Upload {
                                         local: edit.local_path.clone(),
                                         remote: edit.remote_path.clone(),
                                     },
-                                );
+                                ) {
+                                    Ok(request_id) => edit.request_id = Some(request_id),
+                                    Err(message) => {
+                                        edit.status = ExternalEditStatus::PromptPending;
+                                        edit.request_id = None;
+                                        external_edit_notice.set(Some(format!(
+                                            "{} {}: {}",
+                                            texts(language).sftp.edit_status_failed,
+                                            edit.file_name,
+                                            message
+                                        )));
+                                    }
+                                }
                             }
                             external_edits.set(edits);
                         }
@@ -600,7 +674,6 @@ pub fn App() -> Element {
                             if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
                                 edit.status = ExternalEditStatus::UploadingAuto;
                                 edit.sync_mode = ExternalEditSyncMode::AutoUpload;
-                                edit.after_revision = latest_sftp_completion_revision(state.clone(), edit.session_id);
                                 edit.last_seen_modified = edit
                                     .pending_modified
                                     .or_else(|| local_file_modified(&edit.local_path));
@@ -610,14 +683,26 @@ pub fn App() -> Element {
                                     texts(language).sftp.edit_status_uploading,
                                     edit.file_name
                                 )));
-                                send_sftp_request(
+                                match send_sftp_request(
                                     state.clone(),
                                     edit.session_id,
                                     SftpRequest::Upload {
                                         local: edit.local_path.clone(),
                                         remote: edit.remote_path.clone(),
                                     },
-                                );
+                                ) {
+                                    Ok(request_id) => edit.request_id = Some(request_id),
+                                    Err(message) => {
+                                        edit.status = ExternalEditStatus::PromptPending;
+                                        edit.request_id = None;
+                                        external_edit_notice.set(Some(format!(
+                                            "{} {}: {}",
+                                            texts(language).sftp.edit_status_failed,
+                                            edit.file_name,
+                                            message
+                                        )));
+                                    }
+                                }
                             }
                             external_edits.set(edits);
                         }
@@ -702,8 +787,16 @@ pub fn App() -> Element {
                         move |prompt: PendingHostKey| {
                             match store.trust_host_key(&prompt.host, prompt.port, &prompt.fingerprint) {
                                 Ok(_) => {
-                                    store.clear_pending_host_key();
-                                    reconnect_host_key_pending_sessions(Arc::clone(&state));
+                                    store.clear_pending_host_key(
+                                        &prompt.host,
+                                        prompt.port,
+                                        &prompt.fingerprint,
+                                    );
+                                    reconnect_host_key_pending_sessions(
+                                        Arc::clone(&state),
+                                        &prompt.host,
+                                        prompt.port,
+                                    );
                                     host_key_prompt.set(None);
                                     host_key_error.set(None);
                                 }
@@ -723,9 +816,17 @@ pub fn App() -> Element {
                         let store = Arc::clone(store);
                         let state = Arc::clone(state);
                         move |prompt: PendingHostKey| {
-                            store.allow_host_key_once(prompt);
-                            store.clear_pending_host_key();
-                            reconnect_host_key_pending_sessions(Arc::clone(&state));
+                            store.allow_host_key_once(prompt.clone());
+                            store.clear_pending_host_key(
+                                &prompt.host,
+                                prompt.port,
+                                &prompt.fingerprint,
+                            );
+                            reconnect_host_key_pending_sessions(
+                                Arc::clone(&state),
+                                &prompt.host,
+                                prompt.port,
+                            );
                             host_key_prompt.set(None);
                             host_key_error.set(None);
                         }
@@ -734,8 +835,18 @@ pub fn App() -> Element {
                         let store = Arc::clone(store);
                         let state = Arc::clone(state);
                         move |_| {
-                            store.clear_pending_host_key();
-                            clear_host_key_pending_state(Arc::clone(&state));
+                            if let Some(prompt) = host_key_prompt.peek().clone() {
+                                store.clear_pending_host_key(
+                                    &prompt.host,
+                                    prompt.port,
+                                    &prompt.fingerprint,
+                                );
+                                clear_host_key_pending_state(
+                                    Arc::clone(&state),
+                                    &prompt.host,
+                                    prompt.port,
+                                );
+                            }
                             host_key_prompt.set(None);
                             host_key_error.set(None);
                         }
@@ -841,7 +952,13 @@ pub fn App() -> Element {
                         match sftp_name_dialog_mode().as_str() {
                             "mkdir" => {
                                 let path = join_path(&sftp_name_dialog_base_path(), &name);
-                                send_sftp_request(state.clone(), session_id, SftpRequest::Mkdir { path });
+                                if let Err(message) = send_sftp_request(
+                                    state.clone(),
+                                    session_id,
+                                    SftpRequest::Mkdir { path },
+                                ) {
+                                    tracing::error!("SFTP 新建目录请求投递失败: {}", message);
+                                }
                             }
                             "rename" => {
                                 let from = sftp_name_dialog_target_path();
@@ -850,7 +967,13 @@ pub fn App() -> Element {
                                 }
                                 let to = join_path(&parent_path(&from), &name);
                                 if from != to {
-                                    send_sftp_request(state.clone(), session_id, SftpRequest::Rename { from, to });
+                                    if let Err(message) = send_sftp_request(
+                                        state.clone(),
+                                        session_id,
+                                        SftpRequest::Rename { from, to },
+                                    ) {
+                                        tracing::error!("SFTP 重命名请求投递失败: {}", message);
+                                    }
                                 }
                             }
                             _ => {}
@@ -922,28 +1045,32 @@ fn start_sftp_external_edit(
     editor_command: Option<String>,
     mut external_edits: Signal<Vec<ExternalEdit>>,
     mut next_external_edit_id: Signal<u64>,
-) {
+) -> Result<(), String> {
     if ctx.entry.is_dir {
-        return;
+        return Ok(());
     }
 
     let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
     let local_path = external_edit_local_path(ctx.session_id, &remote_path);
     if let Some(parent) = local_path.parent() {
-        if let Err(e) = ensure_private_edit_dir(parent) {
-            tracing::error!("创建本地编辑目录失败: {}", e);
-            return;
-        }
+        ensure_private_edit_dir(parent).map_err(|error| error.to_string())?;
     }
 
-    let after_revision = latest_sftp_completion_revision(state.clone(), ctx.session_id);
+    let request_id = send_sftp_request(
+        state,
+        ctx.session_id,
+        SftpRequest::Download {
+            remote: remote_path.clone(),
+            local: local_path.clone(),
+        },
+    )?;
     let edit = ExternalEdit {
         id: next_external_edit_id(),
         session_id: ctx.session_id,
         remote_path: remote_path.clone(),
         local_path: local_path.clone(),
         file_name: ctx.entry.name.clone(),
-        after_revision,
+        request_id: Some(request_id),
         status: ExternalEditStatus::Downloading,
         sync_mode: ExternalEditSyncMode::Ask,
         editor_command,
@@ -954,34 +1081,29 @@ fn start_sftp_external_edit(
     let mut edits = external_edits.peek().clone();
     edits.push(edit);
     external_edits.set(edits);
-    send_sftp_request(
-        state,
-        ctx.session_id,
-        SftpRequest::Download {
-            remote: remote_path,
-            local: local_path,
-        },
-    );
+    Ok(())
 }
 
-fn send_sftp_request(state: Arc<Mutex<AppState>>, session_id: SessionId, req: SftpRequest) {
-    if let Ok(app_state) = state.lock() {
-        app_state.manager.send(ToCore::Sftp {
-            id: session_id,
-            req,
-        });
+fn send_sftp_request(
+    state: Arc<Mutex<AppState>>,
+    session_id: SessionId,
+    req: SftpRequest,
+) -> Result<kt_core::SftpRequestId, String> {
+    let mut app_state = state
+        .lock()
+        .map_err(|_| "应用状态不可用，SFTP 请求未发送".to_string())?;
+    app_state.send_sftp_request(session_id, req)
+}
+
+fn clear_host_key_pending_state(state: Arc<Mutex<AppState>>, host: &str, port: u16) {
+    if let Ok(mut app_state) = state.lock() {
+        app_state.clear_host_key_pending_for(host, port);
     }
 }
 
-fn clear_host_key_pending_state(state: Arc<Mutex<AppState>>) {
+fn reconnect_host_key_pending_sessions(state: Arc<Mutex<AppState>>, host: &str, port: u16) {
     if let Ok(mut app_state) = state.lock() {
-        app_state.clear_host_key_pending();
-    }
-}
-
-fn reconnect_host_key_pending_sessions(state: Arc<Mutex<AppState>>) {
-    if let Ok(mut app_state) = state.lock() {
-        app_state.reconnect_host_key_pending_sessions();
+        app_state.reconnect_host_key_pending_for(host, port);
     }
 }
 
@@ -995,11 +1117,9 @@ fn auth_challenge_vault_id(challenge: &AuthChallenge) -> Option<String> {
 
 fn auth_challenge_secret(challenge: &AuthChallenge, answers: &[String]) -> Option<String> {
     match challenge {
-        AuthChallenge::Password { .. } | AuthChallenge::KeyPassphrase { .. } => answers
-            .first()
-            .map(|answer| answer.trim())
-            .filter(|answer| !answer.is_empty())
-            .map(str::to_string),
+        AuthChallenge::Password { .. } | AuthChallenge::KeyPassphrase { .. } => {
+            answers.first().filter(|answer| !answer.is_empty()).cloned()
+        }
         AuthChallenge::KeyboardInteractive { .. } => None,
     }
 }
@@ -1077,7 +1197,21 @@ mod tests {
 
         assert_eq!(pending.session_id, SessionId(7));
         assert_eq!(pending.vault_id, "root@example.com:2222");
-        assert_eq!(pending.password, "secret");
+        assert_eq!(pending.password, " secret ");
+    }
+
+    #[test]
+    fn whitespace_only_password_is_preserved() {
+        let challenge = AuthChallenge::Password {
+            user: "root".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+        };
+
+        let pending = pending_auth_secret(SessionId(1), &challenge, &["   ".to_string()])
+            .expect("全空格仍可能是合法密码");
+
+        assert_eq!(pending.password, "   ");
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: format_cores(s.cpu_cores, t.core_unit),
                         percent: clamp_percent(s.cpu_percent),
                         state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -76,6 +77,18 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: format!("{} / {}", format_bytes(s.mem_used), format_bytes(s.mem_total)),
                         percent: memory_percent(s.mem_used, s.mem_total),
                         state_class: "",
+                        stacked_values: false,
+                        trend: t.trend,
+                    }
+                    MetricCard {
+                        icon: "disk",
+                        tone: "cyan",
+                        label: t.disk.to_string(),
+                        value: format_metric_percent(root_disk_percent(&s.disks)),
+                        subvalue: format_root_disk_usage(&s.disks),
+                        percent: root_disk_percent(&s.disks),
+                        state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -86,6 +99,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: format_load_subvalue(s.uptime_secs),
                         percent: load_percent(s.load1, s.cpu_cores),
                         state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -96,6 +110,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: format_network_subvalue(s.net_tx_rate),
                         percent: network_activity_percent(s.net_rx_rate, s.net_tx_rate),
                         state_class: latency_level(s.latency_ms).class_name(),
+                        stacked_values: true,
                         trend: t.trend,
                     }
                 }
@@ -110,6 +125,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: t.waiting.to_string(),
                         percent: 0.0,
                         state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -120,6 +136,18 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: t.waiting.to_string(),
                         percent: 0.0,
                         state_class: "",
+                        stacked_values: false,
+                        trend: t.trend,
+                    }
+                    MetricCard {
+                        icon: "disk",
+                        tone: "cyan",
+                        label: t.disk.to_string(),
+                        value: "--".to_string(),
+                        subvalue: t.waiting.to_string(),
+                        percent: 0.0,
+                        state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -130,6 +158,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: t.waiting.to_string(),
                         percent: 0.0,
                         state_class: "",
+                        stacked_values: false,
                         trend: t.trend,
                     }
                     MetricCard {
@@ -140,6 +169,7 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage) -> Element {
                         subvalue: t.waiting.to_string(),
                         percent: 0.0,
                         state_class: "latency-unknown",
+                        stacked_values: true,
                         trend: t.trend,
                     }
                 }
@@ -157,6 +187,7 @@ fn MetricCard(
     subvalue: String,
     percent: f32,
     state_class: &'static str,
+    stacked_values: bool,
     trend: &'static str,
 ) -> Element {
     let trend_label = format!("{label} {trend}");
@@ -172,7 +203,7 @@ fn MetricCard(
                 "{label}"
             }
             div {
-                class: "metric-value-row",
+                class: "{metric_value_row_class(stacked_values)}",
                 strong { "{value}" }
                 small { "{subvalue}" }
             }
@@ -190,6 +221,30 @@ fn memory_percent(used: u64, total: u64) -> f32 {
         0.0
     } else {
         clamp_percent((used as f32 / total as f32) * 100.0)
+    }
+}
+
+fn root_disk(disks: &[kt_core::monitor::DiskUsage]) -> Option<&kt_core::monitor::DiskUsage> {
+    disks.iter().find(|disk| disk.mount == "/")
+}
+
+fn root_disk_percent(disks: &[kt_core::monitor::DiskUsage]) -> f32 {
+    root_disk(disks)
+        .map(|disk| memory_percent(disk.used, disk.total))
+        .unwrap_or(0.0)
+}
+
+fn format_root_disk_usage(disks: &[kt_core::monitor::DiskUsage]) -> String {
+    root_disk(disks)
+        .map(|disk| format!("{} / {}", format_bytes(disk.used), format_bytes(disk.total)))
+        .unwrap_or_else(|| "--".to_string())
+}
+
+fn metric_value_row_class(stacked_values: bool) -> &'static str {
+    if stacked_values {
+        "metric-value-row is-stacked"
+    } else {
+        "metric-value-row"
     }
 }
 
@@ -353,6 +408,33 @@ mod tests {
         assert_eq!(memory_percent(1, 0), 0.0);
         assert_eq!(load_percent(0.5, 1), 50.0);
         assert_eq!(load_percent(3.0, 1), 100.0);
+    }
+
+    #[test]
+    fn root_disk_metric_prefers_root_mount_and_degrades_when_missing() {
+        let disks = vec![
+            kt_core::monitor::DiskUsage {
+                mount: "/data".to_string(),
+                used: 9,
+                total: 10,
+            },
+            kt_core::monitor::DiskUsage {
+                mount: "/".to_string(),
+                used: 40 * 1024 * 1024,
+                total: 100 * 1024 * 1024,
+            },
+        ];
+
+        assert_eq!(root_disk_percent(&disks), 40.0);
+        assert_eq!(format_root_disk_usage(&disks), "40.0 MB / 100.0 MB");
+        assert_eq!(root_disk_percent(&[]), 0.0);
+        assert_eq!(format_root_disk_usage(&[]), "--");
+    }
+
+    #[test]
+    fn network_values_use_stacked_layout_class() {
+        assert_eq!(metric_value_row_class(true), "metric-value-row is-stacked");
+        assert_eq!(metric_value_row_class(false), "metric-value-row");
     }
 
     #[test]

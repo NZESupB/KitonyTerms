@@ -499,9 +499,8 @@ fn parse_df(s: &str) -> Vec<DiskUsage> {
         if !mount.starts_with('/') {
             continue;
         }
+        let total = f[1].parse::<u64>().unwrap_or(0) * 1024;
         let used = f[2].parse::<u64>().unwrap_or(0) * 1024;
-        let avail = f[3].parse::<u64>().unwrap_or(0) * 1024;
-        let total = used + avail;
         if total == 0 {
             continue;
         }
@@ -567,7 +566,7 @@ mod tests {
     #[test]
     fn df_skips_pseudo() {
         let s = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
-                 /dev/sda1 1000 400 600 40% /\n\
+                 /dev/sda1 1000 400 500 40% /\n\
                  tmpfs 100 0 100 0% /dev/shm\n\
                  udev 50 0 50 0% notapath\n";
         let d = parse_df(s);
@@ -575,6 +574,22 @@ mod tests {
         assert_eq!(d[0].mount, "/");
         assert_eq!(d[0].used, 400 * 1024);
         assert_eq!(d[0].total, 1000 * 1024);
+    }
+
+    #[test]
+    fn malformed_df_section_does_not_break_other_metrics() {
+        let mut prev_cpu = None;
+        let mut prev_net = None;
+        let block = format!(
+            "{BEGIN}\ncpu  1 0 0 3\ncpu0 1 0 0 3\n{SEC}\nMemTotal: 1024 kB\nMemAvailable: 512 kB\n{SEC}\n{SEC}\ninvalid df output\n{SEC}\n0.25 0.10 0.05\n{SEC}\n3600.0 0.0\n{SEC}\n{END}"
+        );
+
+        let stats = parse_block(&block, &mut prev_cpu, &mut prev_net, 2.0).unwrap();
+
+        assert_eq!(stats.mem_used, 512 * 1024);
+        assert_eq!(stats.load1, 0.25);
+        assert_eq!(stats.uptime_secs, 3600);
+        assert!(stats.disks.is_empty());
     }
 
     #[test]

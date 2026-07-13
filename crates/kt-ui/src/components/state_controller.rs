@@ -9,6 +9,11 @@ use crate::components::external_edit::{sync_external_edits, ExternalEdit, Extern
 use crate::state::{AppState, SessionState};
 use crate::store::{PendingHostKey, Store};
 
+pub struct StoreSignals {
+    pub host_key_prompt: Signal<Option<PendingHostKey>>,
+    pub status_notice: Signal<Option<String>>,
+}
+
 pub fn resolve_active_session_id(
     current: Option<SessionId>,
     sessions: &[SessionState],
@@ -29,10 +34,14 @@ pub fn use_state_controller(
     store: Arc<Store>,
     mut all_sessions: Signal<Vec<SessionState>>,
     mut active_session_id: Signal<Option<SessionId>>,
-    mut host_key_prompt: Signal<Option<PendingHostKey>>,
+    store_signals: StoreSignals,
     mut external_edits: Signal<Vec<ExternalEdit>>,
     on_external_edit_action: Callback<ExternalEditAction>,
 ) {
+    let StoreSignals {
+        mut host_key_prompt,
+        mut status_notice,
+    } = store_signals;
     use_future(move || async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;
@@ -58,9 +67,12 @@ pub fn use_state_controller(
                         active_session_id.set(next_active);
                     }
                 }
-                let pending = store.pending_host_key();
+                let pending = store.peek_pending_host_key();
                 if *host_key_prompt.peek() != pending {
                     host_key_prompt.set(pending);
+                }
+                if let Some(notice) = take_latest_status_notice(&store) {
+                    status_notice.set(Some(notice));
                 }
             }
         });
@@ -89,11 +101,19 @@ pub fn use_state_controller(
     });
 }
 
+fn take_latest_status_notice(store: &Store) -> Option<String> {
+    let mut latest = None;
+    while let Some(notice) = store.take_status_notice() {
+        latest = Some(notice);
+    }
+    latest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::components::app_logic::session_state_from_profile;
-    use kt_config::{ConnectParams, SessionProfile};
+    use kt_config::{ConnectParams, KnownHostCheck, KnownHosts, SessionProfile};
 
     fn session(id: u64, title: &str) -> SessionState {
         let profile = SessionProfile {
@@ -131,5 +151,33 @@ mod tests {
     #[test]
     fn active_session_resolution_clears_when_no_sessions_exist() {
         assert_eq!(resolve_active_session_id(Some(SessionId(1)), &[]), None);
+    }
+
+    #[test]
+    fn persistence_notice_is_drained_for_status_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let known_hosts_path = dir.path().join("known_hosts.toml");
+        let mut known_hosts = KnownHosts::default();
+        known_hosts.trust("example.com", 22, "SHA256:key");
+        known_hosts.save_to(&known_hosts_path).unwrap();
+        let store = Store::load_from_files(
+            dir.path().join("config.toml"),
+            dir.path().join("secrets.vault"),
+            known_hosts_path.clone(),
+        )
+        .unwrap();
+        std::fs::remove_file(&known_hosts_path).unwrap();
+        std::fs::create_dir(&known_hosts_path).unwrap();
+
+        assert_eq!(
+            store
+                .check_host_key("example.com", 22, "SHA256:key")
+                .unwrap(),
+            KnownHostCheck::Trusted
+        );
+        assert!(take_latest_status_notice(&store)
+            .unwrap()
+            .contains("最近访问时间失败"));
+        assert_eq!(take_latest_status_notice(&store), None);
     }
 }

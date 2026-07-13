@@ -45,6 +45,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 directories = "6"
+fs2 = "0.4.3"
+rfd = "0.17.2"
 
 # --- crypto (master-password vault) ---
 argon2 = "0.5"
@@ -65,7 +67,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 # --- headless example helpers ---
 rpassword = "7"

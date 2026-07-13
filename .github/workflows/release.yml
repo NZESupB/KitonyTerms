@@ -24,9 +24,9 @@ on:
       - "v*"
   workflow_dispatch:
 
-# 允许 release job 创建 Release 并上传资产。
+# 默认只读仓库内容；仅 release job 获取发布写权限。
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,8 +34,24 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  audit:
+    name: RustSec audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 正式发布必须通过 RustSec 扫描；cargo-audit 自身按锁文件构建。
+      - name: Scan dependencies with RustSec
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
   build:
     name: build ${{ matrix.name }}
+    needs: audit
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -236,6 +252,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v6

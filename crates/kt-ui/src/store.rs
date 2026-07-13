@@ -5,6 +5,7 @@ use kt_config::{
 };
 use kt_secrets::Vault;
 use rand_core::{OsRng, RngCore};
+use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -148,6 +149,10 @@ impl PendingHostKey {
     pub fn is_changed(&self) -> bool {
         self.expected.is_some()
     }
+
+    pub fn matches(&self, host: &str, port: u16, fingerprint: &str) -> bool {
+        self.host.eq_ignore_ascii_case(host) && self.port == port && self.fingerprint == fingerprint
+    }
 }
 
 /// Store 包装器：桥接会话配置与加密 vault
@@ -155,9 +160,11 @@ pub struct Store {
     config_file: PathBuf,
     known_hosts_file: PathBuf,
     config: Mutex<Config>,
+    known_hosts: Mutex<KnownHosts>,
     vault: Mutex<VaultAccess>,
-    pending_host_key: Mutex<Option<PendingHostKey>>,
+    pending_host_keys: Mutex<VecDeque<PendingHostKey>>,
     temporary_host_keys: Mutex<Vec<PendingHostKey>>,
+    status_notices: Mutex<VecDeque<String>>,
 }
 
 impl Store {
@@ -193,15 +200,19 @@ impl Store {
         known_hosts_file: PathBuf,
     ) -> anyhow::Result<Self> {
         let config = Config::load_from(&config_file).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let known_hosts =
+            KnownHosts::load_from(&known_hosts_file).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let vault = Self::load_app_managed_vault(&vault_file, &vault_key_file);
 
         Ok(Self {
             config_file,
             known_hosts_file,
             config: Mutex::new(config),
+            known_hosts: Mutex::new(known_hosts),
             vault: Mutex::new(vault),
-            pending_host_key: Mutex::new(None),
+            pending_host_keys: Mutex::new(VecDeque::new()),
             temporary_host_keys: Mutex::new(Vec::new()),
+            status_notices: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -222,11 +233,10 @@ impl Store {
 
     /// 更新并持久化应用设置。
     pub fn update_settings(&self, settings: AppSettings) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        config.settings = settings;
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+        self.update_config(move |config| {
+            config.settings = settings;
+            true
+        })
     }
 
     pub fn vault_state(&self) -> VaultState {
@@ -244,6 +254,11 @@ impl Store {
         }
     }
 
+    /// 取出下一条需要展示给用户的持久化告警。
+    pub fn take_status_notice(&self) -> Option<String> {
+        self.status_notices.lock().unwrap().pop_front()
+    }
+
     pub fn get_secret(&self, vault_id: &str) -> anyhow::Result<Option<String>> {
         let guard = self.vault.lock().unwrap();
         match &*guard {
@@ -256,11 +271,9 @@ impl Store {
     pub fn set_secret(&self, vault_id: &str, value: &str) -> anyhow::Result<()> {
         let mut guard = self.vault.lock().unwrap();
         match &mut *guard {
-            VaultAccess::Unlocked { vault, .. } => {
-                vault.set(vault_id, value);
-                vault.save().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                Ok(())
-            }
+            VaultAccess::Unlocked { vault, .. } => vault
+                .set_and_save(vault_id, value)
+                .map_err(|e| anyhow::anyhow!(e.to_string())),
             VaultAccess::Locked { reason } => Err(anyhow::anyhow!(reason.clone())),
         }
     }
@@ -364,18 +377,26 @@ impl Store {
         port: u16,
         fingerprint: &str,
     ) -> anyhow::Result<KnownHostCheck> {
-        let mut known_hosts = KnownHosts::load_from(&self.known_hosts_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let decision = known_hosts.check_or_trust(host, port, fingerprint);
-        if matches!(
-            decision,
-            KnownHostCheck::Trusted | KnownHostCheck::NewlyTrusted
-        ) {
-            known_hosts
-                .save_to(&self.known_hosts_file)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut known_hosts = self.known_hosts.lock().unwrap();
+        let mut next = known_hosts.clone();
+        let decision = next.check_or_trust(host, port, fingerprint);
+        match decision {
+            KnownHostCheck::Trusted => {
+                if let Err(err) = next.save_to(&self.known_hosts_file) {
+                    self.record_last_seen_warning(host, port, &err.to_string());
+                } else {
+                    *known_hosts = next;
+                }
+                Ok(KnownHostCheck::Trusted)
+            }
+            KnownHostCheck::NewlyTrusted => {
+                next.save_to(&self.known_hosts_file)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                *known_hosts = next;
+                Ok(KnownHostCheck::NewlyTrusted)
+            }
+            decision => Ok(decision),
         }
-        Ok(decision)
     }
 
     /// 只校验主机密钥，不自动写入未知主机。
@@ -385,13 +406,15 @@ impl Store {
         port: u16,
         fingerprint: &str,
     ) -> anyhow::Result<KnownHostCheck> {
-        let mut known_hosts = KnownHosts::load_from(&self.known_hosts_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let decision = known_hosts.check(host, port, fingerprint);
+        let mut known_hosts = self.known_hosts.lock().unwrap();
+        let mut next = known_hosts.clone();
+        let decision = next.check(host, port, fingerprint);
         if matches!(decision, KnownHostCheck::Trusted) {
-            known_hosts
-                .save_to(&self.known_hosts_file)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if let Err(err) = next.save_to(&self.known_hosts_file) {
+                self.record_last_seen_warning(host, port, &err.to_string());
+            } else {
+                *known_hosts = next;
+            }
         }
         Ok(decision)
     }
@@ -417,12 +440,12 @@ impl Store {
         port: u16,
         fingerprint: &str,
     ) -> anyhow::Result<KnownHostCheck> {
-        let mut known_hosts = KnownHosts::load_from(&self.known_hosts_file)
+        let mut known_hosts = self.known_hosts.lock().unwrap();
+        let mut next = known_hosts.clone();
+        let decision = next.trust(host, port, fingerprint);
+        next.save_to(&self.known_hosts_file)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let decision = known_hosts.trust(host, port, fingerprint);
-        known_hosts
-            .save_to(&self.known_hosts_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        *known_hosts = next;
         Ok(decision)
     }
 
@@ -441,56 +464,87 @@ impl Store {
             }
             KnownHostCheck::Trusted | KnownHostCheck::NewlyTrusted => return None,
         };
-        *self.pending_host_key.lock().unwrap() = Some(pending.clone());
+        let mut pending_host_keys = self.pending_host_keys.lock().unwrap();
+        if !pending_host_keys
+            .iter()
+            .any(|queued| queued.matches(&pending.host, pending.port, &pending.fingerprint))
+        {
+            pending_host_keys.push_back(pending.clone());
+        }
         Some(pending)
     }
 
     pub fn allow_host_key_once(&self, pending: PendingHostKey) {
-        self.temporary_host_keys.lock().unwrap().push(pending);
+        let mut temporary_host_keys = self.temporary_host_keys.lock().unwrap();
+        if !temporary_host_keys
+            .iter()
+            .any(|queued| queued.matches(&pending.host, pending.port, &pending.fingerprint))
+        {
+            temporary_host_keys.push(pending);
+        }
     }
 
-    pub fn pending_host_key(&self) -> Option<PendingHostKey> {
-        self.pending_host_key.lock().unwrap().clone()
+    pub fn peek_pending_host_key(&self) -> Option<PendingHostKey> {
+        self.pending_host_keys.lock().unwrap().front().cloned()
     }
 
-    pub fn clear_pending_host_key(&self) {
-        *self.pending_host_key.lock().unwrap() = None;
+    pub fn find_pending_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Option<PendingHostKey> {
+        self.pending_host_keys
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|pending| pending.matches(host, port, fingerprint))
+            .cloned()
+    }
+
+    pub fn pop_pending_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Option<PendingHostKey> {
+        let mut pending_host_keys = self.pending_host_keys.lock().unwrap();
+        let index = pending_host_keys
+            .iter()
+            .position(|pending| pending.matches(host, port, fingerprint))?;
+        pending_host_keys.remove(index)
+    }
+
+    pub fn clear_pending_host_key(&self, host: &str, port: u16, fingerprint: &str) -> bool {
+        self.pop_pending_host_key(host, port, fingerprint).is_some()
     }
 
     /// 删除指定名称的会话
     pub fn delete_session(&self, name: &str) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        let removed = config
-            .sessions
-            .iter()
-            .position(|s| s.name == name)
-            .map(|i| config.sessions.remove(i));
-
-        if removed.is_some() {
+        self.update_config(|config| {
             config
-                .save_to(&self.config_file)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        }
-
-        Ok(())
+                .sessions
+                .iter()
+                .position(|session| session.name == name)
+                .map(|index| config.sessions.remove(index))
+                .is_some()
+        })
     }
 
     /// 新增分组。
     pub fn add_group(&self, name: &str) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        config.add_group(name);
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+        self.update_config(|config| {
+            config.add_group(name);
+            true
+        })
     }
 
     /// 重命名分组，并同步会话引用。
     pub fn rename_group(&self, old_name: &str, new_name: &str) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        config.rename_group(old_name, new_name);
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+        self.update_config(|config| {
+            config.rename_group(old_name, new_name);
+            true
+        })
     }
 
     /// 将默认分组中的会话迁移到新分组，用于重命名“未显式分组”的默认节点。
@@ -498,38 +552,57 @@ impl Store {
         let Some(new_name) = normalize_group_name(new_name) else {
             return Ok(());
         };
-        let mut config = self.config.lock().unwrap();
-        for session in &mut config.sessions {
-            if session.group.is_none() {
-                session.group = Some(new_name.clone());
+        self.update_config(|config| {
+            for session in &mut config.sessions {
+                if session.group.is_none() {
+                    session.group = Some(new_name.clone());
+                }
             }
-        }
-        config.add_group(new_name);
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+            config.add_group(new_name);
+            true
+        })
     }
 
     /// 删除分组；引用该分组的会话会回到默认分组。
     pub fn delete_group(&self, name: &str) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        config.delete_group(name);
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+        self.update_config(|config| {
+            config.delete_group(name);
+            true
+        })
     }
 
     /// 新增或更新会话（按 name 去重）
     pub fn save_session(&self, mut profile: SessionProfile) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
         profile.group = profile.group.as_deref().and_then(normalize_group_name);
-        if let Some(group) = profile.group.clone() {
-            config.add_group(group);
+        self.update_config(move |config| {
+            if let Some(group) = profile.group.clone() {
+                config.add_group(group);
+            }
+            config.upsert_session(profile);
+            true
+        })
+    }
+
+    fn update_config(&self, update: impl FnOnce(&mut Config) -> bool) -> anyhow::Result<()> {
+        let mut config = self.config.lock().unwrap();
+        let mut next = config.clone();
+        if !update(&mut next) {
+            return Ok(());
         }
-        config.upsert_session(profile);
-        config
-            .save_to(&self.config_file)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+        next.save_to(&self.config_file)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        *config = next;
+        Ok(())
+    }
+
+    fn record_last_seen_warning(&self, host: &str, port: u16, error: &str) {
+        let message =
+            format!("已接受可信主机 {host}:{port}，但更新 known_hosts 最近访问时间失败: {error}");
+        tracing::warn!("{message}");
+        let mut notices = self.status_notices.lock().unwrap();
+        if notices.back() != Some(&message) {
+            notices.push_back(message);
+        }
     }
 }
 
@@ -537,6 +610,7 @@ impl Store {
 mod tests {
     use super::*;
     use kt_config::DEFAULT_LIGHT_THEME;
+    use std::sync::{Arc, Barrier};
 
     fn test_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -676,6 +750,33 @@ mod tests {
     }
 
     #[test]
+    fn config_save_failure_keeps_previous_settings_in_memory() {
+        let (dir, store) = test_store();
+        let original = store.settings();
+        std::fs::create_dir(dir.path().join("config.toml")).unwrap();
+        let mut changed = original.clone();
+        changed.theme = DEFAULT_LIGHT_THEME.to_string();
+
+        assert!(store.update_settings(changed).is_err());
+        assert_eq!(store.settings(), original);
+    }
+
+    #[test]
+    fn vault_save_failure_restores_previous_secret() {
+        let (dir, store) = test_store();
+        store.set_secret("existing", "old").unwrap();
+        std::fs::create_dir(dir.path().join(".secrets.vault.tmp")).unwrap();
+
+        assert!(store.set_secret("existing", "new").is_err());
+        assert_eq!(
+            store.get_secret("existing").unwrap().as_deref(),
+            Some("old")
+        );
+        assert!(store.set_secret("new-key", "value").is_err());
+        assert_eq!(store.get_secret("new-key").unwrap(), None);
+    }
+
+    #[test]
     fn trusted_known_host_updates_last_seen_on_disk() {
         let (dir, store) = test_store();
         let known_hosts_path = dir.path().join("known_hosts.toml");
@@ -727,7 +828,82 @@ mod tests {
     }
 
     #[test]
-    fn pending_host_key_records_unknown_and_changed_decisions() {
+    fn concurrent_known_host_updates_keep_all_hosts() {
+        let (dir, store) = test_store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .trust_host_key(
+                            &format!("host-{index}.example.com"),
+                            22,
+                            &format!("SHA256:key-{index}"),
+                        )
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let known_hosts = KnownHosts::load_from(dir.path().join("known_hosts.toml")).unwrap();
+        assert_eq!(known_hosts.hosts.len(), 8);
+    }
+
+    #[test]
+    fn trusted_host_is_accepted_when_last_seen_save_fails_with_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let known_hosts_path = dir.path().join("known_hosts.toml");
+        let mut known_hosts = KnownHosts::default();
+        known_hosts.trust("example.com", 22, "SHA256:key");
+        known_hosts.save_to(&known_hosts_path).unwrap();
+        let store = Store::load_from_files(
+            dir.path().join("config.toml"),
+            dir.path().join("secrets.vault"),
+            known_hosts_path.clone(),
+        )
+        .unwrap();
+        std::fs::remove_file(&known_hosts_path).unwrap();
+        std::fs::create_dir(&known_hosts_path).unwrap();
+
+        assert_eq!(
+            store
+                .check_host_key("example.com", 22, "SHA256:key")
+                .unwrap(),
+            KnownHostCheck::Trusted
+        );
+        let notice = store.take_status_notice().unwrap();
+        assert!(notice.contains("已接受可信主机"));
+        assert!(notice.contains("最近访问时间失败"));
+    }
+
+    #[test]
+    fn new_host_is_not_trusted_when_persistence_fails() {
+        let (dir, store) = test_store();
+        let known_hosts_path = dir.path().join("known_hosts.toml");
+        std::fs::create_dir(&known_hosts_path).unwrap();
+
+        assert!(store
+            .trust_host_key("example.com", 22, "SHA256:key")
+            .is_err());
+        assert_eq!(
+            store
+                .check_host_key("example.com", 22, "SHA256:key")
+                .unwrap(),
+            KnownHostCheck::Unknown {
+                fingerprint: "SHA256:key".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn pending_host_key_queue_deduplicates_and_removes_exact_items() {
         let (_dir, store) = test_store();
 
         let unknown = store
@@ -742,7 +918,15 @@ mod tests {
         assert_eq!(unknown.host, "example.com");
         assert_eq!(unknown.fingerprint, "SHA256:first");
         assert!(!unknown.is_changed());
-        assert_eq!(store.pending_host_key(), Some(unknown));
+        assert_eq!(store.peek_pending_host_key(), Some(unknown.clone()));
+
+        store.record_pending_host_key(
+            "EXAMPLE.com",
+            22,
+            KnownHostCheck::Unknown {
+                fingerprint: "SHA256:first".to_string(),
+            },
+        );
 
         let changed = store
             .record_pending_host_key(
@@ -757,10 +941,42 @@ mod tests {
         assert!(changed.is_changed());
         assert_eq!(changed.expected.as_deref(), Some("SHA256:first"));
         assert_eq!(changed.fingerprint, "SHA256:second");
-        assert_eq!(store.pending_host_key(), Some(changed));
+        assert_eq!(
+            store.find_pending_host_key("example.com", 22, "SHA256:second"),
+            Some(changed.clone())
+        );
+        assert_eq!(
+            store.pop_pending_host_key("example.com", 22, "SHA256:first"),
+            Some(unknown)
+        );
+        assert_eq!(store.peek_pending_host_key(), Some(changed.clone()));
+        assert!(store.clear_pending_host_key("example.com", 22, "SHA256:second"));
+        assert!(!store.clear_pending_host_key("example.com", 22, "SHA256:second"));
+        assert_eq!(store.peek_pending_host_key(), None);
+    }
 
-        store.clear_pending_host_key();
-        assert_eq!(store.pending_host_key(), None);
+    #[test]
+    fn removing_one_unknown_host_keeps_the_next_prompt_queued() {
+        let (_dir, store) = test_store();
+        store.record_pending_host_key(
+            "alpha.example.com",
+            22,
+            KnownHostCheck::Unknown {
+                fingerprint: "SHA256:alpha".to_string(),
+            },
+        );
+        let beta = store
+            .record_pending_host_key(
+                "beta.example.com",
+                2222,
+                KnownHostCheck::Unknown {
+                    fingerprint: "SHA256:beta".to_string(),
+                },
+            )
+            .unwrap();
+
+        assert!(store.clear_pending_host_key("alpha.example.com", 22, "SHA256:alpha"));
+        assert_eq!(store.peek_pending_host_key(), Some(beta));
     }
 
     #[test]

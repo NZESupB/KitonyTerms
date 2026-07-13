@@ -53,7 +53,9 @@ pub fn Terminal(
     let state_for_input = state.clone();
     let state_for_scroll = state.clone();
     let state_for_paste = state.clone();
+    let state_for_key_paste = state.clone();
     let terminal_id = format!("terminal-{}-{}", session_id.0, pane_id);
+    let terminal_id_for_key = terminal_id.clone();
     let terminal_screen_id = terminal_screen_id(&terminal_id);
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
@@ -233,17 +235,33 @@ pub fn Terminal(
             onkeydown: move |evt| {
                 terminal_context_menu.set(None);
 
-                let data = terminal_input_for_key(&evt.key(), evt.modifiers().ctrl());
-
-                if !data.is_empty() {
-                    evt.prevent_default();
-                    tracing::debug!("发送终端输入: {} bytes", data.len());
-                    if let Ok(app_state) = state_for_input.lock() {
-                        app_state.manager.send(ToCore::Input {
-                            id: session_id,
-                            data,
-                        });
+                let modifiers = evt.modifiers();
+                match terminal_key_action(
+                    &evt.key(),
+                    modifiers.ctrl(),
+                    modifiers.shift(),
+                    modifiers.meta(),
+                    cfg!(target_os = "macos"),
+                ) {
+                    TerminalKeyAction::Copy => {
+                        evt.prevent_default();
+                        copy_selected_terminal_text(&terminal_id_for_key);
                     }
+                    TerminalKeyAction::Paste => {
+                        evt.prevent_default();
+                        paste_clipboard_to_terminal(state_for_key_paste.clone(), session_id);
+                    }
+                    TerminalKeyAction::Input(data) => {
+                        evt.prevent_default();
+                        tracing::debug!("发送终端输入: {} bytes", data.len());
+                        if let Ok(app_state) = state_for_input.lock() {
+                            app_state.manager.send(ToCore::Input {
+                                id: session_id,
+                                data,
+                            });
+                        }
+                    }
+                    TerminalKeyAction::Ignore => {}
                 }
             },
 
@@ -576,6 +594,47 @@ fn select_terminal_contents(terminal_screen_id: &str) {
     dioxus::document::eval(&script);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TerminalKeyAction {
+    Copy,
+    Paste,
+    Input(Vec<u8>),
+    Ignore,
+}
+
+fn terminal_key_action(
+    key: &Key,
+    ctrl: bool,
+    shift: bool,
+    meta: bool,
+    is_macos: bool,
+) -> TerminalKeyAction {
+    let shortcut_key = match key {
+        Key::Character(value) if value.len() == 1 => value.to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let is_clipboard_shortcut = if is_macos {
+        meta && !ctrl
+    } else {
+        ctrl && shift && !meta
+    };
+
+    if is_clipboard_shortcut {
+        match shortcut_key.as_str() {
+            "c" => return TerminalKeyAction::Copy,
+            "v" => return TerminalKeyAction::Paste,
+            _ => {}
+        }
+    }
+
+    let data = terminal_input_for_key(key, ctrl);
+    if data.is_empty() {
+        TerminalKeyAction::Ignore
+    } else {
+        TerminalKeyAction::Input(data)
+    }
+}
+
 fn terminal_input_for_key(key: &Key, ctrl: bool) -> Vec<u8> {
     match key {
         Key::Enter => vec![b'\r'],
@@ -788,6 +847,41 @@ mod tests {
         assert_eq!(terminal_input_for_key(&Key::End, false), b"\x1b[F");
         assert_eq!(terminal_input_for_key(&Key::Delete, false), b"\x1b[3~");
         assert_eq!(terminal_input_for_key(&Key::PageUp, false), b"\x1b[5~");
+    }
+
+    #[test]
+    fn terminal_clipboard_shortcuts_follow_desktop_platform_conventions() {
+        let c = Key::Character("c".to_string());
+        let v = Key::Character("V".to_string());
+
+        assert_eq!(
+            terminal_key_action(&c, false, false, true, true),
+            TerminalKeyAction::Copy
+        );
+        assert_eq!(
+            terminal_key_action(&v, false, true, true, true),
+            TerminalKeyAction::Paste
+        );
+        assert_eq!(
+            terminal_key_action(&c, true, true, false, false),
+            TerminalKeyAction::Copy
+        );
+        assert_eq!(
+            terminal_key_action(&v, true, true, false, false),
+            TerminalKeyAction::Paste
+        );
+    }
+
+    #[test]
+    fn plain_ctrl_c_and_ctrl_v_are_still_sent_to_the_remote_terminal() {
+        assert_eq!(
+            terminal_key_action(&Key::Character("c".to_string()), true, false, false, false,),
+            TerminalKeyAction::Input(vec![0x03])
+        );
+        assert_eq!(
+            terminal_key_action(&Key::Character("v".to_string()), true, false, false, false,),
+            TerminalKeyAction::Input(vec![0x16])
+        );
     }
 
     #[test]

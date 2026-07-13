@@ -4,7 +4,10 @@
 //! Everything here is UI-agnostic and serializable so it can be shared between
 //! the headless example, the core engine, and the GUI.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
@@ -30,6 +33,79 @@ pub enum ConfigError {
 }
 
 type Result<T> = std::result::Result<T, ConfigError>;
+
+static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_string());
+    let temp_path = loop {
+        let id = NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                let write_result = (|| -> std::io::Result<()> {
+                    file.write_all(contents)?;
+                    file.sync_all()
+                })();
+                if let Err(err) = write_result {
+                    drop(file);
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(err.into());
+                }
+                drop(file);
+                break candidate;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    };
+
+    if let Err(err) = replace_file(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
 
 /// How to authenticate an SSH connection.
 ///
@@ -235,13 +311,7 @@ impl KnownHosts {
         let path = path.as_ref();
         let toml =
             toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))?;
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml.as_bytes())?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        atomic_write(path, toml.as_bytes())
     }
 
     pub fn check_or_trust(
@@ -565,6 +635,11 @@ impl Paths {
         self.dirs.data_dir().join("known_hosts.toml")
     }
 
+    /// GUI 单实例锁文件位置。
+    pub fn instance_lock_file(&self) -> PathBuf {
+        self.dirs.data_dir().join("kitonyterms.lock")
+    }
+
     pub fn config_dir(&self) -> &Path {
         self.dirs.config_dir()
     }
@@ -591,13 +666,7 @@ impl Config {
         let path = path.as_ref();
         let toml =
             toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))?;
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml.as_bytes())?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        atomic_write(path, toml.as_bytes())
     }
 
     /// Find a saved session by name.
@@ -882,6 +951,21 @@ use_ssh_config = true
         cfg.save_to(&path).unwrap();
         let back = Config::load_from(&path).unwrap();
         assert_eq!(back.settings.font_size, 16.0);
+    }
+
+    #[test]
+    fn failed_atomic_save_removes_unique_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(Config::default().save_to(&path).is_err());
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

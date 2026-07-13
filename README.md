@@ -16,8 +16,8 @@ desktop UI is rendered through the native WebView stack.
   monitor in `kt-core`, with no UI dependency.
 - **UI:** Dioxus 0.7 desktop, native window, left connection/SFTP sidebar,
   central terminal workbench, monitor strip, status bar, dialogs, and settings.
-- **Validation:** 182 tests currently pass across the workspace; clippy is run
-  with `-D warnings`.
+- **Validation:** unit and integration tests cover every workspace crate; clippy
+  is run with `-D warnings`.
 
 ## What Works
 
@@ -141,16 +141,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Current test coverage by package:
-
-| Area | Tests |
-| --- | ---: |
-| `kt-app` | 9 |
-| `kt-config` | 24 |
-| `kt-core` | 54 |
-| `kt-secrets` | 7 |
-| `kt-ui` | 102 |
-| **Total** | **196** |
+The workspace test suite covers the app entry point, configuration and secret
+storage, SSH/terminal/SFTP core behavior, UI state transitions, and pure UI
+logic. Counts are intentionally not listed here because they change whenever
+coverage grows.
 
 The core integration test at
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
@@ -161,9 +155,12 @@ connect, password auth, PTY, shell data, `TermEngine`, and `GridSnapshot`.
 
 GitHub Actions has two packaging workflows:
 
-- `.github/workflows/release.yml`: `v*` tags create formal GitHub Releases.
-- `.github/workflows/alpha.yml`: branch pushes update the rolling `alpha`
-  prerelease.
+- `.github/workflows/release.yml`: `v*` tags create formal GitHub Releases only
+  after the blocking RustSec dependency audit passes.
+- `.github/workflows/alpha.yml`: pushes to any branch update the rolling
+  `alpha` prerelease. All branches share one concurrency group, so a newer push
+  cancels an older build; the release body records the source branch and commit.
+  RustSec findings are reported as warnings and do not block Alpha delivery.
 
 Both workflows share the same six-platform matrix and artifact naming:
 Linux/macOS/Windows x `x64`/`aarch64`. Rust target triples still use standard

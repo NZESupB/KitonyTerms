@@ -175,11 +175,16 @@ impl TermEngine {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Jump the viewport back to the live bottom.
-    pub fn scroll_to_bottom(&mut self) {
+    /// 将历史视口恢复到实时底部；已在底部时不产生新 revision。
+    pub fn scroll_to_bottom(&mut self) -> bool {
+        if self.term.grid().display_offset() == 0 {
+            return false;
+        }
+
         use alacritty_terminal::grid::Scroll;
         self.term.scroll_display(Scroll::Bottom);
         self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     /// Build an immutable, fully-resolved snapshot of the visible grid.
@@ -324,6 +329,22 @@ mod tests {
 
         eng.scroll(-2);
         assert_eq!(eng.snapshot().display_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_bottom_only_changes_a_scrolled_viewport() {
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        eng.scroll(2);
+        assert!(eng.snapshot().display_offset > 0);
+
+        assert!(eng.scroll_to_bottom());
+        let live = eng.snapshot();
+        assert_eq!(live.display_offset, 0);
+
+        let revision = live.revision;
+        assert!(!eng.scroll_to_bottom());
+        assert_eq!(eng.snapshot().revision, revision);
     }
 
     #[test]

@@ -170,6 +170,11 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M12 18V20" }
             path { d: "M17 18V20" }
         },
+        "disk" => rsx! {
+            path { d: "M5 4H19A2 2 0 0 1 21 6V18A2 2 0 0 1 19 20H5A2 2 0 0 1 3 18V6A2 2 0 0 1 5 4" }
+            path { d: "M7 15H17" }
+            path { d: "M16 8H16.01" }
+        },
         "load" => rsx! {
             path { d: "M12 20A8 8 0 1 0 12 4A8 8 0 1 0 12 20" }
             path { d: "M12 12L16 8" }

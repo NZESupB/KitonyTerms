@@ -1,5 +1,9 @@
 //! 原生桌面菜单集成。
 
+use kt_config::AppLanguage;
+
+use crate::i18n::texts;
+
 pub const SETTINGS_MENU_ID: &str = "kitonyterms-settings";
 
 pub fn is_settings_menu_id(id: &str) -> bool {
@@ -7,13 +11,14 @@ pub fn is_settings_menu_id(id: &str) -> bool {
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub fn app_menu() -> dioxus::desktop::muda::Menu {
+pub fn app_menu(language: AppLanguage) -> dioxus::desktop::muda::Menu {
     use dioxus::desktop::muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+    let (edit_label, settings_label) = desktop_menu_labels(language);
     let menu = Menu::new();
     let app_menu = Submenu::new("KitonyTerms", true);
-    let settings_menu = Submenu::new("设置", true);
-    let settings = MenuItem::with_id(SETTINGS_MENU_ID, "设置...", true, None);
+    let settings_menu = Submenu::new(settings_label, true);
+    let settings = MenuItem::with_id(SETTINGS_MENU_ID, settings_label, true, None);
 
     app_menu
         .append_items(&[
@@ -28,7 +33,7 @@ pub fn app_menu() -> dioxus::desktop::muda::Menu {
 
     // Windows/macOS/Linux 统一覆盖 Dioxus 默认 Window/Edit 菜单，并保留编辑快捷键
     // 等价项，确保 WebView 聚焦输入框能正确处理撤销、复制、粘贴和全选。
-    let edit_menu = Submenu::new("编辑", true);
+    let edit_menu = Submenu::new(edit_label, true);
     edit_menu
         .append_items(&[
             &PredefinedMenuItem::undo(None),
@@ -46,6 +51,11 @@ pub fn app_menu() -> dioxus::desktop::muda::Menu {
     menu
 }
 
+fn desktop_menu_labels(language: AppLanguage) -> (&'static str, &'static str) {
+    let app = texts(language).app;
+    (app.edit, app.settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +64,14 @@ mod tests {
     fn settings_menu_id_is_stable() {
         assert!(is_settings_menu_id("kitonyterms-settings"));
         assert!(!is_settings_menu_id("other"));
+    }
+
+    #[test]
+    fn desktop_menu_labels_follow_selected_language() {
+        assert_eq!(desktop_menu_labels(AppLanguage::Chinese), ("编辑", "设置"));
+        assert_eq!(
+            desktop_menu_labels(AppLanguage::English),
+            ("Edit", "Settings")
+        );
     }
 }

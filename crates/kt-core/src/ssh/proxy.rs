@@ -34,7 +34,7 @@ pub(super) async fn connect_via_proxy(
     // 先把 System 解析为具体代理类型（或直连）。
     let resolved = match proxy {
         ProxyConfig::Direct => return Ok(None),
-        ProxyConfig::System => match system_proxy_from_env() {
+        ProxyConfig::System => match system_proxy_from_env().map_err(SshError::Proxy)? {
             Some(p) => p,
             None => return Ok(None),
         },
@@ -155,7 +155,7 @@ async fn read_http_head(stream: &mut TcpStream) -> Result<String, SshError> {
 /// 构造 HTTP CONNECT 请求。提供 username 时附带 `Proxy-Authorization: Basic`（空密码）。
 fn build_connect_request(host: &str, port: u16, username: Option<&str>) -> Result<String, String> {
     validate_http_authority_host(host)?;
-    let authority = format!("{host}:{port}");
+    let authority = format_http_authority(host, port);
     let mut req = format!(
         "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n"
     );
@@ -166,6 +166,16 @@ fn build_connect_request(host: &str, port: u16, username: Option<&str>) -> Resul
     }
     req.push_str("\r\n");
     Ok(req)
+}
+
+fn format_http_authority(host: &str, port: u16) -> String {
+    if host.starts_with('[') && host.ends_with(']') {
+        format!("{host}:{port}")
+    } else if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn validate_http_authority_host(host: &str) -> Result<(), String> {
@@ -197,8 +207,9 @@ fn parse_connect_status(head: &str) -> Result<u16, String> {
 /// 从环境变量解析系统代理。
 ///
 /// 依次检查 `ALL_PROXY`/`all_proxy`、`HTTPS_PROXY`/`https_proxy`、
-/// `HTTP_PROXY`/`http_proxy`、`SOCKS_PROXY`/`socks_proxy`，返回首个可解析的代理。
-fn system_proxy_from_env() -> Option<ProxyConfig> {
+/// `HTTP_PROXY`/`http_proxy`、`SOCKS_PROXY`/`socks_proxy`。首个非空值若无法解析，
+/// 直接返回明确错误，避免静默改用语义不同的后续配置。
+fn system_proxy_from_env() -> Result<Option<ProxyConfig>, String> {
     const VARS: &[&str] = &[
         "ALL_PROXY",
         "all_proxy",
@@ -215,21 +226,22 @@ fn system_proxy_from_env() -> Option<ProxyConfig> {
             if value.is_empty() {
                 continue;
             }
-            if let Some(cfg) = parse_proxy_url(value) {
-                return Some(cfg);
-            }
+            return parse_proxy_url(value).map(Some);
         }
     }
-    None
+    Ok(None)
 }
 
 /// 解析代理 URL 为 [`ProxyConfig`]。
 ///
-/// 支持的 scheme：`socks5://`、`socks5h://`、`socks://`、`http://`、`https://`。
+/// 支持的 scheme：`socks5://`、`socks5h://`、`socks://`、`http://`。
 /// 无 scheme 时按 SOCKS5 处理。形如 `scheme://[user[:pass]@]host:port`，
 /// 端口缺省时按 scheme 推断（SOCKS5=1080，HTTP=8080）。
-fn parse_proxy_url(url: &str) -> Option<ProxyConfig> {
+fn parse_proxy_url(url: &str) -> Result<ProxyConfig, String> {
     let url = url.trim();
+    if url.is_empty() {
+        return Err("代理 URL 为空".to_string());
+    }
     let (scheme, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
         // 无 scheme：默认 SOCKS5。
@@ -250,27 +262,44 @@ fn parse_proxy_url(url: &str) -> Option<ProxyConfig> {
         .filter(|u| !u.is_empty())
         .map(|u| u.to_string());
 
-    let is_http = matches!(scheme.as_str(), "http" | "https");
-    let default_port = if is_http { 8080 } else { 1080 };
-    let (host, port) = parse_authority(host_port, default_port)?;
+    let proxy_kind = match scheme.as_str() {
+        "http" => ProxyKind::Http,
+        "socks5" | "socks5h" | "socks" => ProxyKind::Socks5,
+        "https" => {
+            return Err(
+                "暂不支持 HTTPS proxy（TLS 到代理）；请改用 http:// 或 socks5://".to_string(),
+            );
+        }
+        _ => return Err(format!("不支持的代理 scheme：{scheme}")),
+    };
+    let default_port = match proxy_kind {
+        ProxyKind::Http => 8080,
+        ProxyKind::Socks5 => 1080,
+    };
+    let (host, port) = parse_authority(host_port, default_port)
+        .ok_or_else(|| format!("代理地址无效：{host_port}"))?;
     if host.is_empty() {
-        return None;
+        return Err("代理 host 为空".to_string());
     }
 
-    if is_http {
-        Some(ProxyConfig::Http {
+    match proxy_kind {
+        ProxyKind::Http => Ok(ProxyConfig::Http {
             host,
             port,
             username,
-        })
-    } else {
-        // socks5 / socks5h / socks / 其它未知 scheme 一律按 SOCKS5。
-        Some(ProxyConfig::Socks5 {
+        }),
+        ProxyKind::Socks5 => Ok(ProxyConfig::Socks5 {
             host,
             port,
             username,
-        })
+        }),
     }
+}
+
+#[derive(Clone, Copy)]
+enum ProxyKind {
+    Http,
+    Socks5,
 }
 
 /// 解析 `host:port` 权威部分，支持 IPv6 方括号形式，端口缺省时回退 `default_port`。
@@ -316,6 +345,13 @@ mod tests {
     fn build_connect_request_rejects_header_injection_host() {
         let err = build_connect_request("example.com\r\nX-Evil: 1", 22, None).unwrap_err();
         assert!(err.contains("control"));
+    }
+
+    #[test]
+    fn build_connect_request_brackets_ipv6_authority() {
+        let req = build_connect_request("2001:db8::1", 22, None).unwrap();
+        assert!(req.starts_with("CONNECT [2001:db8::1]:22 HTTP/1.1\r\n"));
+        assert!(req.contains("Host: [2001:db8::1]:22\r\n"));
     }
 
     #[test]
@@ -421,6 +457,18 @@ mod tests {
                 username: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_proxy_url_rejects_https_until_tls_is_supported() {
+        let error = parse_proxy_url("https://proxy.example:443").unwrap_err();
+        assert!(error.contains("不支持 HTTPS proxy"));
+    }
+
+    #[test]
+    fn parse_proxy_url_rejects_unknown_scheme() {
+        let error = parse_proxy_url("ftp://proxy.example:21").unwrap_err();
+        assert!(error.contains("不支持的代理 scheme"));
     }
 
     /// 端到端：假 HTTP CONNECT 代理 -> 后端目标，验证隧道打通且不吞掉首字节。

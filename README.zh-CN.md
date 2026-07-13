@@ -15,7 +15,8 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus Desktop](https://dioxuslabs.com/)
   不依赖 UI。
 - **界面：** Dioxus 0.7 desktop，系统窗口、左侧连接/SFTP 侧栏、中央终端工作区、
   监控横条、状态栏、弹窗与设置面板。
-- **验证：** 当前 workspace 共 182 个测试通过；clippy 以 `-D warnings` 执行。
+- **验证：** workspace 每个 crate 都有单元测试或集成测试覆盖；clippy 以
+  `-D warnings` 执行。
 
 ## 已实现能力
 
@@ -127,16 +128,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-当前测试分布：
-
-| 范围 | 测试数 |
-| --- | ---: |
-| `kt-app` | 9 |
-| `kt-config` | 24 |
-| `kt-core` | 54 |
-| `kt-secrets` | 7 |
-| `kt-ui` | 102 |
-| **总计** | **196** |
+workspace 测试覆盖应用入口、配置与机密存储、SSH/终端/SFTP 核心行为、
+UI 状态流转及纯 UI 逻辑。测试数会随覆盖持续增长，因此 README 不再维护
+容易过期的固定统计。
 
 核心集成测试
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
@@ -147,8 +141,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 GitHub Actions 有两条打包流程：
 
-- `.github/workflows/release.yml`：`v*` 标签创建正式 GitHub Release。
-- `.github/workflows/alpha.yml`：分支 push 更新滚动 `alpha` 预发布。
+- `.github/workflows/release.yml`：`v*` 标签只有在阻断式 RustSec 依赖扫描通过后，
+  才会创建正式 GitHub Release。
+- `.github/workflows/alpha.yml`：任意分支 push 都可更新滚动 `alpha` 预发布。
+  所有分支共享一个并发组，新 push 会取消旧构建；发布正文会记录来源分支与提交。
+  RustSec 扫描只告警，不阻断 Alpha 发布。
 
 两条 workflow 共用同一套六平台矩阵和产物命名：
 Linux/macOS/Windows x `x64`/`aarch64`。Rust target triple 仍使用标准名称，
