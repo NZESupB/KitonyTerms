@@ -167,12 +167,18 @@ fn android_packager_fails_closed_on_signing_identity_mismatch() {
         "MOBILE_BUNDLE_ID",
         "MOBILE_BUILD_NUMBER",
         "arm64-v8a",
+        "application-icon-",
+        "Android Gradle Plugin 可能缩短 APK 内资源路径",
     ] {
         assert!(
             android.contains(required),
             "Android 签名脚本缺少: {required}"
         );
     }
+    assert!(
+        !android.contains("^res/mipmap-[^/]+/ic_launcher\\.png$"),
+        "APK 内资源路径可能被 AGP 缩短，不得恢复硬编码图标路径校验"
+    );
 }
 
 #[test]

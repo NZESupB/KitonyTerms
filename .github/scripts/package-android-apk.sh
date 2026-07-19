@@ -165,8 +165,6 @@ apk_listing="$work_dir/apk-listing.txt"
 unzip -Z1 "$signed_apk" >"$apk_listing"
 grep -Fxq "lib/$ANDROID_ABI/libmain.so" "$apk_listing" ||
   fail "Android APK 缺少 $ANDROID_ABI/libmain.so"
-grep -Eq '^res/mipmap-[^/]+/ic_launcher\.png$' "$apk_listing" ||
-  fail "Android APK 缺少 PNG launcher 图标"
 
 badging_file="$work_dir/badging.txt"
 "$AAPT" dump badging "$signed_apk" >"$badging_file"
@@ -183,8 +181,16 @@ actual_version_name="$(printf '%s\n' "$package_line" | sed -n "s/.* versionName=
   fail "Android APK versionName 不一致，期望 $MOBILE_MARKETING_VERSION，实际 $actual_version_name"
 grep -q "native-code:.*'$ANDROID_ABI'" "$badging_file" ||
   fail "Android APK badging 未声明 $ANDROID_ABI native-code"
-grep -Eq "^application-icon-[0-9]+:'.*ic_launcher.*\.png'$" "$badging_file" ||
-  fail "Android APK 未使用 PNG launcher 图标"
+
+# 新版 Android Gradle Plugin 可能缩短 APK 内资源路径，按 aapt 声明验证最终图标。
+icon_paths_file="$work_dir/icon-paths.txt"
+sed -n "s/^application-icon-[0-9][0-9]*:'\([^']*\.png\)'$/\1/p" "$badging_file" \
+  | sort -u >"$icon_paths_file"
+[[ -s "$icon_paths_file" ]] || fail "Android APK 未声明 PNG launcher 图标"
+while IFS= read -r icon_path; do
+  grep -Fxq "$icon_path" "$apk_listing" ||
+    fail "Android APK 声明的 launcher 图标不存在: $icon_path"
+done <"$icon_paths_file"
 
 mkdir -p dist
 output="dist/kitonyterms-${MOBILE_VERSION_LABEL}-android-aarch64.apk"
