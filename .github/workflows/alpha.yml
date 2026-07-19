@@ -1,26 +1,28 @@
 # 滚动开发版打包与发布 / Rolling alpha packaging & release
 #
 # 触发方式:
-#   - 推送到任意分支(不含 tag)→ 构建各端产物并更新固定的 "Alpha" 预发布。
+#   - 推送到 main 分支→ 构建各端产物并更新固定的 "Alpha" 预发布。
 #
 # 说明:
 #   - 与 release.yml 互补:release.yml 仅在 v* tag 时创建正式 Release;
-#     本工作流仅在分支 push 时更新滚动预发布,两者触发条件互斥、互不干扰。
+#     本工作流仅在 main push 时更新滚动预发布,两者触发条件互斥、互不干扰。
 #   - tag_name 固定为 alpha,产物文件名的 version 段亦固定为 alpha,
 #     使每次 push 覆盖同名资产,实现滚动更新。
-#   - 所有分支共享同一并发组,后触发的构建会取消旧构建,避免旧产物晚到覆盖。
-#   - 平台覆盖与打包逻辑与 release.yml 保持一致。
+#   - main 上的新 push 会替换尚未开始的 pending 构建；正在发布的构建不被中断，
+#     避免 Alpha Release 切换到一半时失去回滚机会。
+#   - 平台覆盖与打包逻辑与 release.yml 保持一致，包含桌面端和移动端产物。
+#   - 完整资产进入草稿后再切换固定 alpha tag，切换失败会恢复旧版本。
 name: alpha
 
 on:
   push:
     branches:
-      - "**"
+      - main
 
-# 任意分支均可触发,但固定 Alpha Release 同一时刻只接受最新一次构建。
+# 固定 Alpha Release 同一时刻只允许一个 workflow 进入发布切换阶段。
 concurrency:
   group: alpha-rolling-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # 默认只读仓库内容；仅 publish job 获取发布写权限。
 permissions:
@@ -29,8 +31,41 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  DIOXUS_CLI_VERSION: "0.7.9"
+  MOBILE_BUNDLE_ID: com.kitonyterms.app
 
 jobs:
+  allocate_mobile_build_number:
+    name: allocate mobile build number
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      build_number: ${{ steps.allocate.outputs.build_number }}
+      version_label: ${{ steps.metadata.outputs.version_label }}
+      marketing_version: ${{ steps.metadata.outputs.marketing_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prepare mobile version metadata
+        id: metadata
+        shell: bash
+        run: |
+          marketing_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$marketing_version" ]; then
+            echo "无法从 workspace Cargo.toml 读取移动端版本"
+            exit 1
+          fi
+          echo "version_label=alpha" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$marketing_version" >> "$GITHUB_OUTPUT"
+
+      # 通过 Git ref 的 fast-forward CAS 在 Alpha/Release 间分配全局唯一递增号。
+      - name: Allocate mobile build number
+        id: allocate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/allocate-mobile-build-number.sh
+
   audit:
     name: RustSec audit (warning only)
     runs-on: ubuntu-latest
@@ -245,27 +280,136 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  mobile_android:
+    name: build android-aarch64
+    needs: allocate_mobile_build_number
+    runs-on: ubuntu-22.04
+    environment: mobile-signing
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          license_input="$(mktemp)"
+          for _ in {1..64}; do
+            printf 'y\n' >> "$license_input"
+          done
+          sdkmanager --licenses < "$license_input"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-android-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build signed Android APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+        run: .github/scripts/package-android-apk.sh
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-aarch64
+          path: dist/
+          if-no-files-found: error
+
+  mobile_ios:
+    name: build ios-aarch64 unsigned IPA
+    needs: allocate_mobile_build_number
+    runs-on: macos-14
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-ios-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build unsigned iOS IPA
+        shell: bash
+        run: .github/scripts/package-ios-ipa.sh
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-aarch64
+          path: dist/
+          if-no-files-found: error
+
   # 汇总所有平台产物,更新固定的 Alpha 滚动预发布。
   publish:
     name: publish alpha prerelease
-    needs: [audit, build]
+    needs: [audit, build, mobile_android, mobile_ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+
       - name: Download all artifacts
         uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
 
-      - name: Publish Alpha prerelease
+      # 先把完整资产上传到不可见草稿，避免覆盖公开 Alpha 时留下半套资产。
+      - name: Stage Alpha prerelease
+        id: stage_alpha
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: alpha
+          tag_name: alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
           name: Alpha
+          draft: true
           prerelease: true
-          # 固定 tag 滚动更新:同名资产会被本次上传覆盖。
+          make_latest: false
           files: dist/*
           fail_on_unmatched_files: true
           body: |
@@ -285,3 +429,16 @@ jobs:
 
             ### Windows
             安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
+
+            ### Android
+            APK 使用固定发布证书签名并采用递增内部版本号，可直接覆盖安装旧版 KitonyTerms。
+
+            ### iOS
+            IPA 未签名，不能直接安装。请使用自己的 Apple 账号/证书与 provisioning profile 重签；后续覆盖更新时需保持同一 Team/application identifier、Bundle ID 与兼容 Entitlements，并使用不低于已安装包的版本和 build number。
+
+      - name: Switch rolling Alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE_ID: ${{ steps.stage_alpha.outputs.id }}
+          STAGING_TAG: alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}
+        run: .github/scripts/publish-alpha.sh

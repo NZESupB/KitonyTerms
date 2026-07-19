@@ -14,16 +14,18 @@ path = "src/main.rs"
 [dependencies]
 # UI 组件库
 kt-ui.workspace = true
-kt-config.workspace = true
 
 # Dioxus 框架
 dioxus.workspace = true
-fs2.workspace = true
-rfd.workspace = true
 
 # 日志
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+kt-config.workspace = true
+fs2.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

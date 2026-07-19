@@ -1,18 +1,24 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-//! KitonyTerms 桌面应用入口
+//! KitonyTerms 桌面与移动应用入口
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod icon;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod single_instance;
 
 use std::ffi::OsString;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use kt_config::{AppLanguage, Config, Paths};
 use kt_ui::App;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::single_instance::SingleInstanceLock;
 
 fn main() -> ExitCode {
@@ -46,6 +52,13 @@ fn init_logging() {
         .init();
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn run_gui() -> Result<(), String> {
+    dioxus::LaunchBuilder::mobile().launch(App);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_gui() -> Result<(), String> {
     let paths = Paths::discover().map_err(|err| err.to_string())?;
     let Some(_instance_lock) = SingleInstanceLock::try_acquire(&paths.instance_lock_file())
@@ -62,6 +75,7 @@ fn run_gui() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn show_already_running() {
     let description = already_running_message(AppLanguage::system_default());
     let _ = MessageDialog::new()
@@ -72,6 +86,7 @@ fn show_already_running() {
         .show();
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn already_running_message(language: AppLanguage) -> &'static str {
     match language {
         AppLanguage::Chinese => "KitonyTerms 已在运行。请先切换到现有窗口。",
@@ -81,6 +96,7 @@ fn already_running_message(language: AppLanguage) -> &'static str {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn show_startup_error(error: &str) {
     let description = match AppLanguage::system_default() {
         AppLanguage::Chinese => format!("KitonyTerms 启动失败：{error}"),
@@ -94,6 +110,10 @@ fn show_startup_error(error: &str) {
         .show();
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn show_startup_error(_error: &str) {}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn startup_language(config_file: &Path) -> AppLanguage {
     match Config::load_from(config_file) {
         Ok(config) => config.settings.language,
@@ -107,6 +127,7 @@ fn startup_language(config_file: &Path) -> AppLanguage {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn desktop_config(language: AppLanguage) -> dioxus::desktop::Config {
     let mut config = dioxus::desktop::Config::new().with_window(
         dioxus::desktop::WindowBuilder::new()
@@ -131,16 +152,14 @@ fn with_kitonyterms_desktop_menu(
     config.with_menu(kt_ui::components::desktop_menu::app_menu(language))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn with_kitonyterms_desktop_menu(
-    config: dioxus::desktop::Config,
-    _language: AppLanguage,
-) -> dioxus::desktop::Config {
-    config
-}
-
+#[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn should_use_kitonyterms_desktop_menu(target_os: &str) -> bool {
     matches!(target_os, "macos" | "windows" | "linux")
+}
+
+#[cfg(test)]
+fn is_mobile_target_os(target_os: &str) -> bool {
+    matches!(target_os, "android" | "ios")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +242,15 @@ mod tests {
         assert!(should_use_kitonyterms_desktop_menu("macos"));
         assert!(should_use_kitonyterms_desktop_menu("linux"));
         assert!(!should_use_kitonyterms_desktop_menu("android"));
+    }
+
+    #[test]
+    fn android_and_ios_use_mobile_launcher() {
+        assert!(is_mobile_target_os("android"));
+        assert!(is_mobile_target_os("ios"));
+        assert!(!is_mobile_target_os("macos"));
+        assert!(!is_mobile_target_os("windows"));
+        assert!(!is_mobile_target_os("linux"));
     }
 
     #[test]

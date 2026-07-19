@@ -18,6 +18,7 @@
 .env
 .env.*
 !.env.example
+/.local-signing/
 
 # OS / 编辑器 / OS & editor
 .DS_Store

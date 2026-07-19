@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 # Dioxus UI 框架
-dioxus = { version = "0.7", features = ["desktop"] }
+dioxus.workspace = true
 
 # 内部依赖
 kt-core.workspace = true

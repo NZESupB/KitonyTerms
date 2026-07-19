@@ -2288,3 +2288,162 @@ button:disabled {
         min-width: 132px;
     }
 }
+
+/* 移动端复用桌面工作台结构，通过窄屏与触控能力切换为纵向布局。 */
+@media (max-width: 900px), (hover: none) and (pointer: coarse) {
+    body {
+        overscroll-behavior: none;
+        -webkit-text-size-adjust: 100%;
+    }
+
+    .kt-window {
+        height: 100dvh;
+        padding:
+            env(safe-area-inset-top, 0)
+            env(safe-area-inset-right, 0)
+            env(safe-area-inset-bottom, 0)
+            env(safe-area-inset-left, 0);
+        border: 0;
+    }
+
+    .kt-content {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        min-width: 0;
+        max-height: 42dvh;
+        flex: 0 0 min(42dvh, 360px);
+        flex-direction: row;
+        border-right: 0;
+        border-bottom: 1px solid var(--border-soft);
+    }
+
+    .sidebar-groups,
+    .sidebar-sftp {
+        min-width: 0;
+        flex: 1 1 0;
+    }
+
+    .sidebar-groups {
+        border-right: 1px solid var(--border-soft);
+    }
+
+    .sidebar-sftp {
+        border-top: 0;
+    }
+
+    .connection-actions {
+        opacity: 1;
+    }
+
+    .splitter,
+    .sidebar-y-splitter {
+        display: none;
+    }
+
+    .main-column {
+        min-height: 0;
+        flex: 1 1 0;
+    }
+
+    .terminal-panel,
+    .monitor-dock {
+        min-width: 0;
+        margin: 0;
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+    }
+
+    .session-tabs {
+        height: 46px;
+        flex: 0 0 46px;
+        overflow-x: auto;
+        padding: 0 8px;
+    }
+
+    .session-tab,
+    .session-tab.is-active {
+        flex: 0 0 min(76vw, 300px);
+        max-width: min(76vw, 300px);
+    }
+
+    .tab-actions {
+        display: none;
+    }
+
+    .terminal-surface {
+        padding: 12px;
+        font-size: 13px;
+        line-height: 1.32;
+    }
+
+    .monitor-dock {
+        min-height: 94px;
+        flex: 0 0 94px;
+    }
+
+    .monitor-grid {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+    }
+
+    .metric-card {
+        min-width: 136px;
+    }
+
+    .status-bar {
+        min-height: 34px;
+        height: auto;
+        flex: 0 0 auto;
+        overflow: hidden;
+        padding: 5px 10px;
+    }
+
+    .dialog-content,
+    .connection-dialog,
+    .group-dialog,
+    .external-edit-dialog {
+        max-width: calc(100vw - 20px);
+        max-height: calc(100dvh - 20px);
+    }
+}
+
+@media (max-width: 560px) {
+    .sidebar {
+        max-height: 48dvh;
+        flex: 0 0 min(48dvh, 390px);
+        flex-direction: column;
+    }
+
+    .sidebar-groups {
+        flex: 1 1 42%;
+        border-right: 0;
+        border-bottom: 1px solid var(--border-soft);
+    }
+
+    .sidebar-sftp {
+        flex: 1 1 58%;
+    }
+
+    .connection-copy small,
+    .monitor-title {
+        display: none;
+    }
+
+    .sftp-table-grid {
+        min-width: 360px;
+    }
+
+    .monitor-dock {
+        min-height: 86px;
+        flex-basis: 86px;
+    }
+
+    .metric-card {
+        min-width: 126px;
+    }
+}

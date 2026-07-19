@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_os = "android"))]
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,9 @@ pub use ssh_config::{lookup_ssh_config, SshConfigHost};
 pub enum ConfigError {
     #[error("could not determine a config directory for this platform")]
     NoConfigDir,
+
+    #[error("failed to resolve platform app directory: {0}")]
+    Platform(String),
 
     #[error("failed to parse config: {0}")]
     Parse(String),
@@ -604,49 +608,114 @@ pub struct Config {
 /// * Linux:   `~/.config/KitonyTerms`, `~/.local/share/KitonyTerms`
 /// * macOS:   `~/Library/Application Support/com.kitony.KitonyTerms`
 /// * Windows: `%APPDATA%\KitonyTerms\config`
+/// * Android: application-private `files/config`, `files/data`
 pub struct Paths {
-    dirs: ProjectDirs,
+    config_dir: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl Paths {
     pub fn discover() -> Result<Self> {
-        let dirs =
-            ProjectDirs::from("com", "kitony", "KitonyTerms").ok_or(ConfigError::NoConfigDir)?;
-        Ok(Self { dirs })
+        #[cfg(target_os = "android")]
+        {
+            return android_paths();
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let dirs = ProjectDirs::from("com", "kitony", "KitonyTerms")
+                .ok_or(ConfigError::NoConfigDir)?;
+            Ok(Self::from_dirs(
+                dirs.config_dir().to_path_buf(),
+                dirs.data_dir().to_path_buf(),
+            ))
+        }
+    }
+
+    fn from_dirs(config_dir: PathBuf, data_dir: PathBuf) -> Self {
+        Self {
+            config_dir,
+            data_dir,
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn from_files_dir(files_dir: PathBuf) -> Self {
+        Self::from_dirs(files_dir.join("config"), files_dir.join("data"))
     }
 
     /// `config.toml` location.
     pub fn config_file(&self) -> PathBuf {
-        self.dirs.config_dir().join("config.toml")
+        self.config_dir.join("config.toml")
     }
 
     /// Encrypted secrets vault location.
     pub fn vault_file(&self) -> PathBuf {
-        self.dirs.data_dir().join("secrets.vault")
+        self.data_dir.join("secrets.vault")
     }
 
     /// 本机自动密码库的随机密钥文件位置。
     pub fn vault_key_file(&self) -> PathBuf {
-        self.dirs.data_dir().join("secrets.vault.key")
+        self.data_dir.join("secrets.vault.key")
     }
 
     /// known_hosts-style trust store location.
     pub fn known_hosts_file(&self) -> PathBuf {
-        self.dirs.data_dir().join("known_hosts.toml")
+        self.data_dir.join("known_hosts.toml")
     }
 
     /// GUI 单实例锁文件位置。
     pub fn instance_lock_file(&self) -> PathBuf {
-        self.dirs.data_dir().join("kitonyterms.lock")
+        self.data_dir.join("kitonyterms.lock")
     }
 
     pub fn config_dir(&self) -> &Path {
-        self.dirs.config_dir()
+        &self.config_dir
     }
 
     pub fn data_dir(&self) -> &Path {
-        self.dirs.data_dir()
+        &self.data_dir
     }
+}
+
+#[cfg(target_os = "android")]
+fn android_paths() -> Result<Paths> {
+    android_files_dir().map(Paths::from_files_dir)
+}
+
+#[cfg(target_os = "android")]
+fn android_files_dir() -> Result<PathBuf> {
+    use jni::objects::{JObject, JString};
+
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| ConfigError::Platform(format!("Android JavaVM 初始化失败: {error}")))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| ConfigError::Platform(format!("Android JNI 线程附加失败: {error}")))?;
+    let context = unsafe { JObject::from_raw(context.context().cast()) };
+
+    let files_dir = env
+        .call_method(context, "getFilesDir", "()Ljava/io/File;", &[])
+        .and_then(|value| value.l())
+        .map_err(|error| ConfigError::Platform(format!("Android getFilesDir 调用失败: {error}")))?;
+    let absolute_path = env
+        .call_method(files_dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
+        .and_then(|value| value.l())
+        .map_err(|error| {
+            ConfigError::Platform(format!("Android getAbsolutePath 调用失败: {error}"))
+        })?;
+    let absolute_path = JString::from(absolute_path);
+    let path: String = env
+        .get_string(&absolute_path)
+        .map_err(|error| ConfigError::Platform(format!("Android 私有目录读取失败: {error}")))?
+        .into();
+
+    if path.trim().is_empty() {
+        return Err(ConfigError::NoConfigDir);
+    }
+
+    Ok(PathBuf::from(path))
 }
 
 impl Config {
@@ -800,6 +869,25 @@ mod tests {
         assert_eq!(back.group_names(), vec!["Web"]);
         assert_eq!(back.sessions.len(), 1);
         assert_eq!(back.session("prod-web").unwrap().params.port, 2222);
+    }
+
+    #[test]
+    fn paths_join_config_and_data_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        let data_dir = dir.path().join("data");
+        let paths = Paths::from_dirs(config_dir.clone(), data_dir.clone());
+
+        assert_eq!(paths.config_dir(), config_dir.as_path());
+        assert_eq!(paths.data_dir(), data_dir.as_path());
+        assert_eq!(paths.config_file(), config_dir.join("config.toml"));
+        assert_eq!(paths.vault_file(), data_dir.join("secrets.vault"));
+        assert_eq!(paths.vault_key_file(), data_dir.join("secrets.vault.key"));
+        assert_eq!(paths.known_hosts_file(), data_dir.join("known_hosts.toml"));
+        assert_eq!(
+            paths.instance_lock_file(),
+            data_dir.join("kitonyterms.lock")
+        );
     }
 
     #[test]

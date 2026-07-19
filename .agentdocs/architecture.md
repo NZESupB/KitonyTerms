@@ -6,17 +6,17 @@
 ## crate 划分与依赖方向
 
 ```
-kt-app (Dioxus Desktop 入口) ──▶ kt-ui ──▶ kt-core ──▶ kt-config
-                                 └──────▶ kt-config    kt-secrets(被 kt-ui Store 用于 vault)
-                                 └──────▶ kt-secrets
+kt-app (Dioxus desktop/mobile 入口) ──▶ kt-ui ──▶ kt-core ──▶ kt-config
+                                        └──────▶ kt-config    kt-secrets(被 kt-ui Store 用于 vault)
+                                        └──────▶ kt-secrets
 kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
-- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`ProxyConfig`(Direct/System/Socks5/Http，TCP 层代理，独立于 SSH 跳板 `proxy_jump`)、`KnownHosts`、`SessionProfile`、`AppSettings`(含 language/font/theme/scrollback/cursor/use_ssh_config/trigger_highlights/default_editor/editors/show_line_numbers/show_timestamps)、`EditorEntry`(打开方式命令模板)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`、`kitonyterms.lock`)、`~/.ssh/config` 合并。`effective_vault_id()` = `user@host:port`。Config 与 KnownHosts 保存均使用同目录唯一临时文件原子替换，禁止固定临时文件名和原地截断。
+- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`ProxyConfig`(Direct/System/Socks5/Http，TCP 层代理，独立于 SSH 跳板 `proxy_jump`)、`KnownHosts`、`SessionProfile`、`AppSettings`(含 language/font/theme/scrollback/cursor/use_ssh_config/trigger_highlights/default_editor/editors/show_line_numbers/show_timestamps)、`EditorEntry`(打开方式命令模板)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`、`kitonyterms.lock`)、`~/.ssh/config` 合并。Android 的 `Paths` 通过 JNI `Context.getFilesDir()` 使用应用私有 `files/config` 与 `files/data`，其他平台继续使用 `ProjectDirs`。`effective_vault_id()` = `user@host:port`。Config 与 KnownHosts 保存均使用同目录唯一临时文件原子替换，禁止固定临时文件名和原地截断。
 - **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。UI Store 不暴露主密码流程，而是使用应用托管固定保护因子自动打开/创建本机 vault。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
-- **kt-app**:Dioxus Desktop 启动入口,二进制 `kitonyterms`,见下。当前入口能力为 GUI-only:无参数或 `--gui` 启动 GUI,`--help` 输出用法;`--safe`、`--system-ssh`、`--show-log`、`--list` 等历史稳定终端/降级入口不在当前代码中提供。
+- **kt-app**:Dioxus desktop/mobile 启动入口,二进制 `kitonyterms`,见下。当前入口能力为 GUI-only:无参数或 `--gui` 启动 GUI,`--help` 输出用法;`--safe`、`--system-ssh`、`--show-log`、`--list` 等历史稳定终端/降级入口不在当前代码中提供。
 
 ## kt-core:UI⇄core 消息协议(核心)
 
@@ -74,9 +74,9 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 文件:[crates/kt-app/src/main.rs](../crates/kt-app/src/main.rs)、[crates/kt-ui/src/components/app.rs](../crates/kt-ui/src/components/app.rs)
 
-- `kt-app` 负责解析最小入口参数、初始化日志、获取数据目录 `kitonyterms.lock` 跨平台排他锁、创建 Dioxus Desktop 窗口并 `launch(App)`；业务界面在 `kt-ui`。第二实例获取锁失败时显示随系统语言变化的原生提示并退出。当前支持无参数或 `--gui` 启动 GUI、`--help` 查看用法；旧 `--safe`、`--system-ssh`、`--show-log`、`--list` 会明确报错。原生菜单启动时优先使用保存的界面语言，配置不可读时回退系统语言。
+- `kt-app` 负责解析最小入口参数并初始化日志。桌面端获取数据目录 `kitonyterms.lock` 排他锁、读取启动语言、创建原生窗口/菜单/图标后用 Dioxus Desktop `launch(App)`；Android/iOS 跳过桌面单实例与原生对话框，改用 Dioxus mobile launcher。第二个桌面实例获取锁失败时显示随系统语言变化的原生提示并退出。当前支持无参数或 `--gui` 启动 GUI、`--help` 查看用法；旧 `--safe`、`--system-ssh`、`--show-log`、`--list` 会明确报错。原生菜单启动时优先使用保存的界面语言，配置不可读时回退系统语言。
 - `App` 通过全局 `Store` 与 `AppState` 懒初始化 `SessionManager`。UI 每 16ms 泵送 `FromCore`，每 100ms 从 `AppState.sessions` 同步会话列表。
-- **主界面结构**:系统原生标题栏 + 左侧边栏(分组连接树、SFTP 表格、设置入口) + 中央终端工作区 + 底部系统监控横条 + 状态栏。样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。[app.rs](../crates/kt-ui/src/components/app.rs) 是主编排组件,保留全局信号、上下文菜单、弹窗和跨模块动作;[state_controller.rs](../crates/kt-ui/src/components/state_controller.rs) 负责事件泵、会话列表同步、主机密钥提示同步与外部编辑副作用;[main_shell.rs](../crates/kt-ui/src/components/main_shell.rs) 负责主工作台外层调度,其子模块 `main_shell/sidebar_panel.rs`、`main_shell/workbench_panel.rs`、`main_shell/status_bar.rs` 分别承接连接/SFTP 侧边栏、终端与监控工作区、底部状态栏;安全认证对话框、外部编辑状态机、侧边栏/SFTP 右键菜单、连接/分组/命名对话框已拆到独立模块;[app_logic.rs](../crates/kt-ui/src/components/app_logic.rs) 保存分组归并、会话状态初始化、SSH config 合并、连接状态 selector 等纯逻辑;[app_runtime.rs](../crates/kt-ui/src/components/app_runtime.rs) 保存 Store-backed AuthProvider 与 KnownHostsVerifier。后续深拆目标是更细粒度 selector 与 `state_controller` 集成断言。
+- **主界面结构**:桌面为系统原生标题栏 + 左侧边栏(分组连接树、SFTP 表格、设置入口) + 中央终端工作区 + 底部系统监控横条 + 状态栏；移动端在 900px 以下或粗指针设备中使用纵向主布局、横向拆分连接/SFTP 区、可横滚会话与监控卡片，并应用 iOS safe-area。样式集中在 [app.css](../crates/kt-ui/src/assets/app.css)。[app.rs](../crates/kt-ui/src/components/app.rs) 是主编排组件,保留全局信号、上下文菜单、弹窗和跨模块动作;[state_controller.rs](../crates/kt-ui/src/components/state_controller.rs) 负责事件泵、会话列表同步、主机密钥提示同步与外部编辑副作用;[main_shell.rs](../crates/kt-ui/src/components/main_shell.rs) 负责主工作台外层调度,其子模块 `main_shell/sidebar_panel.rs`、`main_shell/workbench_panel.rs`、`main_shell/status_bar.rs` 分别承接连接/SFTP 侧边栏、终端与监控工作区、底部状态栏;安全认证对话框、外部编辑状态机、侧边栏/SFTP 右键菜单、连接/分组/命名对话框已拆到独立模块;[app_logic.rs](../crates/kt-ui/src/components/app_logic.rs) 保存分组归并、会话状态初始化、SSH config 合并、连接状态 selector 等纯逻辑;[app_runtime.rs](../crates/kt-ui/src/components/app_runtime.rs) 保存 Store-backed AuthProvider 与 KnownHostsVerifier。后续深拆目标是更细粒度 selector 与 `state_controller` 集成断言。
 - **selector 边界**:`app_logic.rs` 中的 `SessionTabView / ActiveSftpView / ActiveMonitorView / StatusBarSessionView / ActiveTerminalView` 是主工作台的轻量视图模型。SFTP、Monitor、状态栏和会话标签不应直接依赖完整 `SessionState`;终端区域可以通过 `ActiveTerminalView` 持有 `GridSnapshot`,但不要为了比较或 memo 强行给大快照引入伪等价语义。`state_controller::resolve_active_session_id` 统一处理 active session 缺失、过期和空列表,会话列表同步时按 `SessionId` 排序以保持 UI 顺序稳定。
 - **UI 抽离约定**:接收 `Arc<Mutex<AppState>>`、`Arc<Store>`、大量 `Signal` 或闭包的重状态入口优先使用普通函数返回 `Element`,不要默认写成 Dioxus `#[component]`;只有 props 天然适合 `PartialEq`、边界清晰且可复用的展示单元才使用组件。这样避免为了通过 props 派生而给运行时对象引入伪等价语义。
 - **终端渲染**:[terminal.rs](../crates/kt-ui/src/components/terminal.rs) 使用 `GridSnapshot` 渲染 HTML 行列，并把键盘、滚轮输入转成 `ToCore::Input`/`Scroll`。

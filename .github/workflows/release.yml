@@ -4,13 +4,16 @@
 #   - 推送 v* 标签(如 v0.0.2)→ 构建各端产物并创建 GitHub Release
 #   - 手动触发(workflow_dispatch)→ 仅构建并上传 artifacts,便于验证打包流程
 #
-# 产物覆盖:Linux(x64 + aarch64)、macOS(aarch64 + x64)、Windows(x64 + aarch64)。
+# 产物覆盖:Linux(x64 + aarch64)、macOS(aarch64 + x64)、Windows(x64 + aarch64)、
+# Android(aarch64) 与 iOS(aarch64)。
 # 二进制名为 kitonyterms(来自 kt-app crate)。
 #
 # 打包格式:
 #   - Linux  → .tar.gz(可执行文件 + .desktop + hicolor 图标)
 #   - macOS  → .zip 与 .dmg(均内含 KitonyTerms.app 应用包)
 #   - Windows→ .zip(便携版)与 -setup.exe(Inno Setup 安装包)
+#   - Android→ 使用固定 keystore 签名的 .apk
+#   - iOS    → 未签名 .ipa，下载后由安装者自行重签
 #
 # 备注:
 #   - macOS x64 在 Apple Silicon(macos-14)上交叉编译 —— Intel runner(macos-13)
@@ -32,6 +35,8 @@ env:
   CARGO_TERM_COLOR: always
   # Cargo.lock 已提交,统一使用 --locked 保证可复现构建。
   CARGO_INCREMENTAL: "0"
+  DIOXUS_CLI_VERSION: "0.7.9"
+  MOBILE_BUNDLE_ID: com.kitonyterms.app
 
 jobs:
   audit:
@@ -48,6 +53,53 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+
+  allocate_mobile_build_number:
+    name: allocate mobile build number
+    needs: audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      build_number: ${{ steps.allocate.outputs.build_number }}
+      version_label: ${{ steps.metadata.outputs.version_label }}
+      marketing_version: ${{ steps.metadata.outputs.marketing_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prepare mobile version metadata
+        id: metadata
+        shell: bash
+        run: |
+          workspace_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$workspace_version" ]; then
+            echo "无法从 workspace Cargo.toml 读取移动端版本"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version_label="$GITHUB_REF_NAME"
+            marketing_version="${GITHUB_REF_NAME#v}"
+            if [[ "$marketing_version" != "$workspace_version" ]]; then
+              echo "正式 tag 版本必须与 Cargo.toml 一致: tag=$marketing_version cargo=$workspace_version"
+              exit 1
+            fi
+          else
+            version_label="dev"
+            marketing_version="$workspace_version"
+          fi
+          if ! [[ "$marketing_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "移动端正式版本必须是三段数字版本号: $marketing_version"
+            exit 1
+          fi
+          echo "version_label=$version_label" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$marketing_version" >> "$GITHUB_OUTPUT"
+
+      # 与 Alpha 共用 Git ref CAS 计数器，避免跨 workflow 同秒碰撞或倒退。
+      - name: Allocate mobile build number
+        id: allocate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/allocate-mobile-build-number.sh
 
   build:
     name: build ${{ matrix.name }}
@@ -246,10 +298,113 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  mobile_android:
+    name: build android-aarch64
+    needs: allocate_mobile_build_number
+    runs-on: ubuntu-22.04
+    environment: mobile-signing
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          license_input="$(mktemp)"
+          for _ in {1..64}; do
+            printf 'y\n' >> "$license_input"
+          done
+          sdkmanager --licenses < "$license_input"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-android-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build signed Android APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+        run: .github/scripts/package-android-apk.sh
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-aarch64
+          path: dist/
+          if-no-files-found: error
+
+  mobile_ios:
+    name: build ios-aarch64 unsigned IPA
+    needs: allocate_mobile_build_number
+    runs-on: macos-14
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-ios-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build unsigned iOS IPA
+        shell: bash
+        run: .github/scripts/package-ios-ipa.sh
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-aarch64
+          path: dist/
+          if-no-files-found: error
+
   # 仅在打 tag 时汇总所有平台产物并创建 Release。
   release:
     name: publish release
-    needs: build
+    needs: [build, mobile_android, mobile_ios]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -267,6 +422,7 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          make_latest: true
           # 安装提示置于自动生成的发布说明之前。应用未做 Apple 公证 /
           # Windows 代码签名,故说明首次打开方式。
           body: |
@@ -283,5 +439,11 @@ jobs:
 
             ### Windows
             安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
+
+            ### Android
+            APK 使用固定发布证书签名并采用递增内部版本号，可直接覆盖安装旧版 KitonyTerms。
+
+            ### iOS
+            IPA 未签名，不能直接安装。请使用自己的 Apple 账号/证书与 provisioning profile 重签；后续覆盖更新时需保持同一 Team/application identifier、Bundle ID 与兼容 Entitlements，并使用不低于已安装包的版本和 build number。
 
             ---
