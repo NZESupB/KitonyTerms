@@ -24,7 +24,7 @@ use crate::single_instance::SingleInstanceLock;
 fn main() -> ExitCode {
     init_logging();
 
-    match AppCommand::parse(std::env::args_os().skip(1)) {
+    match startup_command() {
         Ok(AppCommand::Gui) => match run_gui() {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
@@ -43,6 +43,21 @@ fn main() -> ExitCode {
             eprintln!("{message}\n\n{}", usage());
             ExitCode::from(2)
         }
+    }
+}
+
+/// 解析启动命令。移动端的 Dioxus 胶水层通过 `dlsym("main")` 以无参函数指针
+/// 调用入口，argc/argv 未初始化，读取 `std::env::args_os` 会触发 SIGSEGV
+/// 闪退，因此移动端固定按无参数（GUI）处理。
+fn startup_command() -> Result<AppCommand, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        AppCommand::parse(std::iter::empty())
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        AppCommand::parse(std::env::args_os().skip(1))
     }
 }
 

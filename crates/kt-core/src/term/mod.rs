@@ -276,6 +276,7 @@ impl TermEngine {
             cursor,
             revision: self.revision,
             display_offset,
+            history_size: self.term.grid().history_size(),
             wrapped,
         }
     }
@@ -329,6 +330,22 @@ mod tests {
 
         eng.scroll(-2);
         assert_eq!(eng.snapshot().display_offset, 0);
+    }
+
+    #[test]
+    fn line_numbers_track_scrollback_position() {
+        // 5 行内容写入 3 行视口：2 行进入历史，底部视口首行绝对行号为 3。
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        let live = eng.snapshot();
+        assert_eq!(live.history_size, 2);
+        assert_eq!(live.first_visible_line_number(), 3);
+
+        // 上滚 2 行回到历史顶部：首行绝对行号回到 1。
+        eng.scroll(2);
+        let history = eng.snapshot();
+        assert_eq!(history.display_offset, 2);
+        assert_eq!(history.first_visible_line_number(), 1);
     }
 
     #[test]

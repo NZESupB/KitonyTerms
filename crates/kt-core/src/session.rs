@@ -1294,6 +1294,7 @@ mod tests {
             },
             revision,
             display_offset: 0,
+            history_size: 0,
             wrapped: vec![false],
         })
     }

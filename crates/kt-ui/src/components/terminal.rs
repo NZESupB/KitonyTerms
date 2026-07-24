@@ -81,6 +81,8 @@ pub fn Terminal(
         "terminal-surface"
     };
     let surface_style = gutter_surface_style(show_line_numbers, show_timestamps);
+    // 绝对行号基数：可见视口首行的行号（含 scrollback 历史，滚动回看时随之减小）。
+    let gutter_first_line = snapshot.first_visible_line_number();
 
     use_effect({
         let terminal_id = terminal_id.clone();
@@ -282,7 +284,8 @@ pub fn Terminal(
                                     // wrap 续行：用 `-` 占位，物理行号在此跳过。
                                     span { class: "terminal-gutter-lineno is-continuation", "-" }
                                 } else {
-                                    span { class: "terminal-gutter-lineno", "{idx + 1}" }
+                                    // 绝对行号：含 scrollback 历史，滚动回看时随之减小。
+                                    span { class: "terminal-gutter-lineno", "{gutter_first_line + idx}" }
                                 }
                             }
                         }
@@ -1045,6 +1048,7 @@ mod tests {
             },
             revision: 1,
             display_offset: 0,
+            history_size: 0,
             wrapped: vec![false, false],
         };
 
@@ -1083,6 +1087,7 @@ mod tests {
             },
             revision: 1,
             display_offset: 0,
+            history_size: 0,
             wrapped: vec![true, false],
         };
 
@@ -1112,6 +1117,7 @@ mod tests {
             },
             revision: 1,
             display_offset: 0,
+            history_size: 0,
             wrapped: vec![false, false, false],
         };
 
@@ -1140,6 +1146,7 @@ mod tests {
             },
             revision: 1,
             display_offset: 5,
+            history_size: 0,
             wrapped: vec![false, false],
         };
 

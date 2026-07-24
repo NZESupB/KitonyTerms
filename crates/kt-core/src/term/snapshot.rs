@@ -76,6 +76,9 @@ pub struct GridSnapshot {
     pub revision: u64,
     /// Current scrollback offset (0 = viewing the live bottom).
     pub display_offset: usize,
+    /// Number of scrollback lines above the live viewport. Together with
+    /// `display_offset` this yields absolute line numbers for the gutter.
+    pub history_size: usize,
     /// Per-row wrap flag: `wrapped[r]` is true when row `r`'s content overflowed
     /// into row `r+1` (alacritty sets `WRAPLINE` on the row's last cell). The UI
     /// uses this to mark continuation rows in the line-number gutter. Length =
@@ -84,6 +87,12 @@ pub struct GridSnapshot {
 }
 
 impl GridSnapshot {
+    /// 可见视口首行的绝对行号（从 1 开始，含 scrollback 历史）。
+    /// 滚动回看历史时（`display_offset > 0`）行号相应减小。
+    pub fn first_visible_line_number(&self) -> usize {
+        self.history_size.saturating_sub(self.display_offset) + 1
+    }
+
     /// Borrow the cell at (row, col), if in bounds.
     pub fn cell(&self, row: usize, col: usize) -> Option<&SnapshotCell> {
         if row < self.rows && col < self.cols {
