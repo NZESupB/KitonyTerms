@@ -1,0 +1,17 @@
+[application]
+name = "KitonyTerms"
+
+[bundle]
+identifier = "com.kitonyterms.app"
+publisher = "KitonyTerms contributors"
+icon = ["assets/app-icon.png"]
+
+[android]
+identifier = "com.kitonyterms.app"
+min_sdk = 24
+target_sdk = 35
+compile_sdk = 35
+
+[ios]
+identifier = "com.kitonyterms.app"
+deployment_target = "15.0"

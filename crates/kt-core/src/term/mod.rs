@@ -1,0 +1,498 @@
+//! Terminal engine: a thin, UI-agnostic wrapper around `alacritty_terminal`.
+//!
+//! Responsibilities:
+//! * own a [`Term`] grid + a `vte` ANSI [`Processor`]
+//! * feed it raw bytes from the SSH channel ([`TermEngine::advance`])
+//! * expose resize ([`TermEngine::resize`])
+//! * build a `Send`-able [`GridSnapshot`] for the renderer
+//! * surface terminal events (bell, title changes, PTY write-backs)
+//!
+//! The alacritty public API is explicitly *not* stability-guaranteed, so all of
+//! it is contained here behind these methods. Swapping the backend later only
+//! touches this module.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Point;
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{point_to_viewport, Config, Term};
+use alacritty_terminal::vte::ansi::{Color, CursorShape as VteCursorShape, NamedColor, Processor};
+
+pub mod color;
+pub mod snapshot;
+
+pub use color::Rgb;
+pub use snapshot::{CellAttrs, Cursor, CursorShape, GridSnapshot, SnapshotCell};
+
+/// Terminal grid dimensions. Implements alacritty's [`Dimensions`] trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TermSize {
+    pub columns: usize,
+    pub screen_lines: usize,
+    pub total_lines: usize,
+}
+
+impl TermSize {
+    pub fn new(columns: usize, screen_lines: usize, scrollback: usize) -> Self {
+        Self {
+            columns: columns.max(1),
+            screen_lines: screen_lines.max(1),
+            total_lines: screen_lines.max(1) + scrollback,
+        }
+    }
+}
+
+impl Dimensions for TermSize {
+    fn total_lines(&self) -> usize {
+        self.total_lines
+    }
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
+
+/// Terminal-originated events the session loop needs to react to.
+#[derive(Debug, Clone)]
+pub enum TermEvent {
+    /// Bell (BEL / `\a`).
+    Bell,
+    /// Window title change (OSC 0/2).
+    Title(String),
+    /// The terminal wants bytes written back to the PTY (e.g. responses to
+    /// device-status queries, bracketed-paste, clipboard formatters).
+    PtyWrite(Vec<u8>),
+    /// New content is available (alacritty `Wakeup`).
+    Wakeup,
+}
+
+/// `EventListener` impl that funnels alacritty events into a shared queue.
+///
+/// Cloneable and `Send`/`Sync` so the `Term` can hold one while the session
+/// loop drains the queue.
+#[derive(Clone)]
+pub struct EventProxy {
+    queue: Arc<Mutex<VecDeque<TermEvent>>>,
+}
+
+impl EventProxy {
+    fn new() -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    fn drain(&self) -> Vec<TermEvent> {
+        let mut q = self.queue.lock().expect("term event queue poisoned");
+        q.drain(..).collect()
+    }
+
+    fn push(&self, ev: TermEvent) {
+        self.queue
+            .lock()
+            .expect("term event queue poisoned")
+            .push_back(ev);
+    }
+}
+
+impl EventListener for EventProxy {
+    fn send_event(&self, event: Event) {
+        match event {
+            Event::Bell => self.push(TermEvent::Bell),
+            Event::Title(t) => self.push(TermEvent::Title(t)),
+            Event::ResetTitle => self.push(TermEvent::Title(String::new())),
+            Event::PtyWrite(s) => self.push(TermEvent::PtyWrite(s.into_bytes())),
+            Event::Wakeup => self.push(TermEvent::Wakeup),
+            // ClipboardStore/Load, ColorRequest, etc. are handled in later phases.
+            _ => {}
+        }
+    }
+}
+
+/// The terminal engine.
+pub struct TermEngine {
+    term: Term<EventProxy>,
+    parser: Processor,
+    proxy: EventProxy,
+    size: TermSize,
+    revision: u64,
+}
+
+impl TermEngine {
+    /// Create an engine with the given visible size and scrollback depth.
+    pub fn new(columns: usize, rows: usize, scrollback: usize) -> Self {
+        let size = TermSize::new(columns, rows, scrollback);
+        let proxy = EventProxy::new();
+        let config = Config {
+            scrolling_history: scrollback,
+            ..Config::default()
+        };
+        let term = Term::new(config, &size, proxy.clone());
+        Self {
+            term,
+            parser: Processor::new(),
+            proxy,
+            size,
+            revision: 0,
+        }
+    }
+
+    /// Current visible dimensions (columns, rows).
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.size.columns, self.size.screen_lines)
+    }
+
+    /// Feed raw bytes from the PTY into the parser/grid.
+    pub fn advance(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Resize the grid. Caller is responsible for sending `window-change` to
+    /// the SSH channel separately.
+    pub fn resize(&mut self, columns: usize, rows: usize, scrollback: usize) {
+        let size = TermSize::new(columns, rows, scrollback);
+        self.term.resize(size);
+        self.size = size;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Drain any pending terminal events (bell, title, pty write-backs).
+    pub fn take_events(&self) -> Vec<TermEvent> {
+        self.proxy.drain()
+    }
+
+    /// Scroll the viewport through scrollback. Positive = scroll up (into
+    /// history), negative = scroll down (toward the live view).
+    pub fn scroll(&mut self, delta: i32) {
+        use alacritty_terminal::grid::Scroll;
+        self.term.scroll_display(Scroll::Delta(delta));
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// 将历史视口恢复到实时底部；已在底部时不产生新 revision。
+    pub fn scroll_to_bottom(&mut self) -> bool {
+        if self.term.grid().display_offset() == 0 {
+            return false;
+        }
+
+        use alacritty_terminal::grid::Scroll;
+        self.term.scroll_display(Scroll::Bottom);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// Build an immutable, fully-resolved snapshot of the visible grid.
+    pub fn snapshot(&self) -> GridSnapshot {
+        let cols = self.size.columns;
+        let rows = self.size.screen_lines;
+        let palette = self.term.colors();
+
+        let mut cells = vec![SnapshotCell::default(); rows * cols];
+        // 行级 wrap 标志：行尾单元格带 WRAPLINE 表示该行内容溢出到下一行。
+        let mut wrapped = vec![false; rows];
+
+        let content = self.term.renderable_content();
+        let display_offset = content.display_offset;
+
+        for indexed in content.display_iter {
+            let point: Point = indexed.point;
+            // `display_iter` 使用包含历史行的终端坐标；滚动历史时需要转回可见视口坐标。
+            let Some(point) = point_to_viewport(display_offset, point) else {
+                continue;
+            };
+            let row = point.line;
+            let col = point.column.0;
+            if row >= rows || col >= cols {
+                continue;
+            }
+
+            let cell = indexed.cell;
+            let flags = cell.flags;
+            let default_fg = match cell.fg {
+                Color::Named(named @ (NamedColor::Foreground | NamedColor::BrightForeground)) => {
+                    palette[named as usize].is_none()
+                        && !flags.intersects(Flags::INVERSE | Flags::DIM)
+                }
+                _ => false,
+            };
+            if flags.contains(Flags::WRAPLINE) {
+                wrapped[row] = true;
+            }
+
+            let mut attrs = CellAttrs {
+                bold: flags.contains(Flags::BOLD),
+                italic: flags.contains(Flags::ITALIC),
+                underline: flags.intersects(Flags::ALL_UNDERLINES),
+                strikeout: flags.contains(Flags::STRIKEOUT),
+                inverse: flags.contains(Flags::INVERSE),
+                dim: flags.contains(Flags::DIM),
+                wide: flags.contains(Flags::WIDE_CHAR),
+                wide_spacer: flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+            };
+
+            let mut fg = color::resolve(cell.fg, palette);
+            let mut bg = color::resolve(cell.bg, palette);
+            if attrs.inverse {
+                std::mem::swap(&mut fg, &mut bg);
+                // 快照对外输出最终颜色，避免 UI 层再次反色。
+                attrs.inverse = false;
+            }
+            // Render hidden text as blanks (keep bg).
+            let c = if flags.contains(Flags::HIDDEN) {
+                ' '
+            } else {
+                cell.c
+            };
+            // Approximate DIM by blending fg toward bg.
+            if attrs.dim {
+                fg = blend(fg, bg, 0.4);
+            }
+            let _ = &mut attrs;
+
+            cells[row * cols + col] = SnapshotCell {
+                c,
+                fg,
+                bg,
+                attrs,
+                default_fg,
+            };
+        }
+
+        let cursor = {
+            let rc = content.cursor;
+            let line = rc.point.line.0;
+            let shape = match rc.shape {
+                VteCursorShape::Block => CursorShape::Block,
+                VteCursorShape::Underline => CursorShape::Underline,
+                VteCursorShape::Beam => CursorShape::Bar,
+                VteCursorShape::HollowBlock => CursorShape::Block,
+                VteCursorShape::Hidden => CursorShape::Hidden,
+            };
+            Cursor {
+                line: if line < 0 { 0 } else { line as usize },
+                column: rc.point.column.0.min(cols.saturating_sub(1)),
+                shape,
+            }
+        };
+
+        GridSnapshot {
+            rows,
+            cols,
+            cells,
+            cursor,
+            revision: self.revision,
+            display_offset,
+            history_size: self.term.grid().history_size(),
+            wrapped,
+        }
+    }
+}
+
+/// Linear blend of two colors: `a*(1-t) + b*t`.
+fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let lerp = |x: u8, y: u8| -> u8 {
+        (x as f32 * (1.0 - t) + y as f32 * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_plain_text_into_grid() {
+        let mut eng = TermEngine::new(20, 5, 100);
+        eng.advance(b"hello");
+        let snap = eng.snapshot();
+        assert_eq!(snap.rows, 5);
+        assert_eq!(snap.cols, 20);
+        assert_eq!(snap.row_text(0), "hello");
+    }
+
+    #[test]
+    fn newline_moves_to_next_row() {
+        let mut eng = TermEngine::new(20, 5, 100);
+        eng.advance(b"line1\r\nline2");
+        let snap = eng.snapshot();
+        assert_eq!(snap.row_text(0), "line1");
+        assert_eq!(snap.row_text(1), "line2");
+    }
+
+    #[test]
+    fn positive_scroll_delta_moves_into_scrollback_history() {
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        let live = eng.snapshot();
+        let live_top = live.row_text(0);
+        assert_eq!(live.display_offset, 0);
+
+        eng.scroll(2);
+        let history = eng.snapshot();
+        assert!(history.display_offset > 0);
+        assert_ne!(history.row_text(0), live_top);
+
+        eng.scroll(-2);
+        assert_eq!(eng.snapshot().display_offset, 0);
+    }
+
+    #[test]
+    fn line_numbers_track_scrollback_position() {
+        // 5 行内容写入 3 行视口：2 行进入历史，底部视口首行绝对行号为 3。
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        let live = eng.snapshot();
+        assert_eq!(live.history_size, 2);
+        assert_eq!(live.first_visible_line_number(), 3);
+
+        // 上滚 2 行回到历史顶部：首行绝对行号回到 1。
+        eng.scroll(2);
+        let history = eng.snapshot();
+        assert_eq!(history.display_offset, 2);
+        assert_eq!(history.first_visible_line_number(), 1);
+    }
+
+    #[test]
+    fn scroll_to_bottom_only_changes_a_scrolled_viewport() {
+        let mut eng = TermEngine::new(20, 3, 20);
+        eng.advance(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        eng.scroll(2);
+        assert!(eng.snapshot().display_offset > 0);
+
+        assert!(eng.scroll_to_bottom());
+        let live = eng.snapshot();
+        assert_eq!(live.display_offset, 0);
+
+        let revision = live.revision;
+        assert!(!eng.scroll_to_bottom());
+        assert_eq!(eng.snapshot().revision, revision);
+    }
+
+    #[test]
+    fn sgr_bold_and_color_applied() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        // bold + red "X", then reset.
+        eng.advance(b"\x1b[1;31mX\x1b[0m");
+        let snap = eng.snapshot();
+        let cell = snap.cell(0, 0).unwrap();
+        assert_eq!(cell.c, 'X');
+        assert!(cell.attrs.bold);
+        // red maps onto ANSI_16[1].
+        assert_eq!(cell.fg, color::Rgb::new(0xf7, 0x76, 0x8e));
+    }
+
+    #[test]
+    fn only_unstyled_default_foreground_is_themeable() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        eng.advance(b"P\x1b[31mR\x1b[0m\x1b[38;5;252mG\x1b[0m\x1b[7mI\x1b[0m\x1b[2mD\x1b[0m");
+        let snap = eng.snapshot();
+
+        assert!(snap.cell(0, 0).unwrap().default_fg);
+        assert!(!snap.cell(0, 1).unwrap().default_fg);
+        assert!(!snap.cell(0, 2).unwrap().default_fg);
+        assert!(!snap.cell(0, 3).unwrap().default_fg);
+        assert!(!snap.cell(0, 4).unwrap().default_fg);
+    }
+
+    #[test]
+    fn inverse_cells_are_resolved_to_final_colors() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        eng.advance(b"\x1b[7mX\x1b[0m");
+        let snap = eng.snapshot();
+        let cell = snap.cell(0, 0).unwrap();
+
+        assert_eq!(cell.c, 'X');
+        assert_eq!(cell.fg, color::DEFAULT_BG);
+        assert_eq!(cell.bg, color::DEFAULT_FG);
+        assert!(!cell.attrs.inverse);
+        assert!(!cell.default_fg);
+    }
+
+    #[test]
+    fn alternate_screen_exit_restores_primary_grid() {
+        let mut eng = TermEngine::new(20, 4, 50);
+        eng.advance(b"prompt> ready");
+        eng.advance(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[44mhtop row\x1b[0m");
+        assert_eq!(eng.snapshot().row_text(0), "htop row");
+
+        eng.advance(b"\x1b[?1049l");
+        let snap = eng.snapshot();
+
+        assert_eq!(snap.row_text(0), "prompt> ready");
+        assert!(snap
+            .cells
+            .iter()
+            .all(|cell| cell.bg != color::Rgb::new(0x7a, 0xa2, 0xf7)));
+    }
+
+    #[test]
+    fn cursor_advances_with_text() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        eng.advance(b"abc");
+        let snap = eng.snapshot();
+        assert_eq!(snap.cursor.line, 0);
+        assert_eq!(snap.cursor.column, 3);
+    }
+
+    #[test]
+    fn wide_characters_keep_a_spacer_cell_for_following_text() {
+        let mut eng = TermEngine::new(20, 3, 50);
+        eng.advance("A中B".as_bytes());
+        let snap = eng.snapshot();
+
+        assert_eq!(snap.row_text(0), "A中B");
+        assert!(!snap.cell(0, 0).unwrap().attrs.wide);
+        assert_eq!(snap.cell(0, 1).unwrap().c, '中');
+        assert!(snap.cell(0, 1).unwrap().attrs.wide);
+        assert!(snap.cell(0, 2).unwrap().attrs.wide_spacer);
+        assert_eq!(snap.cell(0, 3).unwrap().c, 'B');
+        assert_eq!(snap.cursor.column, 4);
+    }
+
+    #[test]
+    fn clear_screen_and_home() {
+        let mut eng = TermEngine::new(10, 3, 50);
+        eng.advance(b"junk\r\nmore");
+        eng.advance(b"\x1b[2J\x1b[H"); // clear + home
+        let snap = eng.snapshot();
+        assert_eq!(snap.to_plain_text().trim(), "");
+        assert_eq!(snap.cursor.line, 0);
+        assert_eq!(snap.cursor.column, 0);
+    }
+
+    #[test]
+    fn bell_event_surfaced() {
+        let mut eng = TermEngine::new(10, 3, 50);
+        eng.advance(b"\x07");
+        let events = eng.take_events();
+        assert!(events.iter().any(|e| matches!(e, TermEvent::Bell)));
+    }
+
+    #[test]
+    fn resize_changes_dimensions() {
+        let mut eng = TermEngine::new(80, 24, 100);
+        assert_eq!(eng.dimensions(), (80, 24));
+        eng.resize(100, 30, 100);
+        assert_eq!(eng.dimensions(), (100, 30));
+        let snap = eng.snapshot();
+        assert_eq!((snap.cols, snap.rows), (100, 30));
+    }
+
+    #[test]
+    fn revision_increments_on_advance() {
+        let mut eng = TermEngine::new(10, 3, 50);
+        let r0 = eng.snapshot().revision;
+        eng.advance(b"x");
+        let r1 = eng.snapshot().revision;
+        assert!(r1 > r0);
+    }
+}

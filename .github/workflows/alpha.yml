@@ -1,0 +1,444 @@
+# 滚动开发版打包与发布 / Rolling alpha packaging & release
+#
+# 触发方式:
+#   - 推送到 main 分支→ 构建各端产物并更新固定的 "Alpha" 预发布。
+#
+# 说明:
+#   - 与 release.yml 互补:release.yml 仅在 v* tag 时创建正式 Release;
+#     本工作流仅在 main push 时更新滚动预发布,两者触发条件互斥、互不干扰。
+#   - tag_name 固定为 alpha,产物文件名的 version 段亦固定为 alpha,
+#     使每次 push 覆盖同名资产,实现滚动更新。
+#   - main 上的新 push 会替换尚未开始的 pending 构建；正在发布的构建不被中断，
+#     避免 Alpha Release 切换到一半时失去回滚机会。
+#   - 平台覆盖与打包逻辑与 release.yml 保持一致，包含桌面端和移动端产物。
+#   - 完整资产进入草稿后再切换固定 alpha tag，切换失败会恢复旧版本。
+name: alpha
+
+on:
+  push:
+    branches:
+      - main
+
+# 固定 Alpha Release 同一时刻只允许一个 workflow 进入发布切换阶段。
+concurrency:
+  group: alpha-rolling-release
+  cancel-in-progress: false
+
+# 默认只读仓库内容；仅 publish job 获取发布写权限。
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  DIOXUS_CLI_VERSION: "0.7.9"
+  MOBILE_BUNDLE_ID: com.kitonyterms.app
+
+jobs:
+  allocate_mobile_build_number:
+    name: allocate mobile build number
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      build_number: ${{ steps.allocate.outputs.build_number }}
+      version_label: ${{ steps.metadata.outputs.version_label }}
+      marketing_version: ${{ steps.metadata.outputs.marketing_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prepare mobile version metadata
+        id: metadata
+        shell: bash
+        run: |
+          marketing_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$marketing_version" ]; then
+            echo "无法从 workspace Cargo.toml 读取移动端版本"
+            exit 1
+          fi
+          echo "version_label=alpha" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$marketing_version" >> "$GITHUB_OUTPUT"
+
+      # 通过 Git ref 的 fast-forward CAS 在 Alpha/Release 间分配全局唯一递增号。
+      - name: Allocate mobile build number
+        id: allocate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/allocate-mobile-build-number.sh
+
+  audit:
+    name: RustSec audit (warning only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Alpha 扫描只告警不阻断滚动预发布；cargo-audit 自身按锁文件构建。
+      - name: Scan dependencies with RustSec
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x64。
+          - name: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Dioxus Desktop (基于 Tauri/WebView) 在 Linux 上的构建依赖。
+      # 原生 ARM runner 会自动安装 arm64 版本,无需额外处理。
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --locked --release -p kt-app --target ${{ matrix.target }}
+
+      # ---- 打包 / Packaging ----
+      # 滚动预发布无 tag,version 段固定为 alpha,确保资产名稳定、可被覆盖。
+
+      # Linux:打包可执行文件、桌面入口与 hicolor 图标为 .tar.gz。
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version="alpha"
+          staging="kitonyterms-${version}-${{ matrix.name }}"
+          mkdir -p dist "$staging/bin" "$staging/share/applications" "$staging/share/icons"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$staging/bin/"
+          cp "crates/kt-app/assets/linux/kitonyterms.desktop" "$staging/share/applications/"
+          cp -R "crates/kt-app/assets/linux/hicolor" "$staging/share/icons/"
+          tar -czf "dist/${staging}.tar.gz" "$staging"
+
+      # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="alpha"
+          # 预发布无语义化版本号,plist 版本段用占位 0.0.0。
+          version_clean="0.0.0"
+          base="kitonyterms-${version}-${{ matrix.name }}"
+          app="KitonyTerms.app"
+          mkdir -p dist "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/kitonyterms" "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/kitonyterms"
+          cp "crates/kt-app/assets/macos/KitonyTerms.icns" "$app/Contents/Resources/KitonyTerms.icns"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>KitonyTerms</string>
+            <key>CFBundleDisplayName</key><string>KitonyTerms</string>
+            <key>CFBundleIdentifier</key><string>com.kitonyterms.app</string>
+            <key>CFBundleExecutable</key><string>kitonyterms</string>
+            <key>CFBundleIconFile</key><string>KitonyTerms</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${version_clean}</string>
+            <key>CFBundleShortVersionString</key><string>${version_clean}</string>
+            <key>LSMinimumSystemVersion</key><string>10.15</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x64、
+          # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
+          # 详见预发布说明。
+          codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
+          codesign --force --sign - "$app"
+          codesign --verify --verbose "$app"
+          # .zip:直接归档应用包(ditto 保留 macOS 元数据)。
+          ditto -c -k --keepParent "$app" "dist/${base}.zip"
+          # .dmg:含应用包与 /Applications 软链,便于拖拽安装。
+          dmgroot="$(mktemp -d)"
+          cp -R "$app" "$dmgroot/"
+          ln -s /Applications "$dmgroot/Applications"
+          hdiutil create -volname "KitonyTerms" -srcfolder "$dmgroot" \
+            -ov -format UDZO "dist/${base}.dmg"
+
+      # Windows:输出便携版 .zip 与 Inno Setup 安装包 -setup.exe。
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "alpha"
+          $base = "kitonyterms-$version-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path dist, staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" staging
+          # 便携版 zip。
+          Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
+          # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
+          choco install innosetup -y --no-progress
+          # 预发布无语义化版本号,安装包版本段用占位 0.0.0。
+          $appVersion = "0.0.0"
+          $languageDir = "installer-languages"
+          $chineseLanguageFile = Join-Path $languageDir "ChineseSimplified.isl"
+          New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
+          try {
+            Invoke-WebRequest `
+              -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl" `
+              -OutFile $chineseLanguageFile `
+              -UseBasicParsing
+          } catch {
+            Write-Warning "下载 Inno Setup 简体中文语言文件失败,改用最小兜底语言文件: $_"
+          }
+          $hasChineseLanguageFile = (Test-Path $chineseLanguageFile) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern '^\[LangOptions\]' -Quiet) `
+            -and (Select-String -Path $chineseLanguageFile -Pattern 'LanguageID=\$0804' -Quiet)
+          if (-not $hasChineseLanguageFile) {
+            @(
+              "[LangOptions]"
+              "LanguageName=简体中文"
+              "LanguageID=`$0804"
+              "LanguageCodePage=936"
+            ) | Set-Content -Path $chineseLanguageFile -Encoding utf8
+          }
+          $iss = @"
+          [Setup]
+          AppName=KitonyTerms
+          AppVersion=$appVersion
+          DefaultDirName={autopf}\KitonyTerms
+          DefaultGroupName=KitonyTerms
+          LanguageDetectionMethod=uilanguage
+          UninstallDisplayName=KitonyTerms
+          UninstallDisplayIcon={app}\kitonyterms.exe
+          SetupIconFile=crates\kt-app\assets\windows\kitonyterms.ico
+          OutputDir=dist
+          OutputBaseFilename=$base-setup
+          Compression=lzma2
+          SolidCompression=yes
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl,installer-languages\ChineseSimplified.isl"
+          [CustomMessages]
+          english.LaunchProgram=Launch KitonyTerms
+          chinesesimplified.LaunchProgram=启动 KitonyTerms
+          [Files]
+          Source: "staging\kitonyterms.exe"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{group}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          Name: "{autodesktop}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
+          [Run]
+          Filename: "{app}\kitonyterms.exe"; Description: "{cm:LaunchProgram}"; Flags: nowait postinstall skipifsilent
+          "@
+          $iss | Out-File -FilePath app.iss -Encoding utf8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc app.iss
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+
+  mobile_android:
+    name: build android-aarch64
+    needs: allocate_mobile_build_number
+    runs-on: ubuntu-22.04
+    environment: mobile-signing
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          license_input="$(mktemp)"
+          for _ in {1..64}; do
+            printf 'y\n' >> "$license_input"
+          done
+          sdkmanager --licenses < "$license_input"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-android-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build signed Android APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_CERT_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
+        run: .github/scripts/package-android-apk.sh
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-aarch64
+          path: dist/
+          if-no-files-found: error
+
+  mobile_ios:
+    name: build ios-aarch64 unsigned IPA
+    needs: allocate_mobile_build_number
+    runs-on: macos-14
+    env:
+      MOBILE_VERSION_LABEL: ${{ needs.allocate_mobile_build_number.outputs.version_label }}
+      MOBILE_MARKETING_VERSION: ${{ needs.allocate_mobile_build_number.outputs.marketing_version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.allocate_mobile_build_number.outputs.build_number }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mobile-ios-aarch64
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+
+      - name: Build unsigned iOS IPA
+        shell: bash
+        run: .github/scripts/package-ios-ipa.sh
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-aarch64
+          path: dist/
+          if-no-files-found: error
+
+  # 汇总所有平台产物,更新固定的 Alpha 滚动预发布。
+  publish:
+    name: publish alpha prerelease
+    needs: [audit, build, mobile_android, mobile_ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      # 先把完整资产上传到不可见草稿，避免覆盖公开 Alpha 时留下半套资产。
+      - name: Stage Alpha prerelease
+        id: stage_alpha
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
+          name: Alpha
+          draft: true
+          prerelease: true
+          make_latest: false
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            这是最新开发版本(滚动更新),对应提交 `${{ github.sha }}`(分支 `${{ github.ref_name }}`)。
+            仅供尝鲜与测试,稳定性不作保证,正式版请见 tag 版本 Release。
+
+            ## 安装说明 / Installation notes
+
+            ### macOS
+            应用未经 Apple 公证,首次打开会提示「已损坏」或「无法打开」。这属正常现象,执行一次以下命令移除隔离属性即可:
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/KitonyTerms.app
+            ```
+
+            或前往「系统设置 → 隐私与安全性」,在被拦截提示处点击「仍要打开」。
+
+            ### Windows
+            安装包未做代码签名,SmartScreen 可能提示「Windows 已保护你的电脑」。点击「更多信息 → 仍要运行」即可。
+
+            ### Android
+            APK 使用固定发布证书签名并采用递增内部版本号，可直接覆盖安装旧版 KitonyTerms。
+
+            ### iOS
+            IPA 未签名，不能直接安装。请使用自己的 Apple 账号/证书与 provisioning profile 重签；后续覆盖更新时需保持同一 Team/application identifier、Bundle ID 与兼容 Entitlements，并使用不低于已安装包的版本和 build number。
+
+      - name: Switch rolling Alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE_ID: ${{ steps.stage_alpha.outputs.id }}
+          STAGING_TAG: alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}
+        run: .github/scripts/publish-alpha.sh
