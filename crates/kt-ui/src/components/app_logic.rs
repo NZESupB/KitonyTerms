@@ -6,7 +6,6 @@ use kt_config::{lookup_ssh_config, normalize_group_name, ConnectParams, SessionP
 use kt_core::term::GridSnapshot;
 use kt_core::{AuthChallenge, PtySize, SessionId, SftpEntry};
 
-use crate::i18n::AppText;
 use crate::state::SessionState;
 
 pub const DEFAULT_GROUP_NAME: &str = "NoBrand";
@@ -54,12 +53,6 @@ pub struct ActiveMonitorView {
     pub loading: bool,
     pub error: Option<String>,
     pub has_sample: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusBarSessionView {
-    pub title: String,
-    pub status: SessionConnectionStatus,
 }
 
 pub type AuthChallengeView = (SessionId, String, AuthChallenge);
@@ -146,26 +139,6 @@ pub fn session_dot_class_for_status(status: SessionConnectionStatus) -> &'static
     }
 }
 
-pub fn session_status_pill_class(status: SessionConnectionStatus) -> &'static str {
-    match status {
-        SessionConnectionStatus::Connected => "status-pill connected",
-        SessionConnectionStatus::Authenticating
-        | SessionConnectionStatus::HostKeyPending
-        | SessionConnectionStatus::Disconnected
-        | SessionConnectionStatus::Connecting => "status-pill pending",
-    }
-}
-
-pub fn session_status_label(status: SessionConnectionStatus, text: &AppText) -> &'static str {
-    match status {
-        SessionConnectionStatus::Connected => text.connected,
-        SessionConnectionStatus::Authenticating => text.authenticating,
-        SessionConnectionStatus::HostKeyPending => text.host_key_pending,
-        SessionConnectionStatus::Disconnected => text.disconnected,
-        SessionConnectionStatus::Connecting => text.connecting,
-    }
-}
-
 pub fn active_session(
     sessions: &[SessionState],
     active_id: Option<SessionId>,
@@ -213,13 +186,6 @@ pub fn active_monitor_view(active: Option<&SessionState>) -> Option<ActiveMonito
         loading: sess.monitor_loading,
         error: sess.monitor_error.clone(),
         has_sample: sess.monitor.is_some(),
-    })
-}
-
-pub fn status_bar_session_view(active: Option<&SessionState>) -> Option<StatusBarSessionView> {
-    active.map(|sess| StatusBarSessionView {
-        title: sess.title.clone(),
-        status: session_connection_status(sess),
     })
 }
 
@@ -385,10 +351,6 @@ mod tests {
             SessionConnectionStatus::Connected
         );
         assert_eq!(session_dot_class(&state), "status-dot online");
-        assert_eq!(
-            session_status_pill_class(SessionConnectionStatus::Connected),
-            "status-pill connected"
-        );
     }
 
     #[test]
@@ -422,7 +384,6 @@ mod tests {
         let tabs = session_tab_views(&sessions);
         let sftp = active_sftp_view(Some(active)).unwrap();
         let monitor = active_monitor_view(Some(active)).unwrap();
-        let status = status_bar_session_view(Some(active)).unwrap();
 
         assert_eq!(tabs[0].status, SessionConnectionStatus::Connected);
         assert_eq!(sftp.session_id, SessionId(7));
@@ -434,8 +395,6 @@ mod tests {
         assert!(monitor.loading);
         assert_eq!(monitor.error.as_deref(), Some("监控启动失败"));
         assert!(!monitor.has_sample);
-        assert_eq!(status.title, "Web Server 01");
-        assert_eq!(status.status, SessionConnectionStatus::Connected);
     }
 
     #[test]

@@ -26,6 +26,7 @@
 - 移动端使用 Dioxus 0.7.9，`Dioxus.toml` 固定 Android application ID 与 iOS Bundle ID 为 `com.kitonyterms.app`；Android 配置与 vault 必须位于应用私有 `files/config`、`files/data`，不得回退到依赖 `$HOME` 的桌面路径。
 - 移动端/SFTP 体验：SFTP 跟随终端目录后路径输入框必须同步；监控固定收敛在底栏五项紧凑视图，阻断性状态使用右下角浮层，Android/iOS 竖屏沿用 safe-area 纵向布局。
 - 桌面顶栏布局：会话标签属于应用顶栏且保持紧凑固定宽度并隐藏滚动条，左侧服务器/SFTP 区可由顶栏折叠并随时恢复且使用宽度过渡，设置只保留顶栏带文字入口；分屏从终端右键菜单进入；顶栏和带 `title` 的图标使用即时 CSS tooltip。
+- UI 体验修正：终端保留可横向查看长日志的宽度并支持历史视口方向键/横向滚轮，SFTP 外部编辑回传框改为不透明样式，外部编辑通知自动消退，桌面品牌和底部连接状态文本移除。
 
 ## 测试与验证要求
 

@@ -118,18 +118,6 @@ button:disabled {
     color: var(--text);
 }
 
-.desktop-titlebar-brand {
-    display: inline-flex;
-    min-width: 0;
-    align-items: center;
-    gap: 8px;
-    flex: 0 0 auto;
-    padding: 0 9px 0 7px;
-    color: var(--text);
-    font-size: 13px;
-    letter-spacing: 0;
-}
-
 .desktop-session-tabs {
     display: flex;
     min-width: 0;
@@ -278,11 +266,6 @@ button[title]:hover::after,
 button[title]:focus-visible::after {
     opacity: 1;
     transform: translate(-50%, 0);
-}
-
-.desktop-titlebar-brand .kt-icon {
-    color: var(--blue);
-    font-size: 15px;
 }
 
 .desktop-titlebar-controls {
@@ -543,6 +526,14 @@ button[title]:focus-visible::after {
 
 .kt-window.theme-light .settings-overlay {
     background: rgba(15, 23, 42, 0.22);
+}
+
+.kt-window.theme-light .external-edit-overlay {
+    background: rgba(15, 23, 42, 0.48);
+}
+
+.kt-window.theme-light .settings-panel.external-edit-dialog {
+    background: #ffffff;
 }
 
 /* 连接对话框亮色覆盖：输入/下拉/选项卡随主题切换 */
@@ -1376,8 +1367,16 @@ button[title]:focus-visible::after {
     color: rgba(120, 152, 190, 0.7);
 }
 
+.terminal-screen {
+    width: max-content;
+    min-width: 100%;
+    min-height: 100%;
+}
+
 .terminal-row {
     display: block;
+    width: max-content;
+    min-width: 100%;
     height: var(--terminal-row-height);
     line-height: var(--terminal-row-height);
     white-space: pre;
@@ -1851,7 +1850,10 @@ button[title]:focus-visible::after {
     right: calc(16px + env(safe-area-inset-right, 0px));
     bottom: calc(74px + env(safe-area-inset-bottom, 0px));
     max-width: min(420px, calc(100vw - 32px));
-    padding: 9px 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 9px 9px 12px;
     border: 1px solid rgba(116, 179, 255, 0.36);
     border-radius: 6px;
     background: rgba(17, 27, 39, 0.96);
@@ -1859,27 +1861,27 @@ button[title]:focus-visible::after {
     color: #e7effa;
     font-size: 12px;
     line-height: 1.4;
-    pointer-events: none;
+    pointer-events: auto;
 }
 
-.status-pill {
-    display: inline-flex;
-    height: 22px;
-    align-items: center;
-    padding: 0 10px;
-    border-radius: 999px;
-    font-weight: 700;
-    font-size: 12px;
+.status-notification > span {
+    min-width: 0;
+    flex: 1;
 }
 
-.status-pill.connected {
-    background: rgba(87, 210, 139, 0.16);
-    color: #93ecb8;
+.status-notification-close {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    border-radius: 5px;
+    background: transparent;
+    color: #b7c6d8;
+    cursor: pointer;
 }
 
-.status-pill.pending {
-    background: rgba(242, 184, 91, 0.16);
-    color: #ffd28a;
+.status-notification-close:hover {
+    background: rgba(148, 163, 184, 0.16);
+    color: #f8fbff;
 }
 
 .status-separator {
@@ -2229,6 +2231,11 @@ button[title]:focus-visible::after {
 
 .external-edit-dialog {
     width: min(520px, 100%);
+    background: #111822;
+}
+
+.external-edit-overlay {
+    background: rgba(2, 6, 12, 0.78);
 }
 
 .external-edit-dialog-body {
@@ -2481,23 +2488,23 @@ button[title]:focus-visible::after {
     min-height: 32px;
     padding: 0 12px;
     border-radius: 7px;
-    background: rgba(148, 163, 184, 0.14);
+    background: #263445;
     color: #dce7f6;
     cursor: pointer;
     font-size: 12px;
 }
 
 .external-edit-dialog-actions button:hover {
-    background: rgba(148, 163, 184, 0.22);
+    background: #33465d;
 }
 
 .external-edit-dialog-actions button.primary {
-    background: rgba(90, 167, 255, 0.28);
+    background: #23649c;
     color: #f8fbff;
 }
 
 .external-edit-dialog-actions button.primary:hover {
-    background: rgba(90, 167, 255, 0.38);
+    background: #2d7bbd;
 }
 
 /* ========== 设置面板 ========== */
@@ -2825,10 +2832,6 @@ button[title]:focus-visible::after {
         flex-basis: 52px;
         gap: 8px;
         padding: 3px 8px;
-    }
-
-    .status-bar > span:not(.status-pill) {
-        display: none;
     }
 
     .status-monitor {

@@ -69,11 +69,6 @@ pub(super) fn DesktopTitlebar(
                 Icon { name: sidebar_icon }
             }
 
-            div { class: "desktop-titlebar-brand",
-                Icon { name: "sessions" }
-                span { "KitonyTerms" }
-            }
-
             div {
                 class: "desktop-session-tabs",
                 onmousedown: move |event| event.stop_propagation(),

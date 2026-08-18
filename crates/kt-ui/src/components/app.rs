@@ -3,7 +3,9 @@
 //! 这里保留全局状态、弹窗和跨模块副作用编排；主工作台布局由 `main_shell` 承接。
 
 use std::{
+    cell::Cell,
     collections::BTreeSet,
+    rc::Rc,
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -13,8 +15,7 @@ use kt_core::{AuthChallenge, AuthResponse, SessionId, SessionManager, SftpReques
 
 use crate::components::app_logic::{
     active_monitor_view, active_session, active_sftp_view, active_terminal_view,
-    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views,
-    status_bar_session_view, DEFAULT_GROUP_NAME,
+    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views, DEFAULT_GROUP_NAME,
 };
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
 use crate::components::dialog::{
@@ -243,6 +244,29 @@ pub fn App() -> Element {
         }),
     );
 
+    // 外部编辑反馈属于短时通知；用代号避免旧的定时器清掉后续新通知。
+    let external_edit_notice_generation = use_hook(|| Rc::new(Cell::new(0u64)));
+    use_effect({
+        let generation = external_edit_notice_generation.clone();
+        move || {
+            let Some(notice) = external_edit_notice() else {
+                return;
+            };
+            let next_generation = generation.get().wrapping_add(1);
+            generation.set(next_generation);
+            let mut notice_signal = external_edit_notice;
+            let generation = generation.clone();
+            spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+                if generation.get() == next_generation
+                    && notice_signal.peek().as_deref() == Some(notice.as_str())
+                {
+                    notice_signal.set(None);
+                }
+            });
+        }
+    });
+
     use_effect({
         let store = Arc::clone(store);
         move || {
@@ -300,7 +324,6 @@ pub fn App() -> Element {
     let active_terminal = active_terminal_view(active_session_ref);
     let active_sftp = active_sftp_view(active_session_ref);
     let active_monitor = active_monitor_view(active_session_ref);
-    let status_session = status_bar_session_view(active_session_ref);
     let external_edit_status = external_edit_status_text(
         &external_edits(),
         active_status_session.as_ref(),
@@ -357,9 +380,16 @@ pub fn App() -> Element {
                 active_terminal,
                 active_sftp,
                 active_monitor,
-                status_session,
                 session_tabs,
                 status_detail: status_detail.clone(),
+                on_status_dismiss: {
+                    let mut external_edit_notice = external_edit_notice;
+                    let mut status_notice = status_notice;
+                    Callback::new(move |_| {
+                        external_edit_notice.set(None);
+                        status_notice.set(None);
+                    })
+                },
                 on_settings_open: {
                     let mut show_settings = show_settings;
                     Callback::new(move |_| show_settings.set(true))

@@ -639,7 +639,7 @@ pub fn ExternalEditSaveDialog(
 
     rsx! {
         div {
-            class: "settings-overlay",
+            class: "settings-overlay external-edit-overlay",
 
             section {
                 class: "settings-panel external-edit-dialog",

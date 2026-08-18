@@ -24,9 +24,10 @@ use status_bar::{render_status_bar, StatusBarArgs};
 use workbench_panel::{render_workbench_panel, WorkbenchPanelArgs};
 
 use crate::components::app_logic::{
-    ActiveMonitorView, ActiveSftpView, ActiveTerminalView, SessionTabView, StatusBarSessionView,
+    ActiveMonitorView, ActiveSftpView, ActiveTerminalView, SessionTabView,
 };
 use crate::components::dialog::first_public_key_path;
+use crate::components::icons::Icon;
 use crate::components::sidebar::{ContextMenuState, SftpEntryContext};
 use crate::i18n::{texts, AppText};
 use crate::state::AppState;
@@ -134,9 +135,9 @@ pub struct MainShellArgs {
     pub active_terminal: Option<ActiveTerminalView>,
     pub active_sftp: Option<ActiveSftpView>,
     pub active_monitor: Option<ActiveMonitorView>,
-    pub status_session: Option<StatusBarSessionView>,
     pub session_tabs: Vec<SessionTabView>,
     pub status_detail: Option<String>,
+    pub on_status_dismiss: Callback<()>,
     pub on_settings_open: Callback<()>,
     pub show_dialog: Signal<bool>,
     pub dialog_mode: Signal<String>,
@@ -253,9 +254,9 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         active_terminal,
         active_sftp,
         active_monitor,
-        status_session,
         session_tabs,
         status_detail,
+        on_status_dismiss,
         on_settings_open,
         show_dialog,
         dialog_mode,
@@ -424,7 +425,6 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
 
         {render_status_bar(StatusBarArgs {
             language,
-            status_session,
             active_monitor,
         })}
 
@@ -432,7 +432,17 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
             aside {
                 class: "status-notification",
                 role: "status",
-                "{status}"
+                span { "{status}" }
+                button {
+                    class: "status-notification-close tooltip-trigger",
+                    "data-tooltip": "{t.close}",
+                    aria_label: "{t.close}",
+                    onclick: move |event| {
+                        event.stop_propagation();
+                        on_status_dismiss.call(());
+                    },
+                    Icon { name: "close" }
+                }
             }
         }
     }
