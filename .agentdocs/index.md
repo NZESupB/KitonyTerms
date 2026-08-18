@@ -13,6 +13,8 @@
 
 ## 已归档完成任务摘要
 
+- 终端与文件管理目录双向同步重构(`260818-shell-cwd-sync`)：终端→文件管理改为「每连接一次的 shell 集成注入 + 输入推断兜底」，注入期用静默窗口做到终端完全不可见；文件管理→终端收敛到唯一写入点并加 Ctrl+U 清行、回显自擦除、备用屏拒绝；开关持久化到 `AppSettings.sftp_auto_sync`。
+- 窗口交互与 SFTP 自动同步：侧栏折叠按钮居中并使用缓动动画；桌面设置遮罩保留标题栏拖动；文件管理加入会话级自动同步的早期版本（仅单向可用，已被上一条取代）。
 - 稳定连接基线：补齐连接、会话生命周期与错误收敛的早期方案。
 - 连接、SFTP 同步与一体化顶栏：core 按内部代次回收自然结束任务；断开会话可直接重连并清除运行时残留；SFTP 主动以 OSC 7 同步 `$PWD`；桌面端改为应用内窗口控制，不再创建系统标题栏或原生菜单；macOS 控制置左，终端 CJK 双宽字符按两列渲染。
 - README 第四阶段：同步功能里程碑、README 状态与功能声明。
@@ -44,7 +46,10 @@
 - Store 启动时自动打开或创建应用托管加密 vault；当前安装会生成独立 `secrets.vault.key` 作为本机自动密码库密钥，旧固定密钥 vault 会原地迁移，旧主密码 vault 无法自动打开时备份为 `secrets.vault.legacy*` 后重建新 vault。
 - Monitor 延迟优先 TCP connect 当前 SSH `host:port`，失败时回退 SSH 心跳；UI 中延迟合并到网络标题展示并用颜色分级提示高延迟。
 - SSH 支持 TCP 级代理（`kt_config::ProxyConfig`：Direct/System/Socks5/Http）：`crates/kt-core/src/ssh/proxy.rs` 经代理建立到目标的 `TcpStream` 后交给 `russh::client::connect_stream` 握手，`connect_direct` 统一分派，`Direct`/System 未解析出代理时回退直连。System 读取 `ALL_PROXY/HTTPS_PROXY/HTTP_PROXY/SOCKS_PROXY`（大小写各一），只接受 `socks5/socks5h/socks/http` scheme；`https://` proxy 与未知 scheme 明确失败，HTTP CONNECT 的 IPv6 authority 使用 `[host]:port`。代理与 ProxyJump 组合时代理仅作用于最外层 TCP，目标段走 direct-tcpip。代理凭证不接入 vault，仅以 username+空密码尝试认证。
-- 终端当前工作目录通过 OSC 7 获取：`session.rs::parse_osc7_cwd` 扫描 PTY 原始字节解析 `ESC]7;file://host/path`，发 `FromCore::Cwd` 写入 `SessionState.terminal_cwd`。SFTP「跟随终端目录」会主动输入 `printf '\033]7;file://localhost%s\007' "$PWD"` 获取当前目录，等待回传时禁用重复操作并在 5 秒后展示错误；反向的 SFTP→终端用 `sidebar.rs::cd_command_for_path` 生成单引号安全的 `cd` 命令，并在成功后输出同一 OSC 7 回传新目录。
+- 终端与文件管理的目录同步按可靠性分层，开关持久化在 `AppSettings.sftp_auto_sync`。**终端→文件管理**：首选每连接一次的 shell 集成注入（`ToCore::SetupShellIntegration` → `kt_core::shell_integration::BOOTSTRAP_COMMAND`），让远端 shell 自己在每次 prompt 前发 OSC 7，此后跟随过程零命令；注入期间 core 用 `QuietWindow` 把远端回包只喂 OSC 7 扫描器、不喂 `TermEngine`，所以注入在终端上完全不可见。注入失效（`sudo -i`、`su`、`docker exec`、受限 shell）时退回 UI 输入推断，只识别 `cd <path>` / `cd` / `cd ~` / `cd ~/x` / `cd -` / `pushd <path>` / `popd`，依赖 `remote_home`（首个 `.` 列表 canonicalize 得到）、`terminal_prev_cwd`、`terminal_dir_stack`；别名、函数、脚本、子 shell、`~user`、失败命令一律不猜。**文件管理→终端**：SSH 改不了运行中 shell 的 cwd，只能写 PTY，全部经 `AppState::send_terminal_cd` 这一个写入点，命令为 `Ctrl+U` + 前导空格 + 前置 `printf '\033[A\r\033[J'` 擦除回显 + 单引号转义的 `cd --`；擦除必须排在 `cd` 前面，`cd` 失败的报错才可见。
+- 注入命令必须**追加**而不是覆盖用户的 `PROMPT_COMMAND`（含 bash 5.1+ 数组形态）、`precmd_functions`、`HISTCONTROL`；zsh 专用语法要包在 `eval` 里，否则 dash 会整行解析失败。改这段命令后必须跑 `cargo test -p kt-core shell_integration`——那里用本机 `sh/bash/zsh/dash/ksh` 做真实语法与行为校验，纯字符串断言挡不住这类失效。
+- 任何向 PTY 写 shell 命令的功能都必须先检查 `GridSnapshot.alt_screen`：终端在跑 vim/top/less 时写入会被那个程序当按键吃掉。手动同步按钮报 `TerminalCdBlocked::AltScreen`（走 i18n），后台自动同步静默跳过、不打断用户。
+- 已知限制：远端路径含形如 `%3A` 的合法百分号转义时，OSC 7 解码会误还原（多数 shell 不做 URL 编码，而 fish 会）。后果只是 SFTP 跟随到错误路径并显示列表失败，不涉及安全。
 - SFTP 外部编辑支持自定义编辑器：`AppSettings.default_editor`（默认编辑器命令，`{file}` 占位）与 `AppSettings.editors: Vec<EditorEntry>`（右键"打开方式"列表）。`external_edit.rs::open_local_file_with` + `build_editor_command` 解析命令模板，`ExternalEdit.editor_command` 贯穿下载→打开链路，缺省回退系统默认程序。设置 UI 用 `external_edit.rs::detect_editors`（PATH + macOS `.app` bundle + Linux/Windows 候选，按名去重）与 `env_editor_command`（`$VISUAL`/`$EDITOR`）下拉选择编辑器，不再让用户手填命令；既有非空命令以「自定义」option 保留不丢失。
 - SFTP 外部编辑临时目录应保持本机私有权限；Unix 下目录使用 `0700`，下载目标文件使用 `0600`。
 - 所有 SFTP 请求由 UI 分配 `SftpRequestId`；请求级 Listing/Progress/Done/Error 必须携带并按 ID 消费，Stopped/Closed 保持会话级语义。迟到列表和旧超时不得覆盖或终止新请求，同路径外部编辑任务不得按 path/op 猜测关联。

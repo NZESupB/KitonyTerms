@@ -32,6 +32,11 @@ pub fn SettingsPanel(
     let t = texts(language).app;
     let theme = settings.theme.clone();
     let selected_theme = normalize_theme_name(&theme);
+    let overlay_class = if cfg!(any(target_os = "android", target_os = "ios")) {
+        "settings-overlay app-settings-overlay is-mobile"
+    } else {
+        "settings-overlay app-settings-overlay is-desktop"
+    };
 
     let default_editor_value = settings.default_editor.clone().unwrap_or_default();
     let detected_list = detected_editors();
@@ -51,11 +56,11 @@ pub fn SettingsPanel(
 
     rsx! {
         div {
-            class: "settings-overlay",
+            class: overlay_class,
             onclick: move |_| show.set(false),
 
             section {
-                class: "settings-panel",
+                class: "settings-panel app-settings-panel",
                 onclick: move |evt| evt.stop_propagation(),
 
                 div {

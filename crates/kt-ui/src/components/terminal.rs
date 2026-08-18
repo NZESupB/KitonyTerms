@@ -289,11 +289,8 @@ pub fn Terminal(
                     TerminalKeyAction::Input(data) => {
                         evt.prevent_default();
                         tracing::debug!("发送终端输入: {} bytes", data.len());
-                        if let Ok(app_state) = state_for_input.lock() {
-                            app_state.manager.send(ToCore::Input {
-                                id: session_id,
-                                data,
-                            });
+                        if let Ok(mut app_state) = state_for_input.lock() {
+                            app_state.send_terminal_input(session_id, data);
                         }
                     }
                     TerminalKeyAction::Ignore => {}
@@ -652,11 +649,8 @@ fn send_terminal_text(state: Arc<Mutex<AppState>>, session_id: SessionId, text: 
         return;
     }
 
-    if let Ok(app_state) = state.lock() {
-        app_state.manager.send(ToCore::Input {
-            id: session_id,
-            data,
-        });
+    if let Ok(mut app_state) = state.lock() {
+        app_state.send_terminal_input(session_id, data);
     }
 }
 
@@ -1237,6 +1231,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![false, false],
+            alt_screen: false,
         };
 
         let first = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1276,6 +1271,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![true, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1321,6 +1317,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![false, false, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1350,6 +1347,7 @@ mod tests {
             display_offset: 5,
             history_size: 0,
             wrapped: vec![false, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);

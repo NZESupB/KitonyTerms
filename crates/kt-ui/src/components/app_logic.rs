@@ -44,7 +44,7 @@ pub struct ActiveSftpView {
     pub entries: Vec<SftpEntry>,
     pub loading: bool,
     pub error: Option<String>,
-    pub syncing_terminal_directory: bool,
+    pub auto_sync: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,7 +80,13 @@ pub fn group_profiles(
     map.into_iter().collect()
 }
 
-pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> SessionState {
+/// 由服务器配置初始化会话 UI 状态。`auto_sync` 来自持久化的 `AppSettings`，
+/// 让用户只需勾选一次目录自动同步，而不是每个新会话都重新勾。
+pub fn session_state_from_profile(
+    id: SessionId,
+    profile: &SessionProfile,
+    auto_sync: bool,
+) -> SessionState {
     SessionState {
         id,
         title: profile.name.clone(),
@@ -103,7 +109,16 @@ pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Se
         sftp_failures: std::collections::VecDeque::new(),
         sftp_progress: None,
         terminal_cwd: None,
-        terminal_cwd_sync_pending: false,
+        terminal_cwd_inference_target: None,
+        terminal_prev_cwd: None,
+        terminal_dir_stack: Vec::new(),
+        terminal_input_buffer: Vec::new(),
+        terminal_input_invalid: false,
+        sftp_auto_sync: auto_sync,
+        shell_integration_requested: false,
+        remote_home: None,
+        sftp_followed_terminal_cwd: None,
+        sftp_terminal_sync_request: None,
         monitor: None,
         monitor_loading: false,
         monitor_error: None,
@@ -176,7 +191,7 @@ pub fn active_sftp_view(active: Option<&SessionState>) -> Option<ActiveSftpView>
         entries: sess.sftp_entries.clone(),
         loading: sess.sftp_loading,
         error: sess.sftp_error.clone(),
-        syncing_terminal_directory: sess.terminal_cwd_sync_pending,
+        auto_sync: sess.sftp_auto_sync,
     })
 }
 
@@ -287,7 +302,7 @@ mod tests {
             },
         };
 
-        let state = session_state_from_profile(SessionId(7), &profile);
+        let state = session_state_from_profile(SessionId(7), &profile, false);
 
         assert_eq!(state.id, SessionId(7));
         assert_eq!(state.title, "Web Server 01");
@@ -309,7 +324,7 @@ mod tests {
             group: None,
             params: ConnectParams::new("10.0.1.10", "root"),
         };
-        let mut state = session_state_from_profile(SessionId(7), &profile);
+        let mut state = session_state_from_profile(SessionId(7), &profile, false);
 
         assert_eq!(
             session_connection_status(&state),
@@ -360,11 +375,12 @@ mod tests {
             group: None,
             params: ConnectParams::new("10.0.1.10", "root"),
         };
-        let mut state = session_state_from_profile(SessionId(7), &profile);
+        let mut state = session_state_from_profile(SessionId(7), &profile, false);
         state.connected = true;
         state.sftp_path = "/var/log".to_string();
         state.sftp_loading = true;
         state.sftp_error = Some("读取失败".to_string());
+        state.sftp_auto_sync = true;
         state.sftp_entries = vec![SftpEntry {
             name: "system.log".to_string(),
             is_dir: false,
@@ -390,6 +406,7 @@ mod tests {
         assert_eq!(sftp.path, "/var/log");
         assert!(sftp.loading);
         assert_eq!(sftp.error.as_deref(), Some("读取失败"));
+        assert!(sftp.auto_sync);
         assert_eq!(sftp.entries[0].name, "system.log");
         assert_eq!(monitor.session_id, SessionId(7));
         assert!(monitor.loading);
@@ -409,8 +426,8 @@ mod tests {
             group: None,
             params: ConnectParams::new("b.test", "root"),
         };
-        let mut a = session_state_from_profile(SessionId(1), &first);
-        let mut b = session_state_from_profile(SessionId(2), &second);
+        let mut a = session_state_from_profile(SessionId(1), &first, false);
+        let mut b = session_state_from_profile(SessionId(2), &second, false);
         b.auth_challenge = Some(kt_core::AuthChallenge::Password {
             user: "root".to_string(),
             host: "b.test".to_string(),

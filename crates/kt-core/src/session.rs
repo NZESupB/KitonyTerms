@@ -15,13 +15,14 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::sync::{mpsc as std_mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
 use kt_config::ConnectParams;
 
 use crate::monitor::MonitorStats;
+use crate::shell_integration;
 use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
@@ -167,6 +168,9 @@ pub enum ToCore {
     /// 启动该会话的资源监控(首次惰性开启,之后持续到断开)。
     /// Start resource monitoring (lazy on first use, runs until disconnect).
     StartMonitor { id: SessionId },
+    /// 向远端交互 shell 注入一次工作目录上报 hook(每个连接只生效一次)。
+    /// Inject the CWD-reporting hook into the remote interactive shell (once per connection).
+    SetupShellIntegration { id: SessionId },
     /// Answer or cancel an authentication challenge.
     AuthResponse {
         id: SessionId,
@@ -217,6 +221,10 @@ impl fmt::Debug for ToCore {
                 .field("req", req)
                 .finish(),
             ToCore::StartMonitor { id } => f.debug_struct("StartMonitor").field("id", id).finish(),
+            ToCore::SetupShellIntegration { id } => f
+                .debug_struct("SetupShellIntegration")
+                .field("id", id)
+                .finish(),
             ToCore::AuthResponse { id, response } => f
                 .debug_struct("AuthResponse")
                 .field("id", id)
@@ -530,6 +538,17 @@ async fn core_loop(
                         .await;
                 }
             }
+            // Shell 集成是尽力而为的增强：UI 侧本就有输入推断兜底，注入失败既不
+            // 阻塞终端也不产生等待态，因此只记日志，不引入 FromCore 错误事件。
+            ToCore::SetupShellIntegration { id } => {
+                if let Some(h) = sessions.get(&id) {
+                    if h.cmd_tx.send(SessionCmd::SetupShellIntegration).is_err() {
+                        tracing::warn!("shell 集成注入无法投递，会话任务已结束: {:?}", id);
+                    }
+                } else {
+                    tracing::debug!("忽略已关闭会话的 shell 集成注入请求: {:?}", id);
+                }
+            }
             ToCore::AuthResponse { id, response } => {
                 if let Some(h) = sessions.get(&id) {
                     let _ = h.auth_response_tx.send(response);
@@ -567,6 +586,7 @@ enum SessionCmd {
         req: SftpRequest,
     },
     StartMonitor,
+    SetupShellIntegration,
     Disconnect,
 }
 
@@ -759,6 +779,12 @@ impl SessionTask {
         // 资源监控子任务是否已启动(惰性,首次请求时开启)。
         // Whether the monitor subtask has been started (lazy on first request).
         let mut monitor_started = false;
+
+        // Shell 集成 hook 每个连接只注入一次;注入期间用静默窗口吞掉命令回显与
+        // 随之重绘的 prompt,使这次注入在终端上完全不可见。
+        let mut shell_integration_sent = false;
+        let mut quiet = shell_integration::QuietWindow::default();
+
         let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<SessionInternal>();
 
         loop {
@@ -779,6 +805,11 @@ impl SessionTask {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(SessionCmd::Input(data)) => {
+                            // 用户开始输入时必须马上恢复回显，不能让注入的静默窗口
+                            // 把用户自己敲的内容也吞掉。
+                            if !data.is_empty() {
+                                quiet.end();
+                            }
                             // 用户在查看历史输出时开始输入，应立即回到当前命令行；
                             // 空输入不改变视口，也避免实时视图下每次按键产生额外渲染。
                             if prepare_terminal_for_input(&mut term, &data) {
@@ -937,6 +968,21 @@ impl SessionTask {
                                 }
                             }
                         }
+                        Some(SessionCmd::SetupShellIntegration) => {
+                            if shell_integration_sent {
+                                tracing::debug!("shell 集成已注入，跳过重复请求: {:?}", id);
+                            } else {
+                                shell_integration_sent = true;
+                                quiet.start(Instant::now());
+                                if let Err(e) = shell
+                                    .write(shell_integration::BOOTSTRAP_COMMAND.as_bytes())
+                                    .await
+                                {
+                                    close_error = Some(e.to_string());
+                                    break;
+                                }
+                            }
+                        }
                         Some(SessionCmd::Disconnect) | None => {
                             let _ = shell.disconnect().await;
                             break;
@@ -948,11 +994,17 @@ impl SessionTask {
                 msg = shell.next_message() => {
                     match msg {
                         Some(russh::ChannelMsg::Data { data }) => {
+                            // OSC 7 始终解析：注入的 hook 上报的第一个目录也在静默期内。
                             for path in osc7_scanner.feed(&data) {
                                 if last_cwd.as_deref() != Some(path.as_str()) {
                                     last_cwd = Some(path.clone());
                                     let _ = self.out.send(FromCore::Cwd { id, path }).await;
                                 }
+                            }
+                            // 静默期内的数据只用于解析目录，不进入终端引擎，注入命令的
+                            // 回显与重绘的 prompt 因此不会出现在终端里。
+                            if quiet.absorb(Instant::now()) {
+                                continue;
                             }
                             term.advance(&data);
                             let writes = handle_term_events(
@@ -968,6 +1020,9 @@ impl SessionTask {
                         }
                         Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
                             // stderr — feed it to the terminal too.
+                            if quiet.absorb(Instant::now()) {
+                                continue;
+                            }
                             term.advance(&data);
                             let writes = handle_term_events(
                                 self.id,
@@ -1212,6 +1267,29 @@ mod tests {
         assert_eq!(parse_osc7_cwd(seq), Some("/home/me/project".to_string()));
     }
 
+    /// `BOOTSTRAP_COMMAND` 注入的 hook 发出的正是省略 host 的 `file:///path`
+    /// 形式。这条路径一旦解析不了，shell 集成整个方向就静默失效。
+    #[test]
+    fn osc7_cwd_parsed_from_the_empty_host_form_emitted_by_our_bootstrap() {
+        assert_eq!(
+            parse_osc7_cwd(b"\x1b]7;file:///tmp\x07"),
+            Some("/tmp".to_string())
+        );
+        assert_eq!(
+            parse_osc7_cwd(b"\x1b]7;file:///usr/local\x07"),
+            Some("/usr/local".to_string())
+        );
+        assert_eq!(
+            parse_osc7_cwd(b"\x1b]7;file:///\x07"),
+            Some("/".to_string())
+        );
+        // 路径含空格时 shell 不做编码，载荷直到 BEL 才结束。
+        assert_eq!(
+            parse_osc7_cwd(b"\x1b]7;file:///srv/my logs\x07"),
+            Some("/srv/my logs".to_string())
+        );
+    }
+
     #[test]
     fn osc7_cwd_parsed_from_st_terminated_and_percent_decoded() {
         let seq = b"\x1b]7;file://h/tmp/a%20b\x1b\\";
@@ -1333,6 +1411,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![false],
+            alt_screen: false,
         })
     }
 

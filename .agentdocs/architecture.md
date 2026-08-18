@@ -12,7 +12,7 @@ kt-app (Dioxus desktop/mobile 入口) ──▶ kt-ui ──▶ kt-core ──�
 kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 ```
 
-- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`ProxyConfig`(Direct/System/Socks5/Http，TCP 层代理，独立于 SSH 跳板 `proxy_jump`)、`KnownHosts`、`SessionProfile`、`AppSettings`(含 language/font/theme/scrollback/cursor/use_ssh_config/trigger_highlights/default_editor/editors/show_line_numbers/show_timestamps)、`EditorEntry`(打开方式命令模板)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`、`kitonyterms.lock`)、`~/.ssh/config` 合并。Android 的 `Paths` 通过 JNI `Context.getFilesDir()` 使用应用私有 `files/config` 与 `files/data`，其他平台继续使用 `ProjectDirs`。`effective_vault_id()` = `user@host:port`。Config 与 KnownHosts 保存均使用同目录唯一临时文件原子替换，禁止固定临时文件名和原地截断。
+- **kt-config**:UI 无关、可序列化。`ConnectParams`(host/port/user/auth/vault_id/proxy_jump/proxy/forward_agent)、`AuthMethod`(Password/PublicKey/KeyboardInteractive/Agent)、`ProxyConfig`(Direct/System/Socks5/Http，TCP 层代理，独立于 SSH 跳板 `proxy_jump`)、`KnownHosts`、`SessionProfile`、`AppSettings`(含 language/font/theme/scrollback/cursor/use_ssh_config/trigger_highlights/default_editor/editors/show_line_numbers/show_timestamps/sftp_auto_sync)、`EditorEntry`(打开方式命令模板)、`Config`(TOML)、`Paths`(跨平台目录:`config.toml`、`secrets.vault`、`known_hosts.toml`、`kitonyterms.lock`)、`~/.ssh/config` 合并。Android 的 `Paths` 通过 JNI `Context.getFilesDir()` 使用应用私有 `files/config` 与 `files/data`，其他平台继续使用 `ProjectDirs`。`effective_vault_id()` = `user@host:port`。Config 与 KnownHosts 保存均使用同目录唯一临时文件原子替换，禁止固定临时文件名和原地截断。
 - **kt-secrets**:主密码加密 vault。Argon2id 派生密钥(每库随机盐)+ ChaCha20Poly1305。`Vault::create/open/set/get/remove/save`。UI Store 不暴露主密码流程，而是使用应用托管固定保护因子自动打开/创建本机 vault。
 - **kt-core**:SSH 连接、SFTP、终端引擎,见下。
 - **kt-ui**:Dioxus 组件库,持有主界面、终端、SFTP、监控、连接弹窗与 Store 桥接。
@@ -24,7 +24,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 `SessionManager` 持有一个多线程 tokio 运行时,每个会话一个 task。调用方(GUI / headless 示例)**只**通过两条 channel 通信:
 
-- `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,request_id,req}`、`StartMonitor{id}`、`AuthResponse{id,response}`、`Disconnect{id}`。
+- `ToCore`(UI→core):`Connect{id,params,pty}`、`Input{id,data}`、`Resize{id,cols,rows}`、`Scroll{id,delta}`、`Sftp{id,request_id,req}`、`StartMonitor{id}`、`SetupShellIntegration{id}`、`AuthResponse{id,response}`、`Disconnect{id}`。
 - `FromCore`(core→UI):`Connected`、`Render{snapshot}`、`Title`、`Cwd{path}`、`Bell`、`SftpListing{request_id,path,entries}`、`SftpProgress{request_id,name,transferred,total}`、`SftpDone{request_id,op,path}`、`SftpError{request_id,message}`、`SftpStopped`、`Monitor{stats}`、`MonitorStopped`、`MonitorError{message}`、`AuthChallenge{id,challenge}`、`HostKeyPending{id}`、`Closed{error}`。SFTP 请求级事件必须回传 UI 分配的 `SftpRequestId`；`SftpStopped` 与 `Closed` 保持会话级语义。`Cwd` 由 `session.rs` 扫描 PTY 原始字节解析 OSC 7(`ESC]7;file://host/path`)得到,写入 `SessionState.terminal_cwd`,供 SFTP「跟随终端目录」使用。
 
 要点:
@@ -34,7 +34,7 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - `SessionManager::try_recv` 会在 UI 接收侧合并 `Render` 事件:普通事件 FIFO 保留,同一 session 的多帧 `Render` 只保留最新 `GridSnapshot`。UI 应通过 `try_recv` 泵事件,不要绕过 manager 直接消费 core 输出通道。
 - core→UI 普通事件使用有界通道的 async `send().await` 形成背压;`Render` 使用 `try_send`,队列满时允许丢弃当前帧,因为下一帧会覆盖显示状态。
 - **扩展能力的标准做法**:加 `ToCore`/`FromCore` 变体 + `SessionCmd` 变体 + `core_loop` 路由 + `SessionTask` 处理。新增 `FromCore` 变体后,记得给 UI 的 `pump_core_events`(穷举匹配)和 headless 示例(有 `Some(_)=>{}` 兜底)补齐。
-- **辅助能力闭环原则**:SFTP、Monitor 等辅助能力必须在成功、失败、超时或会话关闭时收敛;core 路由失败和子通道打开失败要返回对应 `*Error` 事件,子任务正常停止返回 `*Stopped` 事件,UI state 保存 `loading/error/data`。
+- **辅助能力闭环原则**:SFTP、Monitor 等辅助能力必须在成功、失败、超时或会话关闭时收敛;core 路由失败和子通道打开失败要返回对应 `*Error` 事件,子任务正常停止返回 `*Stopped` 事件,UI state 保存 `loading/error/data`。唯一例外是 `SetupShellIntegration`:它没有 loading/pending 状态,失效时 UI 侧的输入推断兜底仍然工作,因此路由失败只记日志,不新增 `FromCore` 错误事件,以免把尽力而为的增强写成用户可见故障。
 - **SSH 建连闭环原则**:初始连接不能只给 TCP/握手设超时,完整 `connect→auth→request_pty→request_shell` 链路必须有总超时;失败或超时必须返回 `Closed{error}`,不得让 UI 长期停留在连接中。
 - `AuthProvider`(密码/口令/keyboard-interactive)由工厂按会话创建;session 层会用 `InteractiveAuthProvider` 包装 GUI provider。GUI provider 先读 vault 中已有密码或 `key:{key_path}` 私钥口令;缺失时 core 发 `AuthChallenge` 给 UI,UI 弹窗采集后用 `AuthResponse` 回传。认证等待期间 `SessionState.auth_challenge` 非空,状态栏显示“等待认证”。同步等待认证答案必须放入 Tokio `block_in_place`，避免多个认证弹窗耗尽 runtime worker；认证答案仍通过独立响应通道回到认证流程,不要混入终端 `Input`。
 
@@ -62,11 +62,23 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - `SftpEntry`(name/is_dir/size/modified/permissions/user/group/uid/gid)是 core 内中立类型,**不向 UI 暴露** russh-sftp 类型。
 - 依赖:`russh-sftp`(传输无关,基于流);`tokio` 启用 `fs` 特性用于本地异步文件。
 
-## kt-core:终端引擎
+## kt-core:shell 集成(终端目录上报)
+
+文件:[crates/kt-core/src/shell_integration.rs](../crates/kt-core/src/shell_integration.rs)
+
+SSH 协议既读不到也改不了一个已在运行的交互 shell 的工作目录。要让「终端里切目录 → 文件管理跟随」实时可靠,唯一可行的做法是让远端 shell 自己在每次 prompt 前发 OSC 7,而 Debian/Ubuntu/RHEL 的默认 bash 与 Linux 上的 zsh 都不发。
+
+- `BOOTSTRAP_COMMAND` 是每个连接注入一次的常量命令:定义 `__kt_cwd` 用 `printf '%s'` **传参**上报 `$PWD`(路径里的 `%` 不会被当成格式说明符),bash 侧按标量/数组两种形态前置追加到 `PROMPT_COMMAND`,zsh 侧追加 `precmd_functions`,并给 `HISTCONTROL`/`hist_ignore_space` 追加 ignorespace。**一律追加,不得覆盖用户配置**;zsh 专用的 `+=(...)`、`setopt` 必须留在 `eval` 里,否则 dash 之类会整行解析失败。改动这段命令后必须跑 `shell_integration` 的 shell 执行测试(用本机 `sh/bash/zsh/dash/ksh` 做真实语法与行为校验)。
+- `change_directory_command` 构造文件管理→终端方向的 `cd`:前置 `\x15`(Ctrl+U)清掉用户可能输入到一半的命令行,前导空格配合 ignorespace 不进 history,`printf '\033[A\r\033[J'` 擦除本行回显且**必须排在 `cd` 之前**,这样 `cd` 失败的报错落在被清除的位置上仍然可见。路径按 `'\''` 收敛单引号。
+- `QuietWindow` 是注入期间的静默窗口:`SessionTask` 在这段时间里把远端回包**只喂 OSC 7 扫描器、不喂 `TermEngine`**,注入命令的回显与随之重绘的 prompt 因此完全不进入终端快照。收敛条件是「连续 300ms 无数据」或硬上限 3 秒,判定发生在数据到达时(没有数据也就没有显示,不需要额外定时器分支);用户按键立即结束窗口,不能吞掉用户自己敲的内容。
+- 注入是**尽力而为的增强**:shell 不支持、被 `sudo -i`/`su`/`docker exec` 换掉进程、语法在受限 shell 下失败,都只会让这条路径失效并静默退回 UI 侧的输入推断,不产生用户可见错误。
+
+
 
 文件:`crates/kt-core/src/term/`(`mod.rs`/`color.rs`/`snapshot.rs`)
 
 - `TermEngine` 包装 `alacritty_terminal`,产出 `GridSnapshot`(行列单元格 + 光标 + 颜色),`advance(bytes)` 喂入输出,`resize/scroll`,`take_events()` 取 Bell/Title 等。
+- `GridSnapshot.alt_screen` 反映终端是否处于备用屏(vim/top/less)。任何向 PTY 写 shell 命令的功能都必须先看这个标志:备用屏下写入会被那个全屏程序当按键消费,既改不了目录还会破坏用户正在编辑的内容。
 - scrollback 方向契约：`ToCore::Scroll`/`TermEngine::scroll` 中正数表示进入历史，负数表示回到底部；WebView 滚轮 `deltaY < 0`（向上滚）应转换为正数。`alacritty_terminal` 的 `display_iter` 使用包含历史行的终端坐标，构建 `GridSnapshot` 时必须用 `point_to_viewport(display_offset, point)` 转成可见视口坐标，不能直接丢弃负 line。
 - 用户在历史视口开始输入非空终端数据时，`SessionTask` 必须先调用 `TermEngine::scroll_to_bottom` 并发送一次 Render，再把输入写入远端 shell；空输入或已经位于实时底部时不得增加 revision 或产生无效渲染。该行为保证 `docker logs`、`docker ps` 等长输出后下一条命令立即回到当前提示符。
 - `GridSnapshot` 中的单元格颜色是 core 层解析后的最终显示色:反色、DIM 等属性在快照生成时完成颜色计算,UI 不应再次反转前景/背景。终端字符必须以普通文本节点渲染,不得使用 HTML 注入式渲染,避免 `<`、`&` 等字符破坏 DOM。终端 cell 的 inline style 必须显式写出可跨帧变化属性的默认值(如 `background: transparent`、`text-decoration: none`、`opacity: 1`),避免 WebView/Dioxus 样式 diff 后残留备用屏程序的色块。
@@ -84,7 +96,10 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 - **终端复制粘贴**:复制读取 DOM 选区后走 WebView `navigator.clipboard.writeText`(带 `execCommand` 回退)；粘贴在桌面端必须调用 [clipboard.rs](../crates/kt-ui/src/clipboard.rs) 的 `read_text()`(`arboard` 原生剪贴板)，因为 WebView 的 `navigator.clipboard.readText()` 会触发系统粘贴确认(macOS 上要额外点一次系统 Paste 按钮)。原生读取失败才回退到 WebView 剪贴板，移动端只有 WebView 一条路径；粘贴文本统一由 `terminal_paste_input` 归一化换行后发 `ToCore::Input`。
 - **会话标题边界**:`SessionState.title` 是用户保存的服务器/会话名称,用于标签、侧边栏高亮与状态栏;远端 OSC title/ResetTitle 事件不得覆盖它。若后续需要展示远端窗口标题,应新增独立字段。
 - **分屏与触发器高亮**:终端工具栏可切换水平/垂直双视图,当前为同一 session 的本地双视图;`AppSettings.trigger_highlights` 提供行级文本触发器,由 [terminal.rs](../crates/kt-ui/src/components/terminal.rs) 做大小写不敏感匹配并加高亮 class。
-- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 通过 `AppState::send_sftp_request` 分配 `SftpRequestId` 并发送请求，从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。目录列表和超时只接受当前 request ID，迟到结果不得覆盖新目录。近期完成/失败事件保存在有界队列，外部编辑器按 request ID 精确消费；同路径任务彼此隔离，下载失败清理临时文件，上传失败保留本地文件并回到可重试状态，会话关闭收敛全部进行中任务。SFTP/终端同步不依赖用户 shell 配置：同步前主动用 POSIX `printf` 请求 OSC 7 `$PWD`，收到 `Cwd` 后刷新列表，五秒无回传则清除等待态并展示错误；SFTP 到终端的 `cd` 成功后也会输出 OSC 7。`SftpStopped` 清理 loading/progress 但不覆盖已有错误。
+- **SFTP 面板**:[sftp.rs](../crates/kt-ui/src/components/sftp.rs) 通过 `AppState::send_sftp_request` 分配 `SftpRequestId` 并发送请求，从全局 `SessionState` 同步 `sftp_path/sftp_entries/sftp_loading/sftp_error/sftp_progress`。目录列表和超时只接受当前 request ID，迟到结果不得覆盖新目录。近期完成/失败事件保存在有界队列，外部编辑器按 request ID 精确消费；同路径任务彼此隔离，下载失败清理临时文件，上传失败保留本地文件并回到可重试状态，会话关闭收敛全部进行中任务。`SftpStopped` 清理 loading/progress 但不覆盖已有错误。
+- **目录自动同步**:开关持久化在 `AppSettings.sftp_auto_sync`，用户勾一次之后新建会话直接沿用。两个方向按可靠性分层：
+  - **终端→文件管理**(跟随过程零命令)：连接就绪或开关打开时发一次 `ToCore::SetupShellIntegration` 注入 OSC 7 上报 hook（每次连接最多一次，`SessionState.shell_integration_requested` 把关，重连后重置），之后 `cd`、`pushd`、脚本内切目录、子 shell 退出都会自然上报。注入失效时退回 UI 侧输入推断：`state.rs::parse_directory_intent` 只识别能可靠还原的形式（`cd <path>`、`cd`、`cd ~`、`cd ~/x`、`cd -`、`pushd <path>`、`popd`），依赖 `remote_home`（首个 `.` 列表 canonicalize 得到）、`terminal_prev_cwd`（OLDPWD）与 `terminal_dir_stack`。别名、函数、脚本、子 shell、`~user`、失败的命令一律不猜；`pushd` 只在目标真能解析时才压栈，避免本地栈与远端漂移。用户刚提交的推断目标在收到相同 OSC 7 确认前优先于旧目录事件。
+  - **文件管理→终端**(必须写 PTY)：`AppState::send_terminal_cd` 是自动同步与手动同步按钮**共用的唯一写入点**，统一做连接检查、备用屏拒绝、`shell_integration::change_directory_command` 转义与待确认目标清理。备用屏下手动按钮报 `TerminalCdBlocked::AltScreen`（i18n 文案），自动同步则静默跳过——不该为了后台跟随打断正在用 vim 的用户。
 - **资源监控**:[state.rs](../crates/kt-ui/src/state.rs) 收到 `Connected` 后自动发送 `StartMonitor` 并进入 `monitor_loading`;core 成功采样返回 `Monitor`,失败/超时返回 `MonitorError`;正常通道关闭返回 `MonitorStopped` 清理等待态,不展示为错误。监控子任务退出后会通知会话重置启动状态,允许后续重新 `StartMonitor`。延迟采样优先 TCP connect 当前会话 SSH `host:port`,失败时回退到已连接 SSH monitor 通道心跳,不得阻塞资源采样。磁盘采集使用 `df -P -k` 的 `1024-blocks` 总量字段，不得用 used+available 推算；UI 优先展示 `/` 根挂载点，缺失时安全降级为 `--`。Monitor 固定展示 CPU、内存、硬盘、负载、网络五张卡片，网络下行与上行在卡片内纵向排列；loading 和空工作台占位必须保持相同卡片结构。
 - **连接失败展示**:`FromCore::Closed{error}` 必须写入 `SessionState.connection_error`；无错误的远端关闭也写入“SSH 会话已断开”。关闭和 `AppState::connect_session` 都必须清除终端快照、目录、SFTP 请求/列表与监控瞬态数据，保留会话标签并显示重连操作；终端占位、状态栏和会话状态点都要把断开会话显示为失败/断开,不得继续使用 connecting 文案或黄色连接中状态。
 - **持久化**:[store.rs](../crates/kt-ui/src/store.rs) 桥接 `kt-config`(会话明文)与 `kt-secrets`(机密)。Config 更新采用 clone-save-swap，保存失败不污染内存；vault 使用 `set_and_save`，保存失败恢复旧值与 dirty 状态。Store 启动时自动打开或创建应用托管 vault,保存连接后按 `effective_vault_id()` 写入密码;Store-backed `AuthProvider` 重连时直接读取 `user@host:port` 或配置的 `vault_id`。旧主密码 vault 无法自动打开时会备份为 `secrets.vault.legacy` 并创建新的托管 vault,状态栏提示旧保存密码暂不可用;若初始化/备份失败则保持 `VaultState::Locked` 并让读写返回明确错误。secret 值不得写入 `config.toml` 或日志。

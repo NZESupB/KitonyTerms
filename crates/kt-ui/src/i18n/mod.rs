@@ -194,7 +194,10 @@ pub struct SftpText {
     pub copy_path: &'static str,
     pub copy_name: &'static str,
     pub sync_to_terminal: &'static str,
-    pub sync_from_terminal: &'static str,
+    pub auto_sync: &'static str,
+    /// 终端在跑全屏程序时拒绝写入 `cd` 的说明。
+    pub sync_blocked_alt_screen: &'static str,
+    pub sync_send_failed: &'static str,
     pub new_folder: &'static str,
     pub rename: &'static str,
     pub delete: &'static str,

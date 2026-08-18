@@ -47,10 +47,10 @@ pub(super) fn DesktopTitlebar(
     } else {
         t.collapse_sidebar
     };
-    let sidebar_icon = if sidebar_collapsed {
-        "panel-left-open"
+    let sidebar_button_class = if sidebar_collapsed {
+        "desktop-topbar-icon tooltip-trigger is-collapsed"
     } else {
-        "panel-left-close"
+        "desktop-topbar-icon tooltip-trigger"
     };
 
     rsx! {
@@ -60,13 +60,13 @@ pub(super) fn DesktopTitlebar(
             }
 
             button {
-                class: "desktop-topbar-icon tooltip-trigger",
+                class: sidebar_button_class,
                 "data-tooltip": "{sidebar_tooltip}",
                 aria_label: "{sidebar_tooltip}",
                 aria_expanded: (!sidebar_collapsed).to_string(),
                 aria_controls: "resource-sidebar",
                 onclick: move |_| on_sidebar_toggle.call(()),
-                Icon { name: sidebar_icon }
+                Icon { name: "panel-left-toggle" }
             }
 
             div {

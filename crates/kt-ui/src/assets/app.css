@@ -105,9 +105,20 @@ button:disabled {
     width: 32px;
     min-width: 32px;
     height: 32px;
+    align-self: center;
     margin-left: 4px;
     border-radius: 5px;
     font-size: 16px;
+}
+
+.desktop-topbar-icon .kt-icon-direction {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.desktop-topbar-icon.is-collapsed .kt-icon-direction {
+    transform: rotate(180deg);
 }
 
 .desktop-topbar-icon:hover,
@@ -528,6 +539,14 @@ button[title]:focus-visible::after {
     background: rgba(15, 23, 42, 0.22);
 }
 
+.kt-window.theme-light .app-settings-overlay {
+    background: rgba(15, 23, 42, 0.48);
+}
+
+.kt-window.theme-light .app-settings-panel {
+    background: #ffffff;
+}
+
 .kt-window.theme-light .external-edit-overlay {
     background: rgba(15, 23, 42, 0.48);
 }
@@ -636,12 +655,12 @@ button[title]:focus-visible::after {
     background: rgba(12, 18, 25, 0.82);
     opacity: 1;
     transition:
-        width 180ms ease,
-        min-width 180ms ease,
-        flex-basis 180ms ease,
-        border-right-width 180ms ease,
-        border-color 180ms ease,
-        opacity 120ms ease;
+        width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        min-width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        flex-basis 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-right-width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sidebar.is-collapsed {
@@ -766,7 +785,7 @@ button[title]:focus-visible::after {
     flex: 0 0 30px;
     align-items: center;
     gap: 4px;
-    margin: 0 10px;
+    margin: 0 8px;
 }
 
 .sftp-tree-actions button {
@@ -785,6 +804,47 @@ button[title]:focus-visible::after {
 .sftp-tree-actions button:hover:not(:disabled) {
     background: rgba(90, 167, 255, 0.12);
     color: #f8fbff;
+}
+
+.sftp-auto-sync {
+    display: inline-flex;
+    min-width: 0;
+    height: 24px;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.sftp-auto-sync input {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
+    margin: 0;
+    accent-color: var(--blue);
+    cursor: pointer;
+}
+
+.sftp-auto-sync.is-active {
+    color: var(--text);
+}
+
+.sftp-auto-sync.is-disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.sftp-auto-sync.is-disabled input {
+    cursor: default;
+}
+
+.sftp-auto-sync span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .sftp-tree-list {
@@ -1065,9 +1125,9 @@ button[title]:focus-visible::after {
     cursor: col-resize;
     opacity: 1;
     transition:
-        width 180ms ease,
-        flex-basis 180ms ease,
-        opacity 120ms ease;
+        width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        flex-basis 200ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .splitter.is-collapsed {
@@ -2520,6 +2580,19 @@ button[title]:focus-visible::after {
     background: rgba(2, 6, 12, 0.58);
 }
 
+.app-settings-overlay {
+    background: rgba(2, 6, 12, 0.76);
+}
+
+.app-settings-overlay.is-desktop {
+    inset: 36px 0 0;
+    padding: 20px 24px 24px;
+}
+
+.app-settings-overlay.is-desktop .app-settings-panel {
+    max-height: calc(100vh - 80px);
+}
+
 .settings-panel {
     width: min(520px, 100%);
     max-height: calc(100vh - 48px);
@@ -2528,6 +2601,10 @@ button[title]:focus-visible::after {
     border-radius: var(--radius);
     background: #111822;
     box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.app-settings-panel {
+    background: #111822;
 }
 
 .settings-head,
@@ -2730,6 +2807,7 @@ button[title]:focus-visible::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .desktop-topbar-icon .kt-icon-direction,
     .sidebar,
     .splitter {
         transition-duration: 1ms;

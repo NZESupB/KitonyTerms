@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use kt_config::{AppLanguage, SessionProfile};
-use kt_core::{SessionId, SftpEntry, ToCore};
+use kt_core::{SessionId, SftpEntry};
 
 use crate::components::app::get_state;
 use crate::components::app_logic::DEFAULT_GROUP_NAME;
@@ -11,6 +11,7 @@ use crate::components::sftp::{
     display_path, join_path, normalize_sftp_path_input, parent_path, request_directory,
 };
 use crate::i18n::texts;
+use crate::state::TerminalCdBlocked;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContextMenuTarget {
@@ -53,41 +54,24 @@ fn send_cd_to_terminal(
     state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
     session_id: SessionId,
     sftp_path: &str,
-) -> Result<(), String> {
-    let command = cd_command_for_path(sftp_path);
-    if command.is_empty() {
-        return Err("SFTP 当前目录为空，无法同步到终端".to_string());
-    }
-    let Ok(app_state) = state.lock() else {
-        return Err("会话状态不可用，无法同步到终端".to_string());
-    };
-    if !app_state
-        .sessions
-        .get(&session_id)
-        .is_some_and(|session| session.connected)
-    {
-        return Err("会话已断开，无法同步到终端".to_string());
-    }
-    if app_state.manager.send(ToCore::Input {
-        id: session_id,
-        data: command.into_bytes(),
-    }) {
-        Ok(())
-    } else {
-        Err("终端目录切换命令无法投递".to_string())
-    }
-}
-
-/// 让 SFTP 主动读取并跟随终端当前目录。
-fn follow_terminal_directory(
-    state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
-    session_id: SessionId,
     language: AppLanguage,
 ) -> Result<(), String> {
     let Ok(mut app_state) = state.lock() else {
         return Err(texts(language).sftp.state_unavailable.to_string());
     };
-    app_state.sync_sftp_to_terminal_directory(session_id)
+    app_state
+        .send_terminal_cd(session_id, sftp_path)
+        .map_err(|error| terminal_cd_blocked_text(error, language))
+}
+
+/// 把终端目录同步被拒绝的原因渲染成用户可见文案。
+fn terminal_cd_blocked_text(error: TerminalCdBlocked, language: AppLanguage) -> String {
+    let t = texts(language).sftp;
+    match error {
+        TerminalCdBlocked::Unavailable => t.session_missing.to_string(),
+        TerminalCdBlocked::AltScreen => t.sync_blocked_alt_screen.to_string(),
+        TerminalCdBlocked::SendFailed => t.sync_send_failed.to_string(),
+    }
 }
 
 fn set_sftp_sync_error(
@@ -102,22 +86,15 @@ fn set_sftp_sync_error(
     }
 }
 
-/// 构造发送到终端的 `cd` 命令，对路径做单引号安全转义。
-fn cd_command_for_path(path: &str) -> String {
-    let path = path.trim();
-    if path.is_empty() {
-        return String::new();
-    }
-    // `~` 与 `.` 表示 home，直接执行 `cd` 回到 home。
-    if path == "~" || path == "." {
-        return format!("cd && {}", crate::state::terminal_cwd_report_command());
-    }
-    // 单引号包裹并转义内部单引号：' -> '\''。
-    let escaped = path.replace('\'', "'\\''");
-    format!(
-        "cd '{escaped}' && {}",
-        crate::state::terminal_cwd_report_command()
-    )
+fn set_sftp_auto_sync(
+    state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
+    session_id: SessionId,
+    enabled: bool,
+) -> Result<(), String> {
+    let Ok(mut app_state) = state.lock() else {
+        return Err("无法访问应用状态，自动同步设置未生效".to_string());
+    };
+    app_state.set_sftp_auto_sync(session_id, enabled)
 }
 
 pub fn format_sftp_size(size: u64, is_dir: bool) -> String {
@@ -218,11 +195,12 @@ pub fn SidebarSftpTree(
     entries: Vec<SftpEntry>,
     loading: bool,
     error: Option<String>,
-    syncing_terminal_directory: bool,
+    auto_sync: bool,
     language: AppLanguage,
     on_context_menu: EventHandler<ContextMenuState>,
     on_entry_open: EventHandler<SftpEntryContext>,
     on_entry_external_edit: EventHandler<SftpEntryContext>,
+    on_auto_sync_change: EventHandler<bool>,
 ) -> Element {
     let state = get_state().clone();
     let t = texts(language).sftp;
@@ -233,6 +211,11 @@ pub fn SidebarSftpTree(
         .filter(|entry| !entry.is_dir)
         .map(|entry| entry.size)
         .sum::<u64>();
+    let auto_sync_class = match (connected, auto_sync) {
+        (false, _) => "sftp-auto-sync is-disabled",
+        (true, true) => "sftp-auto-sync is-active",
+        (true, false) => "sftp-auto-sync",
+    };
 
     use_effect(use_reactive((&path,), move |(path,)| {
         let display = display_path(&path);
@@ -330,38 +313,35 @@ pub fn SidebarSftpTree(
                         let state = state.clone();
                         move |evt| {
                             evt.stop_propagation();
-                            if let Err(message) = send_cd_to_terminal(&state, session_id, &path) {
+                            if let Err(message) = send_cd_to_terminal(&state, session_id, &path, language) {
                                 set_sftp_sync_error(&state, session_id, message);
                             }
                         }
                     },
                     Icon { name: "split-vertical" }
                 }
-                // 终端 → SFTP：主动请求终端目录并在回传后刷新文件管理。
-                button {
-                    title: "{t.sync_from_terminal}",
-                    disabled: !connected || syncing_terminal_directory,
-                    onclick: {
-                        let state = state.clone();
-                        move |evt| {
-                            evt.stop_propagation();
-                            if let Err(message) = follow_terminal_directory(&state, session_id, language) {
-                                set_sftp_sync_error(&state, session_id, message);
-                                return;
-                            }
-                            let timeout_state = state.clone();
-                            spawn(async move {
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                if let Ok(mut app_state) = timeout_state.lock() {
-                                    app_state.expire_terminal_cwd_sync(
-                                        session_id,
-                                        "未能读取终端当前目录，请确认远端 shell 可执行 printf".to_string(),
-                                    );
+                label {
+                    class: auto_sync_class,
+                    title: "{t.auto_sync}",
+                    input {
+                        r#type: "checkbox",
+                        checked: auto_sync,
+                        disabled: !connected,
+                        onchange: {
+                            let state = state.clone();
+                            move |evt: Event<FormData>| {
+                                let enabled = evt.checked();
+                                match set_sftp_auto_sync(&state, session_id, enabled) {
+                                    // 记住这次选择，之后新建的会话直接沿用。
+                                    Ok(()) => on_auto_sync_change.call(enabled),
+                                    Err(message) => {
+                                        set_sftp_sync_error(&state, session_id, message)
+                                    }
                                 }
-                            });
-                        }
-                    },
-                    Icon { name: "split-horizontal" }
+                            }
+                        },
+                    }
+                    span { "{t.auto_sync}" }
                 }
             }
 
@@ -822,24 +802,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cd_command_quotes_paths_safely() {
-        assert_eq!(
-            cd_command_for_path("."),
-            "cd && printf '\\033]7;file://localhost%s\\007' \"$PWD\"\n"
+    fn terminal_cd_blocked_reasons_are_localized_and_distinct() {
+        // 命令构造本身由 kt-core 的 shell_integration 测试覆盖；这里只保证每个
+        // 拒绝原因都有可见文案，且中英文都不落回另一种语言。
+        for language in [AppLanguage::Chinese, AppLanguage::English] {
+            let messages = [
+                TerminalCdBlocked::Unavailable,
+                TerminalCdBlocked::AltScreen,
+                TerminalCdBlocked::SendFailed,
+            ]
+            .map(|error| terminal_cd_blocked_text(error, language));
+
+            for message in &messages {
+                assert!(!message.trim().is_empty(), "语言 {language:?} 缺少文案");
+            }
+            assert_ne!(messages[0], messages[1]);
+            assert_ne!(messages[1], messages[2]);
+        }
+
+        assert_ne!(
+            terminal_cd_blocked_text(TerminalCdBlocked::AltScreen, AppLanguage::Chinese),
+            terminal_cd_blocked_text(TerminalCdBlocked::AltScreen, AppLanguage::English)
         );
-        assert_eq!(
-            cd_command_for_path("~"),
-            "cd && printf '\\033]7;file://localhost%s\\007' \"$PWD\"\n"
-        );
-        assert_eq!(
-            cd_command_for_path("/var/log"),
-            "cd '/var/log' && printf '\\033]7;file://localhost%s\\007' \"$PWD\"\n"
-        );
-        assert_eq!(
-            cd_command_for_path("/tmp/it's here"),
-            "cd '/tmp/it'\\''s here' && printf '\\033]7;file://localhost%s\\007' \"$PWD\"\n"
-        );
-        assert_eq!(cd_command_for_path("   "), "");
     }
 
     #[test]

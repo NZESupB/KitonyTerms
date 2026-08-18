@@ -121,7 +121,7 @@ mod tests {
             group: None,
             params: ConnectParams::new("example.com", "root"),
         };
-        session_state_from_profile(SessionId(id), &profile)
+        session_state_from_profile(SessionId(id), &profile, false)
     }
 
     #[test]
