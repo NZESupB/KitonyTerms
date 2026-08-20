@@ -30,6 +30,10 @@ rfd.workspace = true
 [dev-dependencies]
 tempfile = "3"
 
+[features]
+# 开发用：转发到 kt-ui，让桌面窗口缩到手机尺寸时渲染手机 Shell。
+phone-preview = ["kt-ui/phone-preview"]
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 

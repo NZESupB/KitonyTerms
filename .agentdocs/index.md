@@ -9,7 +9,7 @@
 
 ## 当前任务文档
 
-无。
+`workflow/260820-mobile-phone-ui.md` - 手机端独立 UI（设备判定、手机 Shell、软键盘输入、触屏交互替代）；修改移动端界面时必读。
 
 ## 已归档完成任务摘要
 
@@ -26,7 +26,14 @@
 - 界面与菜单体验修复批次(`260629-polish-menu-terminal-auth`/`260629-menu-polish-followup`/`260630-urgent-connection-ui-polish`)：macOS 系统菜单与设置入口、认证弹窗密码保存、TCP 延迟显示与高延迟颜色、监控色块、浅色主题、应用内顶栏移除与右键编辑入口等体验打磨。
 - 连接对话框与编辑器设置：会话/代理使用左侧条件渲染选项卡，编辑器通过 PATH/macOS app/环境变量探测并以下拉选择，既有自定义命令必须保留。
 - 移动端使用 Dioxus 0.7.9，`Dioxus.toml` 固定 Android application ID 与 iOS Bundle ID 为 `com.kitonyterms.app`；Android 配置与 vault 必须位于应用私有 `files/config`、`files/data`，不得回退到依赖 `$HOME` 的桌面路径。
-- 移动端/SFTP 体验：SFTP 跟随终端目录后路径输入框必须同步；监控固定收敛在底栏五项紧凑视图，阻断性状态使用右下角浮层，Android/iOS 竖屏沿用 safe-area 纵向布局。
+- 手机与平板由 `kt-ui/src/device.rs` 在**运行时**按视口短边判定（阈值 600 CSS px），不能用 `target_os` 区分。手机走 `components/phone_shell/`（顶栏 + 全屏视图 + 底部四标签），平板与桌面复用 `main_shell`。两套 Shell 共用 `ShellArgs`、在 `app.rs` 同一层条件渲染，因此 `render_main_shell` 与 `render_phone_shell` **都必须保持无 hook**，局部状态一律下沉到 `#[component]`，跨 Shell 的 `phone_tab`/`phone_sheet` 在 `app.rs` 无条件创建。
+- 手机端终端输入必须挂真实可聚焦的 `textarea`（聚焦 `div[tabindex]` 唤不起软键盘），字符走 `input` 事件、IME 组合期间不得取值清空，功能键走 `keydown`；字节序列一律复用 `terminal.rs` 的 `terminal_input_for_key_name` / `terminal_input_for_text`，不得另写一套 escape 序列。软键盘遮挡量由 `visualViewport` 直接写 `--kt-keyboard-inset`。
+- 手机端不提供分屏与 SFTP 外部编辑/打开方式：`open_with_system_default` 在 Android/iOS 会调用 `xdg-open`，必然失败。文件的编辑走**内嵌编辑器**（全平台可用，见下条）。触屏交互用行尾/顶栏 `⋮` 动作面板替代右键菜单，SFTP 单击（而非双击）进目录。
+- SFTP 内嵌编辑器（`components/inline_editor.rs`，全平台）：显式点保存后回传，保存成功即关闭。超过 `INLINE_EDIT_MAX_BYTES`（1 MiB）的文件按目录列表 size 在**下载前**拒绝、读取时再复查一次；非 UTF-8 内容按二进制拒绝。**回传失败必须保留编辑器与本地临时文件且不更新 `original`**，否则用户的编辑会丢、重试也判定不出「有改动」。与外部编辑共用 `state_controller` 的同一个 250ms 循环（`EditSignals`）。
+- `--kt-keyboard-inset`（软键盘遮挡量）只由 `device.rs` 的移动端常驻 eval 写入。终端键位条与内嵌编辑器都按它收缩，两者不会同时挂载，放在任一方都会漏。
+- rsx 的**组件 prop 位置不支持 `if` 表达式**（元素属性位置支持）。`Icon { name: if cond {"a"} else {"b"} }` 会报出指向整个 `rsx!` 块的 `expected &str, found String`，必须先算好再传。
+- `kt-ui`/`kt-app` 的 `phone-preview` 特性让桌面端也按视口短边判定设备类型，用于在开发机上预览手机 Shell（`cargo run -p kt-app --features phone-preview` 后把窗口缩窄）；正式构建不启用。本机缺 Android NDK 与 `dx`，手机 UI 尚未在真机/模拟器实测。
+- 移动端/SFTP 体验：SFTP 跟随终端目录后路径输入框必须同步；监控固定收敛在底栏五项紧凑视图，阻断性状态使用右下角浮层。**竖屏纵向布局那一版已被手机独立 Shell 取代**，见上文手机端条目。
 - 桌面顶栏布局：会话标签属于应用顶栏且保持紧凑固定宽度并隐藏滚动条，左侧服务器/SFTP 区可由顶栏折叠并随时恢复且使用宽度过渡，设置只保留顶栏带文字入口；分屏从终端右键菜单进入；顶栏和带 `title` 的图标使用即时 CSS tooltip。
 - UI 体验修正：终端保留可横向查看长日志的宽度并支持历史视口方向键/横向滚轮，SFTP 外部编辑回传框改为不透明样式，外部编辑通知自动消退，桌面品牌和底部连接状态文本移除。
 

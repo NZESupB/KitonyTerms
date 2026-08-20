@@ -60,13 +60,21 @@ pub fn theme_class(theme: &str) -> &'static str {
     }
 }
 
-pub fn window_class(active_resize: Option<ResizeDrag>, theme: &str) -> String {
+/// 顶层窗口 class。`is_phone` 让样式能区分手机 Shell 与桌面工作台：手机上不画窗口
+/// 边框与渐变背景，交给 [`crate::components::phone_shell`] 自己的全屏布局。
+pub fn window_class(active_resize: Option<ResizeDrag>, theme: &str, is_phone: bool) -> String {
     let resize_class = match active_resize {
         Some(ResizeDrag::SidebarWidth { .. }) => " is-resizing is-resizing-x",
         Some(ResizeDrag::SftpHeight { .. }) => " is-resizing is-resizing-y",
         None => "",
     };
-    format!("kt-window {}{}", theme_class(theme), resize_class)
+    let device_class = if is_phone { " is-phone" } else { "" };
+    format!(
+        "kt-window {}{}{}",
+        theme_class(theme),
+        device_class,
+        resize_class
+    )
 }
 
 fn status_notification_text(status_detail: Option<String>, text: &AppText) -> Option<String> {
@@ -125,7 +133,12 @@ fn render_desktop_titlebar(_args: DesktopTitlebarArgs) -> Element {
     rsx! {}
 }
 
-pub struct MainShellArgs {
+/// 主界面渲染入参。桌面/平板由 [`render_main_shell`] 消费，手机由
+/// [`crate::components::phone_shell::render_phone_shell`] 消费；两套 Shell 需要的
+/// 全局状态几乎一致，共用同一个入参结构避免在 `app.rs` 里维护两份。
+/// `sidebar_width` / `sftp_height` / `active_resize` / `split_mode` 等是桌面布局状态，
+/// 手机 Shell 会忽略。
+pub struct ShellArgs {
     pub state: Arc<Mutex<AppState>>,
     pub store: Arc<Store>,
     pub settings: Signal<AppSettings>,
@@ -174,7 +187,7 @@ pub struct MainShellArgs {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ConnectionDialogSignals {
+pub struct ConnectionDialogSignals {
     show_dialog: Signal<bool>,
     dialog_mode: Signal<String>,
     edit_original_name: Signal<String>,
@@ -195,6 +208,30 @@ pub(super) struct ConnectionDialogSignals {
 }
 
 impl ConnectionDialogSignals {
+    /// 从共用的 [`ShellArgs`] 取出连接对话框相关的信号。信号是 `Copy`，两套 Shell
+    /// 都从这里构造，保证「新建/编辑连接」在手机与桌面上打开的是同一个对话框。
+    pub fn from_shell_args(args: &ShellArgs) -> Self {
+        ConnectionDialogSignals {
+            show_dialog: args.show_dialog,
+            dialog_mode: args.dialog_mode,
+            edit_original_name: args.edit_original_name,
+            edit_name: args.edit_name,
+            edit_host: args.edit_host,
+            edit_port: args.edit_port,
+            edit_user: args.edit_user,
+            edit_group: args.edit_group,
+            edit_password: args.edit_password,
+            edit_key_path: args.edit_key_path,
+            edit_proxy_jump: args.edit_proxy_jump,
+            edit_proxy_type: args.edit_proxy_type,
+            edit_proxy_host: args.edit_proxy_host,
+            edit_proxy_port: args.edit_proxy_port,
+            edit_proxy_username: args.edit_proxy_username,
+            edit_use_agent: args.edit_use_agent,
+            edit_forward_agent: args.edit_forward_agent,
+        }
+    }
+
     pub(super) fn open_new(mut self) {
         self.dialog_mode.set("new".to_string());
         self.edit_original_name.set(String::new());
@@ -243,8 +280,9 @@ impl ConnectionDialogSignals {
     }
 }
 
-pub fn render_main_shell(args: MainShellArgs) -> Element {
-    let MainShellArgs {
+pub fn render_main_shell(args: ShellArgs) -> Element {
+    let dialog_signals = ConnectionDialogSignals::from_shell_args(&args);
+    let ShellArgs {
         state,
         store,
         settings,
@@ -258,23 +296,6 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         status_detail,
         on_status_dismiss,
         on_settings_open,
-        show_dialog,
-        dialog_mode,
-        edit_original_name,
-        edit_name,
-        edit_host,
-        edit_port,
-        edit_user,
-        edit_group,
-        edit_password,
-        edit_key_path,
-        edit_proxy_jump,
-        edit_proxy_type,
-        edit_proxy_host,
-        edit_proxy_port,
-        edit_proxy_username,
-        edit_use_agent,
-        edit_forward_agent,
         show_group_dialog,
         group_dialog_mode,
         group_dialog_name,
@@ -290,28 +311,11 @@ pub fn render_main_shell(args: MainShellArgs) -> Element {
         split_mode,
         on_sftp_entry_open,
         on_sftp_entry_external_edit,
+        // 连接对话框的各个 edit_* 信号已由 `from_shell_args` 取走。
+        ..
     } = args;
 
     let t = texts(language).app;
-    let dialog_signals = ConnectionDialogSignals {
-        show_dialog,
-        dialog_mode,
-        edit_original_name,
-        edit_name,
-        edit_host,
-        edit_port,
-        edit_user,
-        edit_group,
-        edit_password,
-        edit_key_path,
-        edit_proxy_jump,
-        edit_proxy_type,
-        edit_proxy_host,
-        edit_proxy_port,
-        edit_proxy_username,
-        edit_use_agent,
-        edit_forward_agent,
-    };
     let active_profile_title = active_terminal
         .as_ref()
         .map(|session| session.title.clone());
@@ -456,11 +460,11 @@ mod tests {
     #[test]
     fn window_class_applies_theme_and_resize_state() {
         assert_eq!(
-            window_class(None, DEFAULT_DARK_THEME),
+            window_class(None, DEFAULT_DARK_THEME, false),
             "kt-window theme-dark"
         );
         assert_eq!(
-            window_class(None, DEFAULT_LIGHT_THEME),
+            window_class(None, DEFAULT_LIGHT_THEME, false),
             "kt-window theme-light"
         );
         assert_eq!(
@@ -470,10 +474,19 @@ mod tests {
                     start_width: 220.0,
                 }),
                 DEFAULT_LIGHT_THEME,
+                false,
             ),
             "kt-window theme-light is-resizing is-resizing-x"
         );
         assert_eq!(theme_class("unknown-theme"), "theme-dark");
+    }
+
+    #[test]
+    fn phone_shell_is_marked_on_the_window_element() {
+        assert_eq!(
+            window_class(None, DEFAULT_DARK_THEME, true),
+            "kt-window theme-dark is-phone"
+        );
     }
 
     #[test]

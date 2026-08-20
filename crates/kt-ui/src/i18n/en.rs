@@ -1,4 +1,4 @@
-use super::{AppText, DialogText, MonitorText, SftpText, Texts};
+use super::{AppText, DialogText, MonitorText, PhoneText, SftpText, Texts};
 
 pub const TEXTS: Texts = Texts {
     app: AppText {
@@ -182,6 +182,18 @@ pub const TEXTS: Texts = Texts {
         edit_status_uploaded: "Uploaded:",
         edit_status_failed: "Sync failed:",
         edit_status_ignored: "Ignored local changes:",
+        edit_inline: "Edit",
+        editor_loading: "Loading…",
+        editor_saving: "Saving…",
+        editor_save: "Save",
+        editor_saved: "Saved:",
+        editor_unsaved: "Unsaved",
+        editor_discard_prompt: "Discard unsaved changes?",
+        editor_discard: "Discard",
+        editor_not_text: "Not a UTF-8 text file; it cannot be edited in the app",
+        editor_read_failed: "Failed to read the downloaded temporary file",
+        editor_write_failed: "Failed to write the local temporary file",
+        editor_session_closed: "The session was closed",
         session_missing: "Session is missing or closed; remote directory cannot be read",
         state_unavailable: "Application state is unavailable; file management request was not sent",
     },
@@ -198,8 +210,27 @@ pub const TEXTS: Texts = Texts {
         waiting: "Waiting",
         trend: "trend",
     },
+    phone: PhoneText {
+        tab_servers: "Servers",
+        tab_terminal: "Terminal",
+        tab_files: "Files",
+        tab_monitor: "Monitor",
+        more_actions: "More actions",
+        switch_session: "Switch session",
+        keyboard: "Keyboard",
+        disconnect: "Disconnect",
+        no_session_short: "No server connected yet",
+        files_need_session: "Connect to a server to browse remote files",
+        monitor_need_session: "Connect to a server to see resource monitoring",
+        sticky_ctrl: "Ctrl armed for the next key",
+        sticky_alt: "Alt armed for the next key",
+    },
 };
 
 pub fn sftp_timeout_message(path: &str, seconds: u64) -> String {
     format!("Reading remote directory {path} timed out ({seconds}s). Refresh and try again.")
+}
+
+pub fn inline_edit_too_large_message(limit: &str) -> String {
+    format!("File exceeds {limit}; it cannot be edited in the app")
 }

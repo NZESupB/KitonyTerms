@@ -19,12 +19,40 @@ pub fn sftp_timeout_message(language: AppLanguage, path: &str, seconds: u64) -> 
     }
 }
 
+/// 内嵌编辑器拒绝过大文件的提示。`limit` 是已格式化的可读大小。
+pub fn inline_edit_too_large_message(language: AppLanguage, limit: &str) -> String {
+    match language {
+        AppLanguage::Chinese => zh_cn::inline_edit_too_large_message(limit),
+        AppLanguage::English => en::inline_edit_too_large_message(limit),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Texts {
     pub app: AppText,
     pub dialog: DialogText,
     pub sftp: SftpText,
     pub monitor: MonitorText,
+    pub phone: PhoneText,
+}
+
+/// 手机端专用文案。桌面端不渲染 [`crate::components::phone_shell`]，这些文案只在
+/// 手机 Shell 中出现。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PhoneText {
+    pub tab_servers: &'static str,
+    pub tab_terminal: &'static str,
+    pub tab_files: &'static str,
+    pub tab_monitor: &'static str,
+    pub more_actions: &'static str,
+    pub switch_session: &'static str,
+    pub keyboard: &'static str,
+    pub disconnect: &'static str,
+    pub no_session_short: &'static str,
+    pub files_need_session: &'static str,
+    pub monitor_need_session: &'static str,
+    pub sticky_ctrl: &'static str,
+    pub sticky_alt: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -214,6 +242,19 @@ pub struct SftpText {
     pub edit_status_uploaded: &'static str,
     pub edit_status_failed: &'static str,
     pub edit_status_ignored: &'static str,
+    // 内嵌编辑器
+    pub edit_inline: &'static str,
+    pub editor_loading: &'static str,
+    pub editor_saving: &'static str,
+    pub editor_save: &'static str,
+    pub editor_saved: &'static str,
+    pub editor_unsaved: &'static str,
+    pub editor_discard_prompt: &'static str,
+    pub editor_discard: &'static str,
+    pub editor_not_text: &'static str,
+    pub editor_read_failed: &'static str,
+    pub editor_write_failed: &'static str,
+    pub editor_session_closed: &'static str,
     pub session_missing: &'static str,
     pub state_unavailable: &'static str,
 }

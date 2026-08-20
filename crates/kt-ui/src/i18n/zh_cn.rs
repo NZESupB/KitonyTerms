@@ -1,4 +1,4 @@
-use super::{AppText, DialogText, MonitorText, SftpText, Texts};
+use super::{AppText, DialogText, MonitorText, PhoneText, SftpText, Texts};
 
 pub const TEXTS: Texts = Texts {
     app: AppText {
@@ -182,6 +182,18 @@ pub const TEXTS: Texts = Texts {
         edit_status_uploaded: "已回传:",
         edit_status_failed: "同步失败:",
         edit_status_ignored: "已忽略本地修改:",
+        edit_inline: "编辑",
+        editor_loading: "正在载入…",
+        editor_saving: "正在保存…",
+        editor_save: "保存",
+        editor_saved: "已保存:",
+        editor_unsaved: "未保存",
+        editor_discard_prompt: "放弃未保存的修改？",
+        editor_discard: "放弃",
+        editor_not_text: "这不是 UTF-8 文本文件，无法在应用内编辑",
+        editor_read_failed: "读取下载的临时文件失败",
+        editor_write_failed: "写入本地临时文件失败",
+        editor_session_closed: "会话已关闭",
         session_missing: "会话不存在或已关闭，无法读取远端目录",
         state_unavailable: "无法访问应用状态，文件管理请求未发送",
     },
@@ -198,8 +210,27 @@ pub const TEXTS: Texts = Texts {
         waiting: "等待采样",
         trend: "趋势",
     },
+    phone: PhoneText {
+        tab_servers: "服务器",
+        tab_terminal: "终端",
+        tab_files: "文件",
+        tab_monitor: "监控",
+        more_actions: "更多操作",
+        switch_session: "切换会话",
+        keyboard: "键盘",
+        disconnect: "断开连接",
+        no_session_short: "尚未连接服务器",
+        files_need_session: "连接服务器后可浏览远端文件",
+        monitor_need_session: "连接服务器后可查看资源监控",
+        sticky_ctrl: "Ctrl 已按住，下一个按键生效",
+        sticky_alt: "Alt 已按住，下一个按键生效",
+    },
 };
 
 pub fn sftp_timeout_message(path: &str, seconds: u64) -> String {
     format!("读取远端目录 {path} 超时({seconds} 秒)，请刷新重试")
+}
+
+pub fn inline_edit_too_large_message(limit: &str) -> String {
+    format!("文件超过 {limit}，无法在应用内编辑")
 }

@@ -496,6 +496,7 @@ pub fn ContextMenu(
     on_sftp_mkdir: EventHandler<(SessionId, String)>,
     on_sftp_rename: EventHandler<SftpEntryContext>,
     on_sftp_delete: EventHandler<SftpEntryContext>,
+    on_sftp_inline_edit: EventHandler<SftpEntryContext>,
     on_sftp_external_edit: EventHandler<SftpEntryContext>,
     on_sftp_open_with: EventHandler<(SftpEntryContext, Option<String>)>,
     on_copy_text: EventHandler<String>,
@@ -621,6 +622,14 @@ pub fn ContextMenu(
                             }
                         }
                         if !is_dir {
+                            button {
+                                onclick: {
+                                    let ctx = ctx.clone();
+                                    move |_| on_sftp_inline_edit.call(ctx.clone())
+                                },
+                                Icon { name: "edit" }
+                                span { "{sftp_t.edit_inline}" }
+                            }
                             button {
                                 onclick: {
                                     let ctx = ctx.clone();
