@@ -35,7 +35,6 @@ env:
   CARGO_TERM_COLOR: always
   # Cargo.lock 已提交,统一使用 --locked 保证可复现构建。
   CARGO_INCREMENTAL: "0"
-  DIOXUS_CLI_VERSION: "0.7.9"
   MOBILE_BUNDLE_ID: com.kitonyterms.app
 
 jobs:
@@ -346,7 +345,7 @@ jobs:
           key: mobile-android-aarch64
 
       - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+        run: cargo install dioxus-cli --locked
 
       - name: Build signed Android APK
         shell: bash
@@ -388,7 +387,7 @@ jobs:
           key: mobile-ios-aarch64
 
       - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --locked --version "$DIOXUS_CLI_VERSION"
+        run: cargo install dioxus-cli --locked
 
       - name: Build unsigned iOS IPA
         shell: bash

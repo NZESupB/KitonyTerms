@@ -6,12 +6,23 @@ use dioxus::prelude::*;
 use kt_core::SessionId;
 
 use crate::components::external_edit::{sync_external_edits, ExternalEdit, ExternalEditAction};
+use crate::components::inline_editor::{sync_inline_edit, InlineEdit, InlineEditAction};
 use crate::state::{AppState, SessionState};
 use crate::store::{PendingHostKey, Store};
 
 pub struct StoreSignals {
     pub host_key_prompt: Signal<Option<PendingHostKey>>,
     pub status_notice: Signal<Option<String>>,
+}
+
+/// 编辑相关的状态与回调。外部编辑与内嵌编辑共用同一个 250ms 副作用循环：
+/// 两者都靠 `sftp_completions`/`sftp_failures` 推进，分开轮询没有意义。
+pub struct EditSignals {
+    pub settings: Signal<kt_config::AppSettings>,
+    pub external_edits: Signal<Vec<ExternalEdit>>,
+    pub on_external_edit_action: Callback<ExternalEditAction>,
+    pub inline_edit: Signal<Option<InlineEdit>>,
+    pub on_inline_edit_action: Callback<InlineEditAction>,
 }
 
 pub fn resolve_active_session_id(
@@ -28,20 +39,26 @@ pub fn resolve_active_session_id(
 /// 运行 App 核心副作用循环：
 /// - 定期 pump core 事件
 /// - 同步会话列表和主机密钥确认弹窗
-/// - 处理外部编辑状态机并派发动作
+/// - 处理外部编辑与内嵌编辑状态机并派发动作
 pub fn use_state_controller(
     state: &'static Arc<Mutex<AppState>>,
     store: Arc<Store>,
     mut all_sessions: Signal<Vec<SessionState>>,
     mut active_session_id: Signal<Option<SessionId>>,
     store_signals: StoreSignals,
-    mut external_edits: Signal<Vec<ExternalEdit>>,
-    on_external_edit_action: Callback<ExternalEditAction>,
+    edit_signals: EditSignals,
 ) {
     let StoreSignals {
         mut host_key_prompt,
         mut status_notice,
     } = store_signals;
+    let EditSignals {
+        settings,
+        mut external_edits,
+        on_external_edit_action,
+        mut inline_edit,
+        on_inline_edit_action,
+    } = edit_signals;
     use_future(move || async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;
@@ -96,6 +113,18 @@ pub fn use_state_controller(
                 for action in actions {
                     on_external_edit_action.call(action);
                 }
+
+                let (next_inline, inline_actions) = sync_inline_edit(
+                    inline_edit.peek().clone(),
+                    &sessions,
+                    settings.peek().language,
+                );
+                if *inline_edit.peek() != next_inline {
+                    inline_edit.set(next_inline);
+                }
+                for action in inline_actions {
+                    on_inline_edit_action.call(action);
+                }
             }
         });
     });
@@ -121,7 +150,7 @@ mod tests {
             group: None,
             params: ConnectParams::new("example.com", "root"),
         };
-        session_state_from_profile(SessionId(id), &profile)
+        session_state_from_profile(SessionId(id), &profile, false)
     }
 
     #[test]

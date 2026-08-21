@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-readonly REQUIRED_DX_VERSION="0.7.9"
-
 fail() {
   echo "::error::$*" >&2
   exit 1
@@ -38,9 +36,8 @@ command -v ditto >/dev/null || fail "当前环境缺少 ditto"
 command -v lipo >/dev/null || fail "当前环境缺少 lipo"
 command -v file >/dev/null || fail "当前环境缺少 file"
 
-dx_version="$(dx --version 2>&1)"
-[[ "$dx_version" == *"${REQUIRED_DX_VERSION}"* ]] \
-  || fail "Dioxus CLI 版本不匹配，要求 ${REQUIRED_DX_VERSION}，实际为: ${dx_version}"
+dx_version="$(dx --version 2>&1)" || fail "Dioxus CLI 无法运行"
+[[ -n "$dx_version" ]] || fail "Dioxus CLI 未返回版本信息"
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
@@ -53,7 +50,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "使用 Dioxus ${REQUIRED_DX_VERSION} 构建未签名 iOS arm64 应用"
+echo "使用当前 Dioxus CLI 构建未签名 iOS arm64 应用: ${dx_version}"
 if [[ -d target/dx ]]; then
   find target/dx -type d -path '*/release/ios' -prune -exec rm -rf {} +
 fi
@@ -85,6 +82,8 @@ info_plist="$staged_app/Info.plist"
   || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${MOBILE_MARKETING_VERSION}" "$info_plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${MOBILE_BUILD_NUMBER}" "$info_plist" \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${MOBILE_BUILD_NUMBER}" "$info_plist"
+/usr/libexec/PlistBuddy -c "Set :NSLocalNetworkUsageDescription KitonyTerms 需要访问局域网设备以同步配置" "$info_plist" \
+  || /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string KitonyTerms 需要访问局域网设备以同步配置" "$info_plist"
 plutil -lint "$info_plist" >/dev/null
 
 executable_name="$(plutil -extract CFBundleExecutable raw -o - "$info_plist")"
@@ -137,6 +136,8 @@ plutil -lint "$verified_info" >/dev/null || fail "IPA 中的 Info.plist 无效"
   || fail "IPA 的 CFBundleShortVersionString 校验失败"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$verified_info")" == "$MOBILE_BUILD_NUMBER" ]] \
   || fail "IPA 的 CFBundleVersion 校验失败"
+[[ "$(plutil -extract NSLocalNetworkUsageDescription raw -o - "$verified_info")" == "KitonyTerms 需要访问局域网设备以同步配置" ]] \
+  || fail "IPA 缺少局域网同步用途说明"
 
 verified_executable_name="$(plutil -extract CFBundleExecutable raw -o - "$verified_info")"
 verified_executable="$verified_app/$verified_executable_name"

@@ -13,9 +13,11 @@ and mobile UIs are rendered through native WebView stacks.
 - **Supported platforms:** macOS / Windows / Linux desktop artifacts for `x64`
   and `aarch64`, plus Android / iOS mobile artifacts for `aarch64`. No 32-bit
   artifacts are produced.
+- **Mobile UI:** edge-to-edge WebView content with safe-area-aware layouts on
+  Android and iOS.
 - **Core engine:** pure-Rust SSH client, terminal grid, SFTP task, and remote
   monitor in `kt-core`, with no UI dependency.
-- **UI:** Dioxus 0.7 desktop/mobile, native desktop window or mobile WebView,
+- **UI:** current stable Dioxus desktop/mobile, native desktop window or mobile WebView,
   responsive connection/SFTP area, terminal workbench, monitor strip, status
   bar, dialogs, and settings.
 - **Validation:** unit and integration tests cover every workspace crate; clippy
@@ -42,6 +44,9 @@ and mobile UIs are rendered through native WebView stacks.
 - Editor settings for default editor selection and "Open With" entries.
 - Remote CPU, memory, disk, network, load, uptime, and latency monitoring.
 - Light/dark theme and Chinese/English UI language settings.
+- Non-secret configuration synchronization through WebDAV or a one-time local
+  network share. Password vaults, vault keys, and `known_hosts.toml` are never
+  included.
 
 ## Current Limits
 
@@ -63,7 +68,8 @@ and mobile UIs are rendered through native WebView stacks.
 
 ## Quick Start
 
-Requires Rust stable 1.85+.
+Requires the current Rust stable channel. `rust-toolchain.toml` follows `stable`
+and does not pin a numeric compiler version.
 
 ### Linux Dependencies
 
@@ -83,10 +89,10 @@ macOS and Windows need no extra system packages for local development.
 
 ### Mobile Packaging
 
-Mobile builds are pinned to Dioxus CLI 0.7.9:
+Mobile builds use the current stable Dioxus CLI:
 
 ```bash
-cargo install dioxus-cli --locked --version 0.7.9
+cargo install dioxus-cli --locked
 dx bundle --release --platform android --target aarch64-linux-android --package-types apk --package kt-app
 dx build --release --platform ios --target aarch64-apple-ios --package kt-app
 ```
@@ -131,6 +137,12 @@ In the UI, create a connection from the sidebar, choose authentication options,
 connect, then save the session if you want it persisted. Saved passwords and key
 passphrases go into the encrypted vault, not into `config.toml`.
 
+In Settings, WebDAV accepts a complete HTTP(S) resource URL and uses ETag
+preconditions to avoid silently overwriting concurrent changes. LAN sharing
+uses a temporary random-port HTTP endpoint with a one-time bearer pairing code
+and a ten-minute expiry. Only `config.toml`-equivalent non-secret settings and
+saved sessions are synchronized.
+
 ## Developer Map
 
 ```text
@@ -150,6 +162,9 @@ kt-config
 
 kt-secrets
   Argon2id + XChaCha20-Poly1305 vault for local secret storage
+
+kt-sync
+  WebDAV and one-time LAN transport for non-secret configuration snapshots
 ```
 
 The important boundary is `kt-core`: it owns protocol and terminal behavior and

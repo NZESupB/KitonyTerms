@@ -89,6 +89,9 @@ pub struct GridSnapshot {
     /// uses this to mark continuation rows in the line-number gutter. Length =
     /// `rows`; entries default to `false`.
     pub wrapped: Vec<bool>,
+    /// 终端是否处于备用屏（vim、top、less 等全屏程序）。此时向 PTY 写入 shell
+    /// 命令会被该程序当成按键消费，因此目录同步必须拒绝写入。
+    pub alt_screen: bool,
 }
 
 impl GridSnapshot {

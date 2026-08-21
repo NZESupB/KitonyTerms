@@ -11,9 +11,11 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 - **主应用：** GUI-only 应用 `kitonyterms`，由 `kt-app` 提供。
 - **支持平台：** macOS / Windows / Linux 的 `x64` 与 `aarch64` 桌面产物，
   以及 Android / iOS 的 `aarch64` 移动产物。不构建 32 位产物。
+- **移动端界面：** Android 与 iOS 的 WebView 内容采用沉浸式布局，页面通过安全区适配
+  避免被状态栏和导航栏遮挡。
 - **核心引擎：** `kt-core` 中实现纯 Rust SSH 客户端、终端网格、SFTP 任务和远端监控，
   不依赖 UI。
-- **界面：** Dioxus 0.7 desktop/mobile，桌面系统窗口或移动 WebView、响应式连接/SFTP
+- **界面：** 当前稳定版 Dioxus desktop/mobile，桌面系统窗口或移动 WebView、响应式连接/SFTP
   区域、终端工作区、监控横条、状态栏、弹窗与设置面板。
 - **验证：** workspace 每个 crate 都有单元测试或集成测试覆盖；clippy 以
   `-D warnings` 执行。
@@ -34,6 +36,8 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 - 编辑器设置：默认编辑器选择和右键“打开方式”条目。
 - 远端 CPU、内存、磁盘、网络、负载、运行时长和延迟监控。
 - 浅色/深色主题与中文/英文界面语言设置。
+- 通过 WebDAV 或一次性局域网分享同步非机密配置；密码保险库、保险库密钥和
+  `known_hosts.toml` 永不进入同步载荷。
 
 ## 当前边界
 
@@ -51,7 +55,7 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 
 ## 快速开始
 
-需要 Rust stable 1.85+。
+需要当前 Rust stable 通道；仓库的 `rust-toolchain.toml` 跟随 `stable`，不固定数字版本。
 
 ### Linux 依赖
 
@@ -71,10 +75,10 @@ macOS 和 Windows 本地开发不需要额外系统依赖。
 
 ### 移动端打包
 
-移动构建固定使用 Dioxus CLI 0.7.9：
+移动构建使用当前稳定版 Dioxus CLI：
 
 ```bash
-cargo install dioxus-cli --locked --version 0.7.9
+cargo install dioxus-cli --locked
 dx bundle --release --platform android --target aarch64-linux-android --package-types apk --package kt-app
 dx build --release --platform ios --target aarch64-apple-ios --package kt-app
 ```
@@ -113,6 +117,10 @@ cargo run -p kt-app -- --help
 在 UI 中，从侧栏创建连接，选择认证方式后连接；如需复用连接，可保存会话。
 保存的密码和私钥口令会进入加密保险库，不会写入 `config.toml`。
 
+在“设置”中，WebDAV 使用用户填写的完整 HTTP(S) 资源地址，并通过 ETag 条件写避免
+静默覆盖并发修改。局域网分享使用临时随机端口 HTTP 服务、一次性 Bearer 配对码和
+十分钟有效期。同步内容只包含等价于 `config.toml` 的非机密设置与已保存会话。
+
 ## 开发者地图
 
 ```text
@@ -132,6 +140,9 @@ kt-config
 
 kt-secrets
   Argon2id + XChaCha20-Poly1305 本机机密保险库
+
+kt-sync
+  非机密配置快照的 WebDAV 与一次性局域网传输层
 ```
 
 关键边界是 `kt-core`：它负责协议和终端行为，并且不依赖 UI。

@@ -82,6 +82,55 @@ fn alpha_and_release_share_mobile_packaging_contract() {
 }
 
 #[test]
+fn rust_and_dioxus_follow_latest_stable_channels() {
+    let toolchain = read_workspace_file("rust-toolchain.toml");
+    assert!(toolchain.contains("channel = \"stable\""));
+    assert!(toolchain.contains("profile = \"minimal\""));
+
+    let workspace = read_workspace_file("Cargo.toml");
+    assert!(!workspace.contains("rust-version"));
+    assert!(workspace.contains("dioxus = { version = \">=0\""));
+
+    for crate_manifest in [
+        "crates/kt-app/Cargo.toml",
+        "crates/kt-config/Cargo.toml",
+        "crates/kt-core/Cargo.toml",
+        "crates/kt-secrets/Cargo.toml",
+        "crates/kt-sync/Cargo.toml",
+        "crates/kt-ui/Cargo.toml",
+    ] {
+        assert!(!read_workspace_file(crate_manifest).contains("rust-version"));
+    }
+
+    for workflow_path in [
+        ".github/workflows/alpha.yml",
+        ".github/workflows/release.yml",
+    ] {
+        let workflow = read_workspace_file(workflow_path);
+        assert!(workflow.contains("dtolnay/rust-toolchain@stable"));
+        assert!(!workflow.contains("DIOXUS_CLI_VERSION"));
+        assert!(workflow.contains("cargo install dioxus-cli --locked"));
+        assert!(!workflow.contains("cargo install dioxus-cli --locked --version"));
+        for line in workflow.lines() {
+            if line.contains("dtolnay/rust-toolchain@") {
+                assert!(
+                    line.contains("dtolnay/rust-toolchain@stable"),
+                    "Rust toolchain action 必须跟随 stable: {line}"
+                );
+            }
+        }
+    }
+
+    let android = read_workspace_file(".github/scripts/package-android-apk.sh");
+    assert!(android.contains("dx --version"));
+    assert!(!android.contains("DIOXUS_CLI_VERSION"));
+
+    let ios = read_workspace_file(".github/scripts/package-ios-ipa.sh");
+    assert!(ios.contains("dx --version"));
+    assert!(!ios.contains("REQUIRED_DX_VERSION"));
+}
+
+#[test]
 fn workflow_isolates_android_signing_environment_from_unsigned_ios() {
     for path in [
         ".github/workflows/alpha.yml",
@@ -168,7 +217,17 @@ fn android_packager_fails_closed_on_signing_identity_mismatch() {
         "MOBILE_BUILD_NUMBER",
         "arm64-v8a",
         "application-icon-",
+        "WryActivity.kt",
+        "AndroidManifest.xml",
+        "uses-permission android:name=\"android.permission.INTERNET\"",
+        "setDecorFitsSystemWindows(false)",
+        "statusBarColor = Color.TRANSPARENT",
+        "navigationBarColor = Color.TRANSPARENT",
+        "isNavigationBarContrastEnforced = false",
+        "AAPT\" dump permissions",
+        "android.permission.INTERNET",
         "Android Gradle Plugin 可能缩短 APK 内资源路径",
+        "dx --version",
     ] {
         assert!(
             android.contains(required),
@@ -202,6 +261,9 @@ fn ios_packager_outputs_a_verified_unsigned_arm64_ipa() {
         "codesign --remove-signature",
         "codesign -d",
         "未签名 iOS IPA 已生成并通过结构校验",
+        "NSLocalNetworkUsageDescription",
+        "局域网设备以同步配置",
+        "dx --version",
     ] {
         assert!(ios.contains(required), "iOS 未签名脚本缺少: {required}");
     }
