@@ -519,6 +519,10 @@ pub struct AppSettings {
     /// Show a per-line timestamp gutter (`[HH:MM:SS]`) in the terminal.
     #[serde(default)]
     pub show_timestamps: bool,
+    /// Keep the SFTP file manager and the terminal working directory in sync.
+    /// Persisted so the user only has to opt in once instead of per session.
+    #[serde(default)]
+    pub sftp_auto_sync: bool,
 }
 
 impl Default for AppSettings {
@@ -536,6 +540,7 @@ impl Default for AppSettings {
             editors: Vec::new(),
             show_line_numbers: false,
             show_timestamps: false,
+            sftp_auto_sync: false,
         }
     }
 }

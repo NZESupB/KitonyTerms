@@ -1,4 +1,4 @@
-use super::{AppText, DialogText, MonitorText, SftpText, Texts};
+use super::{AppText, DialogText, MonitorText, PhoneText, SftpText, Texts};
 
 pub const TEXTS: Texts = Texts {
     app: AppText {
@@ -81,6 +81,15 @@ pub const TEXTS: Texts = Texts {
         show_line_numbers: "行号",
         show_timestamps: "时间戳",
         terminal_display_hint: "在终端左侧显示行号与时间戳栏。",
+        sync_title: "配置同步",
+        sync_hint: "只同步非机密的会话与界面设置；密码和密码库密钥始终保留在本机。",
+        sync_username: "WebDAV 用户名",
+        sync_password: "WebDAV 密码（不会保存）",
+        sync_upload: "上传",
+        sync_download: "下载",
+        sync_share: "局域网分享",
+        sync_pairing_code: "局域网地址 / 配对码",
+        sync_import: "导入",
     },
     dialog: DialogText {
         new_title: "新建连接",
@@ -163,7 +172,9 @@ pub const TEXTS: Texts = Texts {
         copy_path: "复制路径",
         copy_name: "复制名称",
         sync_to_terminal: "将终端切换到此路径",
-        sync_from_terminal: "跟随终端目录",
+        auto_sync: "自动同步",
+        sync_blocked_alt_screen: "终端正在运行全屏程序，已跳过目录同步",
+        sync_send_failed: "终端目录切换命令无法投递",
         new_folder: "新建文件夹",
         rename: "重命名",
         delete: "删除",
@@ -180,6 +191,18 @@ pub const TEXTS: Texts = Texts {
         edit_status_uploaded: "已回传:",
         edit_status_failed: "同步失败:",
         edit_status_ignored: "已忽略本地修改:",
+        edit_inline: "编辑",
+        editor_loading: "正在载入…",
+        editor_saving: "正在保存…",
+        editor_save: "保存",
+        editor_saved: "已保存:",
+        editor_unsaved: "未保存",
+        editor_discard_prompt: "放弃未保存的修改？",
+        editor_discard: "放弃",
+        editor_not_text: "这不是 UTF-8 文本文件，无法在应用内编辑",
+        editor_read_failed: "读取下载的临时文件失败",
+        editor_write_failed: "写入本地临时文件失败",
+        editor_session_closed: "会话已关闭",
         session_missing: "会话不存在或已关闭，无法读取远端目录",
         state_unavailable: "无法访问应用状态，文件管理请求未发送",
     },
@@ -196,8 +219,27 @@ pub const TEXTS: Texts = Texts {
         waiting: "等待采样",
         trend: "趋势",
     },
+    phone: PhoneText {
+        tab_servers: "服务器",
+        tab_terminal: "终端",
+        tab_files: "文件",
+        tab_monitor: "监控",
+        more_actions: "更多操作",
+        switch_session: "切换会话",
+        keyboard: "键盘",
+        disconnect: "断开连接",
+        no_session_short: "尚未连接服务器",
+        files_need_session: "连接服务器后可浏览远端文件",
+        monitor_need_session: "连接服务器后可查看资源监控",
+        sticky_ctrl: "Ctrl 已按住，下一个按键生效",
+        sticky_alt: "Alt 已按住，下一个按键生效",
+    },
 };
 
 pub fn sftp_timeout_message(path: &str, seconds: u64) -> String {
     format!("读取远端目录 {path} 超时({seconds} 秒)，请刷新重试")
+}
+
+pub fn inline_edit_too_large_message(limit: &str) -> String {
+    format!("文件超过 {limit}，无法在应用内编辑")
 }

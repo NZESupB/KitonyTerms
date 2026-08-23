@@ -2,7 +2,12 @@
 
 set -Eeuo pipefail
 
-readonly DIOXUS_CLI_VERSION="0.7.9"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$script_dir/prepare-rust-objcopy.sh"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+cd "$repo_root"
+
 readonly ANDROID_TARGET="aarch64-linux-android"
 readonly ANDROID_ABI="arm64-v8a"
 readonly ANDROID_BUILD_TOOLS_VERSION="35.0.0"
@@ -60,10 +65,13 @@ require_command dx
 require_command perl
 require_command unzip
 require_command find
+require_command grep
 
-dx_version="$(dx --version 2>&1)"
-[[ "$dx_version" =~ (^|[^0-9])${DIOXUS_CLI_VERSION//./\.}([^0-9]|$) ]] ||
-  fail "Dioxus CLI 版本不一致，期望 $DIOXUS_CLI_VERSION，实际: $dx_version"
+configure_rust_objcopy_runtime
+
+dx_version="$(dx --version 2>&1)" || fail "Dioxus CLI 无法运行"
+[[ -n "$dx_version" ]] || fail "Dioxus CLI 未返回版本信息"
+echo "使用当前 Dioxus CLI: $dx_version"
 
 [[ -n "${ANDROID_HOME:-}" ]] || fail "缺少环境变量: ANDROID_HOME"
 readonly BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
@@ -104,6 +112,30 @@ ANDROID_PLATFORM="${ANDROID_PLATFORM:-android-35}" dx bundle \
 gradlew_path="$(find target/dx -path '*/release/android/app/gradlew' -print -quit)"
 [[ -n "$gradlew_path" ]] || fail "未找到 Dioxus Android Gradle 工程"
 android_project="$(dirname "$gradlew_path")"
+
+wry_activity_count="$(find "$android_project" -type f -name 'WryActivity.kt' | wc -l | tr -d '[:space:]')"
+((wry_activity_count == 1)) ||
+  fail "Android 生成工程中必须恰好包含一个 WryActivity.kt，实际为 $wry_activity_count；拒绝生成非沉浸式 APK"
+wry_activity="$(find "$android_project" -type f -name 'WryActivity.kt' -print -quit)"
+
+manifest_count="$(find "$android_project/app/src/main" -type f -name 'AndroidManifest.xml' | wc -l | tr -d '[:space:]')"
+((manifest_count == 1)) ||
+  fail "Android 主模块必须恰好包含一个 AndroidManifest.xml，实际为 $manifest_count"
+android_manifest="$(find "$android_project/app/src/main" -type f -name 'AndroidManifest.xml' -print -quit)"
+perl -0pi -e '
+  if ($_ !~ /android\.permission\.INTERNET/) {
+    my $inserted = s/(<manifest\b[^>]*>)/$1\n    <uses-permission android:name="android.permission.INTERNET" \/>/;
+    die "AndroidManifest 无法注入 INTERNET 权限\n" if $inserted != 1;
+  }
+' "$android_manifest"
+
+# 让 WebView 延伸到系统栏区域；页面 CSS 继续通过 safe-area-inset-* 保护内容。
+perl -0pi -e '
+  my $import = s/(import androidx\.appcompat\.app\.AppCompatActivity\n)/$1import android.graphics.Color\n/;
+  my $on_create = s/(override fun onCreate\(savedInstanceState: Bundle\?\) \{\n\s*super\.onCreate\(savedInstanceState\)\n)/$1        window.setDecorFitsSystemWindows(false)\n        window.statusBarColor = Color.TRANSPARENT\n        window.navigationBarColor = Color.TRANSPARENT\n        window.isNavigationBarContrastEnforced = false\n/;
+  die "WryActivity 沉浸式 import 注入次数不是 1: $import\n" if $import != 1;
+  die "WryActivity 沉浸式 onCreate 注入次数不是 1: $on_create\n" if $on_create != 1;
+' "$wry_activity"
 
 gradle_file=""
 for candidate in "$android_project/app/build.gradle.kts" "$android_project/app/build.gradle"; do
@@ -169,6 +201,10 @@ grep -Fxq "lib/$ANDROID_ABI/libmain.so" "$apk_listing" ||
 badging_file="$work_dir/badging.txt"
 "$AAPT" dump badging "$signed_apk" >"$badging_file"
 cat "$badging_file"
+permissions_file="$work_dir/permissions.txt"
+"$AAPT" dump permissions "$signed_apk" >"$permissions_file"
+grep -Fq "android.permission.INTERNET" "$permissions_file" ||
+  fail "Android APK 未声明 INTERNET 权限，WebDAV/局域网同步不可用"
 package_line="$(grep -m1 '^package:' "$badging_file" || true)"
 actual_bundle_id="$(printf '%s\n' "$package_line" | sed -n "s/.* name='\([^']*\)'.*/\1/p")"
 actual_version_code="$(printf '%s\n' "$package_line" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"

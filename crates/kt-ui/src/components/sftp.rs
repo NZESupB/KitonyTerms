@@ -289,6 +289,9 @@ pub(crate) fn request_directory(
             return Ok(());
         }
 
+        let terminal_before = sess.terminal_cwd.clone();
+        let should_sync_terminal = sess.sftp_auto_sync;
+
         let request_id = app_state.send_sftp_request(session_id, SftpRequest::List { path })?;
         let sess = app_state
             .sessions
@@ -299,6 +302,8 @@ pub(crate) fn request_directory(
         sess.sftp_error = None;
         sess.sftp_entries.clear();
         sess.sftp_list_request_id = Some(request_id);
+        sess.sftp_terminal_sync_request =
+            should_sync_terminal.then_some((request_id, terminal_before));
         request_id
     };
 
@@ -306,13 +311,16 @@ pub(crate) fn request_directory(
     spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(UI_SFTP_TIMEOUT_SECS)).await;
         if let Ok(mut app_state) = state_for_timeout.lock() {
-            if let Some(sess) = app_state.sessions.get_mut(&session_id) {
+            let expired = app_state.sessions.get_mut(&session_id).is_some_and(|sess| {
                 expire_directory_request(
                     sess,
                     request_id,
                     &requested_path,
                     ui_timeout_message(&requested_path, language),
-                );
+                )
+            });
+            if expired {
+                app_state.finish_sftp_directory_request(session_id, request_id);
             }
         }
     });
@@ -551,7 +559,16 @@ mod tests {
             sftp_failures: std::collections::VecDeque::new(),
             sftp_progress: None,
             terminal_cwd: None,
-            terminal_cwd_sync_pending: false,
+            terminal_cwd_inference_target: None,
+            terminal_prev_cwd: None,
+            terminal_dir_stack: Vec::new(),
+            terminal_input_buffer: Vec::new(),
+            terminal_input_invalid: false,
+            sftp_auto_sync: false,
+            shell_integration_requested: false,
+            remote_home: None,
+            sftp_followed_terminal_cwd: None,
+            sftp_terminal_sync_request: None,
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
@@ -588,7 +605,16 @@ mod tests {
             sftp_failures: std::collections::VecDeque::new(),
             sftp_progress: None,
             terminal_cwd: None,
-            terminal_cwd_sync_pending: false,
+            terminal_cwd_inference_target: None,
+            terminal_prev_cwd: None,
+            terminal_dir_stack: Vec::new(),
+            terminal_input_buffer: Vec::new(),
+            terminal_input_invalid: false,
+            sftp_auto_sync: false,
+            shell_integration_requested: false,
+            remote_home: None,
+            sftp_followed_terminal_cwd: None,
+            sftp_terminal_sync_request: None,
             monitor: None,
             monitor_loading: false,
             monitor_error: None,

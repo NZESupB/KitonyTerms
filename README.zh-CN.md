@@ -11,9 +11,11 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 - **主应用：** GUI-only 应用 `kitonyterms`，由 `kt-app` 提供。
 - **支持平台：** macOS / Windows / Linux 的 `x64` 与 `aarch64` 桌面产物，
   以及 Android / iOS 的 `aarch64` 移动产物。不构建 32 位产物。
+- **移动端界面：** Android 与 iOS 的 WebView 内容采用沉浸式布局，页面通过安全区适配
+  避免被状态栏和导航栏遮挡。
 - **核心引擎：** `kt-core` 中实现纯 Rust SSH 客户端、终端网格、SFTP 任务和远端监控，
   不依赖 UI。
-- **界面：** Dioxus 0.7 desktop/mobile，桌面系统窗口或移动 WebView、响应式连接/SFTP
+- **界面：** 当前稳定版 Dioxus desktop/mobile，桌面系统窗口或移动 WebView、响应式连接/SFTP
   区域、终端工作区、监控横条、状态栏、弹窗与设置面板。
 - **验证：** workspace 每个 crate 都有单元测试或集成测试覆盖；clippy 以
   `-D warnings` 执行。
@@ -34,6 +36,8 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 - 编辑器设置：默认编辑器选择和右键“打开方式”条目。
 - 远端 CPU、内存、磁盘、网络、负载、运行时长和延迟监控。
 - 浅色/深色主题与中文/英文界面语言设置。
+- 通过 WebDAV 或一次性局域网分享同步非机密配置；密码保险库、保险库密钥和
+  `known_hosts.toml` 永不进入同步载荷。
 
 ## 当前边界
 
@@ -51,7 +55,7 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 
 ## 快速开始
 
-需要 Rust stable 1.85+。
+需要当前 Rust stable 通道；仓库的 `rust-toolchain.toml` 跟随 `stable`，不固定数字版本。
 
 ### Linux 依赖
 
@@ -71,16 +75,19 @@ macOS 和 Windows 本地开发不需要额外系统依赖。
 
 ### 移动端打包
 
-移动构建固定使用 Dioxus CLI 0.7.9：
+移动构建使用当前稳定版 Dioxus CLI：
 
 ```bash
-cargo install dioxus-cli --locked --version 0.7.9
+rustup component add llvm-tools-preview
+cargo install dioxus-cli --locked
 dx bundle --release --platform android --target aarch64-linux-android --package-types apk --package kt-app
 dx build --release --platform ios --target aarch64-apple-ios --package kt-app
 ```
 
 Android 还需要 Android SDK 35、Build Tools 35.0.0 与 NDK 27.2；iOS 编译只需要 Xcode。
-CI 应为 Android job 创建受保护的 `mobile-signing` Environment，并配置以下 Secrets：
+release strip 会调用宿主工具链的 `rust-objcopy`；仓库打包脚本会在构建前预检该工具，并为
+Linux/macOS 配置 LLVM 动态库搜索路径。CI 应为 Android job 创建受保护的
+`mobile-signing` Environment，并配置以下 Secrets：
 
 - Android（PKCS#12 keystore）：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、
   `ANDROID_KEY_ALIAS`、`ANDROID_CERT_SHA256`；密钥密码不同时再配置
@@ -94,8 +101,10 @@ iOS 产物不包含签名身份或 provisioning profile，安装前必须自行�
 
 `mobile-signing` 的 deployment branch/tag policy 应只允许 `main` 与正式 `v*` tag；同时应
 保护 `main` 与 `v*` 标签创建权限，避免可修改 workflow 的未审查提交读取生产签名材料。
-移动内部构建号由 `refs/ci/mobile-build-number` 上的 fast-forward CAS 计数器分配，值不超过
-Android `versionCode` 上限 `2,100,000,000`；接近该上限前必须迁移编号策略。
+移动内部构建号由 Alpha/Release 共用的 concurrency 锁按 UTC 秒分配，并以旧计数器值
+`1,787,238,032` 作为切换下限。分配器不再写 GitHub API，值不超过 Android
+`versionCode` 上限 `2,100,000,000`。正常 runner 时钟下锁可避免同秒重复；若要在时钟回拨或
+workflow 并发语义变化时仍提供绝对保证，必须引入外部持久化原子计数器。
 
 ### 启动应用
 
@@ -112,6 +121,10 @@ cargo run -p kt-app -- --help
 
 在 UI 中，从侧栏创建连接，选择认证方式后连接；如需复用连接，可保存会话。
 保存的密码和私钥口令会进入加密保险库，不会写入 `config.toml`。
+
+在“设置”中，WebDAV 使用用户填写的完整 HTTP(S) 资源地址，并通过 ETag 条件写避免
+静默覆盖并发修改。局域网分享使用临时随机端口 HTTP 服务、一次性 Bearer 配对码和
+十分钟有效期。同步内容只包含等价于 `config.toml` 的非机密设置与已保存会话。
 
 ## 开发者地图
 
@@ -132,6 +145,9 @@ kt-config
 
 kt-secrets
   Argon2id + XChaCha20-Poly1305 本机机密保险库
+
+kt-sync
+  非机密配置快照的 WebDAV 与一次性局域网传输层
 ```
 
 关键边界是 `kt-core`：它负责协议和终端行为，并且不依赖 UI。
@@ -160,6 +176,7 @@ cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 bash -n .github/scripts/allocate-mobile-build-number.sh
+bash -n .github/scripts/prepare-rust-objcopy.sh
 bash -n .github/scripts/package-android-apk.sh
 bash -n .github/scripts/package-ios-ipa.sh
 bash -n .github/scripts/publish-alpha.sh

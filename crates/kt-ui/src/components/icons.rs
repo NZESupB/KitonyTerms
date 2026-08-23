@@ -32,15 +32,12 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M10 17V21" }
             path { d: "M14 17V21" }
         },
-        "panel-left-close" => rsx! {
+        "panel-left-toggle" => rsx! {
             path { d: "M4 5H20V19H4z" }
             path { d: "M9 5V19" }
-            path { d: "M15 9L12 12L15 15" }
-        },
-        "panel-left-open" => rsx! {
-            path { d: "M4 5H20V19H4z" }
-            path { d: "M9 5V19" }
-            path { d: "M12 9L15 12L12 15" }
+            g { class: "kt-icon-direction",
+                path { d: "M15 9L12 12L15 15" }
+            }
         },
         "sliders" => rsx! {
             path { d: "M4 7H20" }

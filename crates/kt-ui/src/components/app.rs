@@ -3,18 +3,23 @@
 //! 这里保留全局状态、弹窗和跨模块副作用编排；主工作台布局由 `main_shell` 承接。
 
 use std::{
+    cell::Cell,
     collections::BTreeSet,
+    rc::Rc,
     sync::{Arc, Mutex, OnceLock},
 };
 
 use dioxus::prelude::*;
 use kt_config::SessionProfile;
 use kt_core::{AuthChallenge, AuthResponse, SessionId, SessionManager, SftpRequest, ToCore};
+use kt_sync::{
+    import_share, start_share, PutPrecondition, ShareHandle, SyncEnvelope, WebDavClient,
+    WebDavEndpoint, DEFAULT_SHARE_TTL,
+};
 
 use crate::components::app_logic::{
     active_monitor_view, active_session, active_sftp_view, active_terminal_view,
-    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views,
-    status_bar_session_view, DEFAULT_GROUP_NAME,
+    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views, DEFAULT_GROUP_NAME,
 };
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
 use crate::components::dialog::{
@@ -25,15 +30,22 @@ use crate::components::external_edit::{
     local_file_modified, open_local_file_with, ExternalEdit, ExternalEditAction,
     ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
 };
+use crate::components::inline_editor::{
+    inline_edit_load_error_text, inline_edit_size_rejection, read_editable_text,
+    write_editable_text, InlineEdit, InlineEditAction, InlineEditStatus, InlineEditorDialog,
+    InlineEditorStatus,
+};
 use crate::components::main_shell::{
-    render_main_shell, window_class, MainShellArgs, ResizeDrag, SplitMode, SFTP_MAX_HEIGHT,
+    render_main_shell, window_class, ResizeDrag, ShellArgs, SplitMode, SFTP_MAX_HEIGHT,
     SFTP_MIN_HEIGHT, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
 };
+use crate::components::phone_shell::{render_phone_shell, PhoneExtras, PhoneSheet, PhoneTab};
 use crate::components::security_dialogs::{AuthChallengeDialog, HostKeyConfirmDialog};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
-use crate::components::state_controller::{use_state_controller, StoreSignals};
-use crate::components::workbench::SettingsPanel;
+use crate::components::state_controller::{use_state_controller, EditSignals, StoreSignals};
+use crate::components::workbench::{SettingsPanel, SyncAction};
+use crate::device::use_device_class;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
 use crate::store::PendingHostKey;
@@ -112,6 +124,12 @@ pub fn App() -> Element {
 
     let mut settings = use_signal(|| store.settings());
     let show_settings = use_signal(|| false);
+    let mut sync_busy = use_signal(|| false);
+    let mut sync_status = use_signal(|| None::<String>);
+    let mut sync_share_handle = use_signal(|| None::<ShareHandle>);
+    // 仅保留最近一次成功下载/上传得到的远端 ETag，并绑定完整 URL，避免把
+    // 一个资源的版本条件误用于另一个 WebDAV 地址。
+    let mut sync_remote_revision = use_signal(|| None::<(String, String)>);
     let mut show_group_dialog = use_signal(|| false);
     let mut group_dialog_mode = use_signal(|| "new".to_string());
     let mut group_dialog_name = use_signal(String::new);
@@ -126,6 +144,8 @@ pub fn App() -> Element {
     let mut external_edits = use_signal(Vec::<ExternalEdit>::new);
     let mut external_edit_notice = use_signal(|| None::<String>);
     let next_external_edit_id = use_signal(|| 1u64);
+    // 内嵌编辑器同一时刻只有一个：它是全屏模态，多开既没有入口也没有意义。
+    let mut inline_edit = use_signal(|| None::<InlineEdit>);
     let mut host_key_prompt = use_signal(|| None::<PendingHostKey>);
     let mut host_key_error = use_signal(|| None::<String>);
     let mut pending_auth_secrets = use_signal(Vec::<PendingAuthSecret>::new);
@@ -140,6 +160,19 @@ pub fn App() -> Element {
     let collapsed_server_groups = use_signal(BTreeSet::<String>::new);
     let sidebar_collapsed = use_signal(|| false);
     let split_mode = use_signal(|| None::<SplitMode>);
+    // 手机 Shell 的局部状态。两个 Shell 在同一层条件渲染，hook 必须无条件创建，
+    // 否则设备类型切换（旋转、折叠屏展开）会打乱 hook 顺序。桌面端只是两个空信号。
+    let phone_tab = use_signal(|| PhoneTab::Servers);
+    let mut phone_sheet = use_signal(|| None::<PhoneSheet>);
+    let device_class = use_device_class();
+    use_effect(move || {
+        // 上下文菜单和动作面板分别属于桌面/手机 Shell，设备切换时不能把旧状态带过去。
+        let is_phone = device_class().is_phone();
+        context_menu.set(None);
+        if !is_phone {
+            phone_sheet.set(None);
+        }
+    });
     let secret_save_signals = SecretSaveSignals { status_notice };
 
     use_state_controller(
@@ -151,68 +184,93 @@ pub fn App() -> Element {
             host_key_prompt,
             status_notice,
         },
-        external_edits,
-        Callback::new(move |action: ExternalEditAction| match action {
-            ExternalEditAction::OpenLocal {
-                edit_id,
-                path,
-                file_name,
-                editor_command,
-            } => {
-                if let Err(e) = open_local_file_with(&path, editor_command.as_deref()) {
-                    tracing::error!("打开外部编辑器失败: {}", e);
-                    external_edit_notice.set(Some(format!(
-                        "{} {}: {}",
-                        texts(settings.peek().language).sftp.edit_status_open_failed,
+        EditSignals {
+            settings,
+            external_edits,
+            on_external_edit_action: Callback::new(
+                move |action: ExternalEditAction| match action {
+                    ExternalEditAction::OpenLocal {
+                        edit_id,
+                        path,
                         file_name,
-                        e
-                    )));
-                    let mut edits = external_edits.peek().clone();
-                    edits.retain(|edit| edit.id != edit_id);
-                    external_edits.set(edits);
-                    let _ = std::fs::remove_file(path);
-                } else {
-                    external_edit_notice.set(Some(format!(
-                        "{} {}",
-                        texts(settings.peek().language).sftp.edit_status_opened,
-                        file_name
-                    )));
-                }
-            }
-            ExternalEditAction::Upload {
-                edit_id,
-                session_id,
-                local_path,
-                remote_path,
-                file_name,
-            } => {
-                external_edit_notice.set(Some(format!(
-                    "{} {}",
-                    texts(settings.peek().language).sftp.edit_status_uploading,
-                    file_name
-                )));
-                match send_sftp_request(
-                    Arc::clone(state),
-                    session_id,
-                    SftpRequest::Upload {
-                        local: local_path,
-                        remote: remote_path,
-                    },
-                ) {
-                    Ok(request_id) => {
-                        let mut edits = external_edits.peek().clone();
-                        if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
-                            edit.request_id = Some(request_id);
+                        editor_command,
+                    } => {
+                        if let Err(e) = open_local_file_with(&path, editor_command.as_deref()) {
+                            tracing::error!("打开外部编辑器失败: {}", e);
+                            external_edit_notice.set(Some(format!(
+                                "{} {}: {}",
+                                texts(settings.peek().language).sftp.edit_status_open_failed,
+                                file_name,
+                                e
+                            )));
+                            let mut edits = external_edits.peek().clone();
+                            edits.retain(|edit| edit.id != edit_id);
+                            external_edits.set(edits);
+                            let _ = std::fs::remove_file(path);
+                        } else {
+                            external_edit_notice.set(Some(format!(
+                                "{} {}",
+                                texts(settings.peek().language).sftp.edit_status_opened,
+                                file_name
+                            )));
                         }
-                        external_edits.set(edits);
                     }
-                    Err(message) => {
-                        let mut edits = external_edits.peek().clone();
-                        if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id) {
-                            edit.status = ExternalEditStatus::PromptPending;
-                            edit.request_id = None;
+                    ExternalEditAction::Upload {
+                        edit_id,
+                        session_id,
+                        local_path,
+                        remote_path,
+                        file_name,
+                    } => {
+                        external_edit_notice.set(Some(format!(
+                            "{} {}",
+                            texts(settings.peek().language).sftp.edit_status_uploading,
+                            file_name
+                        )));
+                        match send_sftp_request(
+                            Arc::clone(state),
+                            session_id,
+                            SftpRequest::Upload {
+                                local: local_path,
+                                remote: remote_path,
+                            },
+                        ) {
+                            Ok(request_id) => {
+                                let mut edits = external_edits.peek().clone();
+                                if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id)
+                                {
+                                    edit.request_id = Some(request_id);
+                                }
+                                external_edits.set(edits);
+                            }
+                            Err(message) => {
+                                let mut edits = external_edits.peek().clone();
+                                if let Some(edit) = edits.iter_mut().find(|edit| edit.id == edit_id)
+                                {
+                                    edit.status = ExternalEditStatus::PromptPending;
+                                    edit.request_id = None;
+                                }
+                                external_edits.set(edits);
+                                external_edit_notice.set(Some(format!(
+                                    "{} {}: {}",
+                                    texts(settings.peek().language).sftp.edit_status_failed,
+                                    file_name,
+                                    message
+                                )));
+                            }
                         }
-                        external_edits.set(edits);
+                    }
+                    ExternalEditAction::DeleteLocal(path) => {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    ExternalEditAction::UploadCompleted { file_name } => {
+                        external_edit_notice.set(Some(format!(
+                            "{} {}",
+                            texts(settings.peek().language).sftp.edit_status_uploaded,
+                            file_name
+                        )));
+                    }
+                    ExternalEditAction::SyncFailed { file_name, message } => {
                         external_edit_notice.set(Some(format!(
                             "{} {}: {}",
                             texts(settings.peek().language).sftp.edit_status_failed,
@@ -220,28 +278,69 @@ pub fn App() -> Element {
                             message
                         )));
                     }
+                },
+            ),
+            inline_edit,
+            on_inline_edit_action: Callback::new(move |action: InlineEditAction| {
+                let language = settings.peek().language;
+                match action {
+                    InlineEditAction::Load { local_path } => {
+                        let mut edit = inline_edit.peek().clone();
+                        let Some(current) = edit.as_mut() else {
+                            return;
+                        };
+                        match read_editable_text(&local_path) {
+                            Ok(content) => {
+                                current.original = content;
+                                current.status = InlineEditStatus::Ready;
+                            }
+                            Err(error) => {
+                                // 过大或二进制内容不进编辑框，临时文件立即清掉。
+                                let _ = std::fs::remove_file(&local_path);
+                                current.status = InlineEditStatus::LoadFailed(
+                                    inline_edit_load_error_text(&error, language),
+                                );
+                            }
+                        }
+                        inline_edit.set(edit);
+                    }
+                    InlineEditAction::Saved { file_name } => {
+                        external_edit_notice.set(Some(format!(
+                            "{} {}",
+                            texts(language).sftp.editor_saved,
+                            file_name
+                        )));
+                    }
+                    InlineEditAction::DeleteLocal(path) => {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
-            }
-            ExternalEditAction::DeleteLocal(path) => {
-                let _ = std::fs::remove_file(path);
-            }
-            ExternalEditAction::UploadCompleted { file_name } => {
-                external_edit_notice.set(Some(format!(
-                    "{} {}",
-                    texts(settings.peek().language).sftp.edit_status_uploaded,
-                    file_name
-                )));
-            }
-            ExternalEditAction::SyncFailed { file_name, message } => {
-                external_edit_notice.set(Some(format!(
-                    "{} {}: {}",
-                    texts(settings.peek().language).sftp.edit_status_failed,
-                    file_name,
-                    message
-                )));
-            }
-        }),
+            }),
+        },
     );
+
+    // 外部编辑反馈属于短时通知；用代号避免旧的定时器清掉后续新通知。
+    let external_edit_notice_generation = use_hook(|| Rc::new(Cell::new(0u64)));
+    use_effect({
+        let generation = external_edit_notice_generation.clone();
+        move || {
+            let Some(notice) = external_edit_notice() else {
+                return;
+            };
+            let next_generation = generation.get().wrapping_add(1);
+            generation.set(next_generation);
+            let mut notice_signal = external_edit_notice;
+            let generation = generation.clone();
+            spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+                if generation.get() == next_generation
+                    && notice_signal.peek().as_deref() == Some(notice.as_str())
+                {
+                    notice_signal.set(None);
+                }
+            });
+        }
+    });
 
     use_effect({
         let store = Arc::clone(store);
@@ -291,7 +390,8 @@ pub fn App() -> Element {
     let current_settings = settings();
     let language = current_settings.language;
     let theme_name = current_settings.normalized_theme();
-    let window_class_name = window_class(active_resize(), theme_name);
+    let is_phone = device_class().is_phone();
+    let window_class_name = window_class(active_resize(), theme_name, is_phone);
     let sessions_snapshot = all_sessions();
     let active_session_ref = active_session(&sessions_snapshot, active_session_id());
     let active_status_session = active_session_ref.cloned();
@@ -300,7 +400,6 @@ pub fn App() -> Element {
     let active_terminal = active_terminal_view(active_session_ref);
     let active_sftp = active_sftp_view(active_session_ref);
     let active_monitor = active_monitor_view(active_session_ref);
-    let status_session = status_bar_session_view(active_session_ref);
     let external_edit_status = external_edit_status_text(
         &external_edits(),
         active_status_session.as_ref(),
@@ -310,6 +409,184 @@ pub fn App() -> Element {
     let status_detail = match external_edit_status {
         Some(status) => Some(status),
         None => status_notice(),
+    };
+
+    // SFTP 新建目录 / 重命名共用同一个命名对话框：桌面端由右键菜单打开，手机端由
+    // 动作面板打开，因此提成具名回调而不是各写一份。
+    let on_sftp_mkdir = Callback::new(move |(session_id, path): (SessionId, String)| {
+        sftp_name_dialog_mode.set("mkdir".to_string());
+        sftp_name_dialog_session.set(Some(session_id));
+        sftp_name_dialog_base_path.set(path);
+        sftp_name_dialog_target_path.set(String::new());
+        sftp_name_dialog_is_dir.set(true);
+        sftp_name_dialog_value.set(String::new());
+        show_sftp_name_dialog.set(true);
+    });
+    let on_sftp_rename = Callback::new(move |ctx: SftpEntryContext| {
+        sftp_name_dialog_mode.set("rename".to_string());
+        sftp_name_dialog_session.set(Some(ctx.session_id));
+        sftp_name_dialog_base_path.set(ctx.base_path.clone());
+        sftp_name_dialog_target_path.set(join_path(&ctx.base_path, &ctx.entry.name));
+        sftp_name_dialog_is_dir.set(ctx.entry.is_dir);
+        sftp_name_dialog_value.set(ctx.entry.name.clone());
+        show_sftp_name_dialog.set(true);
+    });
+
+    // 内嵌编辑器：手机端唯一的编辑路径，桌面端与外部编辑并存。
+    let on_sftp_inline_edit = {
+        let state = Arc::clone(state);
+        Callback::new(move |ctx: SftpEntryContext| {
+            let file_name = ctx.entry.name.clone();
+            if let Err(message) = start_inline_edit(state.clone(), ctx, inline_edit, language) {
+                external_edit_notice.set(Some(format!("{file_name}: {message}")));
+            }
+        })
+    };
+    let on_inline_edit_save = {
+        let state = Arc::clone(state);
+        Callback::new(move |content: String| {
+            let t = texts(language).sftp;
+            let mut next = inline_edit.peek().clone();
+            let Some(current) = next.as_mut() else {
+                return;
+            };
+
+            if let Err(message) = write_editable_text(&current.local_path, &content) {
+                current.status =
+                    InlineEditStatus::SaveFailed(format!("{}: {message}", t.editor_write_failed));
+                inline_edit.set(next);
+                return;
+            }
+
+            match send_sftp_request(
+                state.clone(),
+                current.session_id,
+                SftpRequest::Upload {
+                    local: current.local_path.clone(),
+                    remote: current.remote_path.clone(),
+                },
+            ) {
+                Ok(request_id) => {
+                    current.request_id = Some(request_id);
+                    current.status = InlineEditStatus::Saving;
+                    // 不更新 original：保存失败时「有未保存改动」的判定必须仍然成立。
+                }
+                Err(message) => {
+                    current.request_id = None;
+                    current.status = InlineEditStatus::SaveFailed(message);
+                }
+            }
+            inline_edit.set(next);
+        })
+    };
+    let on_inline_edit_close = Callback::new(move |_| {
+        if let Some(edit) = inline_edit.peek().as_ref() {
+            let _ = std::fs::remove_file(&edit.local_path);
+        }
+        inline_edit.set(None);
+    });
+
+    let shell_args = ShellArgs {
+        state: Arc::clone(state),
+        store: Arc::clone(store),
+        settings,
+        language,
+        saved_profiles: saved_profiles.clone(),
+        saved_groups: saved_groups.clone(),
+        active_terminal,
+        active_sftp,
+        active_monitor,
+        session_tabs,
+        status_detail: status_detail.clone(),
+        on_status_dismiss: {
+            let mut external_edit_notice = external_edit_notice;
+            let mut status_notice = status_notice;
+            Callback::new(move |_| {
+                external_edit_notice.set(None);
+                status_notice.set(None);
+            })
+        },
+        on_settings_open: {
+            let mut show_settings = show_settings;
+            Callback::new(move |_| show_settings.set(true))
+        },
+        show_dialog,
+        dialog_mode,
+        edit_original_name,
+        edit_name,
+        edit_host,
+        edit_port,
+        edit_user,
+        edit_group,
+        edit_password,
+        edit_key_path,
+        edit_proxy_jump,
+        edit_proxy_type,
+        edit_proxy_host,
+        edit_proxy_port,
+        edit_proxy_username,
+        edit_use_agent,
+        edit_forward_agent,
+        show_group_dialog,
+        group_dialog_mode,
+        group_dialog_name,
+        group_dialog_original,
+        active_session_id,
+        saved_tick,
+        sidebar_width,
+        sftp_height,
+        active_resize,
+        context_menu,
+        collapsed_server_groups,
+        sidebar_collapsed,
+        split_mode,
+        on_sftp_entry_open: {
+            let state = Arc::clone(state);
+            Callback::new(move |ctx: SftpEntryContext| {
+                if let Err(e) = open_sftp_entry(state.clone(), ctx, language) {
+                    tracing::error!("SFTP 打开目录失败: {}", e);
+                }
+            })
+        },
+        on_sftp_entry_external_edit: {
+            let state = Arc::clone(state);
+            Callback::new(move |ctx: SftpEntryContext| {
+                let file_name = ctx.entry.name.clone();
+                let editor = settings.peek().default_editor.clone();
+                if let Err(message) = start_sftp_external_edit(
+                    state.clone(),
+                    ctx,
+                    editor,
+                    external_edits,
+                    next_external_edit_id,
+                ) {
+                    tracing::error!("外部编辑下载启动失败: {}", message);
+                    external_edit_notice.set(Some(format!(
+                        "{} {}: {}",
+                        texts(language).sftp.edit_status_failed,
+                        file_name,
+                        message
+                    )));
+                }
+            })
+        },
+    };
+
+    // 手机与桌面/平板的主界面在这里分派。两个 render 函数都必须保持无 hook，
+    // 否则旋转设备切换分支时会打乱 hook 顺序。
+    let shell = if is_phone {
+        render_phone_shell(
+            shell_args,
+            PhoneExtras {
+                phone_tab,
+                phone_sheet,
+                on_sftp_mkdir,
+                on_sftp_rename,
+                on_sftp_inline_edit,
+            },
+        )
+    } else {
+        render_main_shell(shell_args)
     };
 
     rsx! {
@@ -347,87 +624,11 @@ pub fn App() -> Element {
                 context_menu.set(None);
             },
 
-            {render_main_shell(MainShellArgs {
-                state: Arc::clone(state),
-                store: Arc::clone(store),
-                settings,
-                language,
-                saved_profiles: saved_profiles.clone(),
-                saved_groups: saved_groups.clone(),
-                active_terminal,
-                active_sftp,
-                active_monitor,
-                status_session,
-                session_tabs,
-                status_detail: status_detail.clone(),
-                on_settings_open: {
-                    let mut show_settings = show_settings;
-                    Callback::new(move |_| show_settings.set(true))
-                },
-                show_dialog,
-                dialog_mode,
-                edit_original_name,
-                edit_name,
-                edit_host,
-                edit_port,
-                edit_user,
-                edit_group,
-                edit_password,
-                edit_key_path,
-                edit_proxy_jump,
-                edit_proxy_type,
-                edit_proxy_host,
-                edit_proxy_port,
-                edit_proxy_username,
-                edit_use_agent,
-                edit_forward_agent,
-                show_group_dialog,
-                group_dialog_mode,
-                group_dialog_name,
-                group_dialog_original,
-                active_session_id,
-                saved_tick,
-                sidebar_width,
-                sftp_height,
-                active_resize,
-                context_menu,
-                collapsed_server_groups,
-                sidebar_collapsed,
-                split_mode,
-                on_sftp_entry_open: {
-                    let state = Arc::clone(state);
-                    Callback::new(move |ctx: SftpEntryContext| {
-                        if let Err(e) = open_sftp_entry(state.clone(), ctx, language) {
-                            tracing::error!("SFTP 打开目录失败: {}", e);
-                        }
-                    })
-                },
-                on_sftp_entry_external_edit: {
-                    let state = Arc::clone(state);
-                    Callback::new(move |ctx: SftpEntryContext| {
-                        let file_name = ctx.entry.name.clone();
-                        let editor = settings.peek().default_editor.clone();
-                        if let Err(message) = start_sftp_external_edit(
-                            state.clone(),
-                            ctx,
-                            editor,
-                            external_edits,
-                            next_external_edit_id,
-                        ) {
-                            tracing::error!("外部编辑下载启动失败: {}", message);
-                            external_edit_notice.set(Some(format!(
-                                "{} {}: {}",
-                                texts(language).sftp.edit_status_failed,
-                                file_name,
-                                message
-                            )));
-                        }
-                    })
-                },
-            })}
+            {shell}
 
-            if let Some(menu) = context_menu() {
-                ContextMenu {
+            if !is_phone {
+                if let Some(menu) = context_menu() {
+                    ContextMenu {
                     menu,
                     language,
                     editors: current_settings.editors.clone(),
@@ -523,24 +724,12 @@ pub fn App() -> Element {
                             context_menu.set(None);
                         }
                     },
-                    on_sftp_mkdir: move |(session_id, path): (SessionId, String)| {
-                        sftp_name_dialog_mode.set("mkdir".to_string());
-                        sftp_name_dialog_session.set(Some(session_id));
-                        sftp_name_dialog_base_path.set(path);
-                        sftp_name_dialog_target_path.set(String::new());
-                        sftp_name_dialog_is_dir.set(true);
-                        sftp_name_dialog_value.set(String::new());
-                        show_sftp_name_dialog.set(true);
+                    on_sftp_mkdir: move |args: (SessionId, String)| {
+                        on_sftp_mkdir.call(args);
                         context_menu.set(None);
                     },
                     on_sftp_rename: move |ctx: SftpEntryContext| {
-                        sftp_name_dialog_mode.set("rename".to_string());
-                        sftp_name_dialog_session.set(Some(ctx.session_id));
-                        sftp_name_dialog_base_path.set(ctx.base_path.clone());
-                        sftp_name_dialog_target_path.set(join_path(&ctx.base_path, &ctx.entry.name));
-                        sftp_name_dialog_is_dir.set(ctx.entry.is_dir);
-                        sftp_name_dialog_value.set(ctx.entry.name.clone());
-                        show_sftp_name_dialog.set(true);
+                        on_sftp_rename.call(ctx);
                         context_menu.set(None);
                     },
                     on_sftp_delete: {
@@ -559,6 +748,10 @@ pub fn App() -> Element {
                             }
                             context_menu.set(None);
                         }
+                    },
+                    on_sftp_inline_edit: move |ctx: SftpEntryContext| {
+                        on_sftp_inline_edit.call(ctx);
+                        context_menu.set(None);
                     },
                     on_sftp_external_edit: {
                         let state = Arc::clone(state);
@@ -608,6 +801,28 @@ pub fn App() -> Element {
                     on_copy_text: move |value: String| {
                         copy_to_clipboard(&value);
                         context_menu.set(None);
+                    },
+                    }
+                }
+            }
+
+            if let Some(edit) = inline_edit() {
+                match &edit.status {
+                    // 载入中与载入失败都还没有内容可编辑，只渲染状态卡片。
+                    InlineEditStatus::Loading | InlineEditStatus::LoadFailed(_) => rsx! {
+                        InlineEditorStatus {
+                            edit: edit.clone(),
+                            language,
+                            on_close: on_inline_edit_close,
+                        }
+                    },
+                    _ => rsx! {
+                        InlineEditorDialog {
+                            edit: edit.clone(),
+                            language,
+                            on_save: on_inline_edit_save,
+                            on_close: on_inline_edit_close,
+                        }
                     },
                 }
             }
@@ -977,6 +1192,148 @@ pub fn App() -> Element {
                 show: show_settings,
                 language,
                 settings: current_settings.clone(),
+                sync_busy: sync_busy(),
+                sync_status: sync_status(),
+                on_sync_action: {
+                    let store = Arc::clone(store);
+                    move |action: SyncAction| {
+                        if sync_busy() {
+                            return;
+                        }
+                        sync_busy.set(true);
+                        sync_status.set(Some(match language {
+                            kt_config::AppLanguage::Chinese => "正在同步…".to_string(),
+                            kt_config::AppLanguage::English => "Synchronizing…".to_string(),
+                        }));
+                        let store = Arc::clone(&store);
+                        spawn(async move {
+                            let imports_config = matches!(
+                                action,
+                                SyncAction::WebDavDownload { .. }
+                                    | SyncAction::ImportLanShare { .. }
+                            );
+                            let result: Result<Option<String>, String> = match action {
+                                SyncAction::WebDavUpload { url, username, password } => async {
+                                    let endpoint = WebDavEndpoint::parse(
+                                        &url,
+                                        Some(username),
+                                        Some(password),
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                    let client = WebDavClient::new().map_err(|error| error.to_string())?;
+                                    let envelope = SyncEnvelope::new(store.config_snapshot());
+                                    let endpoint_key = endpoint.url().to_string();
+                                    let etag = sync_remote_revision
+                                        .peek()
+                                        .as_ref()
+                                        .filter(|(known_url, _)| known_url == &endpoint_key)
+                                        .map(|(_, revision)| revision.clone());
+                                    let precondition = match etag.as_deref() {
+                                        Some(etag) => PutPrecondition::IfMatch(etag),
+                                        None => PutPrecondition::CreateOnly,
+                                    };
+                                    let revision = client
+                                        .upload(
+                                            &endpoint,
+                                            &envelope,
+                                            precondition,
+                                            &tokio_util::sync::CancellationToken::new(),
+                                        )
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    sync_remote_revision.set(
+                                        revision.map(|revision| (endpoint_key, revision.0)),
+                                    );
+                                    Ok(Some(match language {
+                                        kt_config::AppLanguage::Chinese => "WebDAV 配置上传完成".to_string(),
+                                        kt_config::AppLanguage::English => "WebDAV configuration uploaded".to_string(),
+                                    }))
+                                }.await,
+                                SyncAction::WebDavDownload { url, username, password } => async {
+                                    let endpoint = WebDavEndpoint::parse(
+                                        &url,
+                                        Some(username),
+                                        Some(password),
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                    let client = WebDavClient::new().map_err(|error| error.to_string())?;
+                                    let remote = client
+                                        .download(&endpoint, &tokio_util::sync::CancellationToken::new())
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    store
+                                        .replace_config_snapshot(remote.envelope.config)
+                                        .map_err(|error| error.to_string())?;
+                                    sync_remote_revision.set(remote.revision.map(|revision| {
+                                        (endpoint.url().to_string(), revision.0)
+                                    }));
+                                    Ok(Some(match language {
+                                        kt_config::AppLanguage::Chinese => "WebDAV 配置已导入".to_string(),
+                                        kt_config::AppLanguage::English => "WebDAV configuration imported".to_string(),
+                                    }))
+                                }.await,
+                                SyncAction::StartLanShare => async {
+                                    let (handle, info) = start_share(
+                                        store.config_snapshot(),
+                                        DEFAULT_SHARE_TTL,
+                                    )
+                                    .await
+                                    .map_err(|error| error.to_string())?;
+                                    sync_share_handle.set(Some(handle));
+                                    Ok(Some(format!(
+                                        "{}\n{}: {}",
+                                        info.url,
+                                        match language {
+                                            kt_config::AppLanguage::Chinese => "配对码",
+                                            kt_config::AppLanguage::English => "Pairing code",
+                                        },
+                                        info.pairing_code
+                                    )))
+                                }.await,
+                                SyncAction::ImportLanShare { url, pairing_code } => async {
+                                    let pending = import_share(
+                                        &url,
+                                        &pairing_code,
+                                        &tokio_util::sync::CancellationToken::new(),
+                                    )
+                                    .await
+                                    .map_err(|error| error.to_string())?;
+                                    store
+                                        .replace_config_snapshot(pending.envelope().config.clone())
+                                        .map_err(|error| error.to_string())?;
+                                    let acknowledged = pending
+                                        .acknowledge(&tokio_util::sync::CancellationToken::new())
+                                        .await;
+                                    Ok(Some(match (language, acknowledged) {
+                                        (kt_config::AppLanguage::Chinese, Ok(())) => {
+                                            "局域网配置已导入".to_string()
+                                        }
+                                        (kt_config::AppLanguage::English, Ok(())) => {
+                                            "LAN configuration imported".to_string()
+                                        }
+                                        (kt_config::AppLanguage::Chinese, Err(error)) => format!(
+                                            "局域网配置已导入，但发送接收确认失败，可重新导入以关闭分享：{error}"
+                                        ),
+                                        (kt_config::AppLanguage::English, Err(error)) => format!(
+                                            "LAN configuration imported, but acknowledgement failed; import again to close the share: {error}"
+                                        ),
+                                    }))
+                                }.await,
+                            };
+                            match result {
+                                Ok(message) => {
+                                    if imports_config {
+                                        settings.set(store.settings());
+                                        saved_tick += 1;
+                                    }
+                                    sync_status.set(message);
+                                }
+                                Err(error) => sync_status.set(Some(error)),
+                            }
+                            sync_busy.set(false);
+                        });
+                    }
+                },
                 on_language_change: {
                     let store = Arc::clone(store);
                     move |language| {
@@ -1028,6 +1385,51 @@ pub(crate) fn open_sftp_entry(
         join_path(&ctx.base_path, &ctx.entry.name),
         language,
     )
+}
+
+/// 打开内嵌编辑器：下载到本机私有临时文件，读入编辑框。
+///
+/// 目录列表里已经带了文件大小，超限的文件在这里直接拒绝，不浪费一次下载；
+/// 返回 `Err` 表示无法开始（含超限），由调用方展示为通知。
+fn start_inline_edit(
+    state: Arc<Mutex<AppState>>,
+    ctx: SftpEntryContext,
+    mut inline_edit: Signal<Option<InlineEdit>>,
+    language: kt_config::AppLanguage,
+) -> Result<(), String> {
+    if ctx.entry.is_dir {
+        return Ok(());
+    }
+
+    if let Some(error) = inline_edit_size_rejection(ctx.entry.size) {
+        return Err(inline_edit_load_error_text(&error, language));
+    }
+
+    let remote_path = join_path(&ctx.base_path, &ctx.entry.name);
+    let local_path = external_edit_local_path(ctx.session_id, &remote_path);
+    if let Some(parent) = local_path.parent() {
+        ensure_private_edit_dir(parent).map_err(|error| error.to_string())?;
+    }
+
+    let request_id = send_sftp_request(
+        state,
+        ctx.session_id,
+        SftpRequest::Download {
+            remote: remote_path.clone(),
+            local: local_path.clone(),
+        },
+    )?;
+
+    inline_edit.set(Some(InlineEdit {
+        session_id: ctx.session_id,
+        remote_path,
+        local_path,
+        file_name: ctx.entry.name.clone(),
+        request_id: Some(request_id),
+        status: InlineEditStatus::Loading,
+        original: String::new(),
+    }));
+    Ok(())
 }
 
 fn start_sftp_external_edit(
@@ -1148,7 +1550,7 @@ fn save_pending_secret(
     }
 }
 
-fn copy_to_clipboard(value: &str) {
+pub(crate) fn copy_to_clipboard(value: &str) {
     let js_value = format!("{value:?}");
     let script = format!(
         r#"

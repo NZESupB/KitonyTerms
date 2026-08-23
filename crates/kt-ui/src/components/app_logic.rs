@@ -6,7 +6,6 @@ use kt_config::{lookup_ssh_config, normalize_group_name, ConnectParams, SessionP
 use kt_core::term::GridSnapshot;
 use kt_core::{AuthChallenge, PtySize, SessionId, SftpEntry};
 
-use crate::i18n::AppText;
 use crate::state::SessionState;
 
 pub const DEFAULT_GROUP_NAME: &str = "NoBrand";
@@ -45,7 +44,7 @@ pub struct ActiveSftpView {
     pub entries: Vec<SftpEntry>,
     pub loading: bool,
     pub error: Option<String>,
-    pub syncing_terminal_directory: bool,
+    pub auto_sync: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,12 +53,6 @@ pub struct ActiveMonitorView {
     pub loading: bool,
     pub error: Option<String>,
     pub has_sample: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusBarSessionView {
-    pub title: String,
-    pub status: SessionConnectionStatus,
 }
 
 pub type AuthChallengeView = (SessionId, String, AuthChallenge);
@@ -87,7 +80,13 @@ pub fn group_profiles(
     map.into_iter().collect()
 }
 
-pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> SessionState {
+/// 由服务器配置初始化会话 UI 状态。`auto_sync` 来自持久化的 `AppSettings`，
+/// 让用户只需勾选一次目录自动同步，而不是每个新会话都重新勾。
+pub fn session_state_from_profile(
+    id: SessionId,
+    profile: &SessionProfile,
+    auto_sync: bool,
+) -> SessionState {
     SessionState {
         id,
         title: profile.name.clone(),
@@ -110,7 +109,16 @@ pub fn session_state_from_profile(id: SessionId, profile: &SessionProfile) -> Se
         sftp_failures: std::collections::VecDeque::new(),
         sftp_progress: None,
         terminal_cwd: None,
-        terminal_cwd_sync_pending: false,
+        terminal_cwd_inference_target: None,
+        terminal_prev_cwd: None,
+        terminal_dir_stack: Vec::new(),
+        terminal_input_buffer: Vec::new(),
+        terminal_input_invalid: false,
+        sftp_auto_sync: auto_sync,
+        shell_integration_requested: false,
+        remote_home: None,
+        sftp_followed_terminal_cwd: None,
+        sftp_terminal_sync_request: None,
         monitor: None,
         monitor_loading: false,
         monitor_error: None,
@@ -143,26 +151,6 @@ pub fn session_dot_class_for_status(status: SessionConnectionStatus) -> &'static
         }
         SessionConnectionStatus::Disconnected => "status-dot idle",
         SessionConnectionStatus::Connecting => "status-dot connecting",
-    }
-}
-
-pub fn session_status_pill_class(status: SessionConnectionStatus) -> &'static str {
-    match status {
-        SessionConnectionStatus::Connected => "status-pill connected",
-        SessionConnectionStatus::Authenticating
-        | SessionConnectionStatus::HostKeyPending
-        | SessionConnectionStatus::Disconnected
-        | SessionConnectionStatus::Connecting => "status-pill pending",
-    }
-}
-
-pub fn session_status_label(status: SessionConnectionStatus, text: &AppText) -> &'static str {
-    match status {
-        SessionConnectionStatus::Connected => text.connected,
-        SessionConnectionStatus::Authenticating => text.authenticating,
-        SessionConnectionStatus::HostKeyPending => text.host_key_pending,
-        SessionConnectionStatus::Disconnected => text.disconnected,
-        SessionConnectionStatus::Connecting => text.connecting,
     }
 }
 
@@ -203,7 +191,7 @@ pub fn active_sftp_view(active: Option<&SessionState>) -> Option<ActiveSftpView>
         entries: sess.sftp_entries.clone(),
         loading: sess.sftp_loading,
         error: sess.sftp_error.clone(),
-        syncing_terminal_directory: sess.terminal_cwd_sync_pending,
+        auto_sync: sess.sftp_auto_sync,
     })
 }
 
@@ -213,13 +201,6 @@ pub fn active_monitor_view(active: Option<&SessionState>) -> Option<ActiveMonito
         loading: sess.monitor_loading,
         error: sess.monitor_error.clone(),
         has_sample: sess.monitor.is_some(),
-    })
-}
-
-pub fn status_bar_session_view(active: Option<&SessionState>) -> Option<StatusBarSessionView> {
-    active.map(|sess| StatusBarSessionView {
-        title: sess.title.clone(),
-        status: session_connection_status(sess),
     })
 }
 
@@ -321,7 +302,7 @@ mod tests {
             },
         };
 
-        let state = session_state_from_profile(SessionId(7), &profile);
+        let state = session_state_from_profile(SessionId(7), &profile, false);
 
         assert_eq!(state.id, SessionId(7));
         assert_eq!(state.title, "Web Server 01");
@@ -343,7 +324,7 @@ mod tests {
             group: None,
             params: ConnectParams::new("10.0.1.10", "root"),
         };
-        let mut state = session_state_from_profile(SessionId(7), &profile);
+        let mut state = session_state_from_profile(SessionId(7), &profile, false);
 
         assert_eq!(
             session_connection_status(&state),
@@ -385,10 +366,6 @@ mod tests {
             SessionConnectionStatus::Connected
         );
         assert_eq!(session_dot_class(&state), "status-dot online");
-        assert_eq!(
-            session_status_pill_class(SessionConnectionStatus::Connected),
-            "status-pill connected"
-        );
     }
 
     #[test]
@@ -398,11 +375,12 @@ mod tests {
             group: None,
             params: ConnectParams::new("10.0.1.10", "root"),
         };
-        let mut state = session_state_from_profile(SessionId(7), &profile);
+        let mut state = session_state_from_profile(SessionId(7), &profile, false);
         state.connected = true;
         state.sftp_path = "/var/log".to_string();
         state.sftp_loading = true;
         state.sftp_error = Some("读取失败".to_string());
+        state.sftp_auto_sync = true;
         state.sftp_entries = vec![SftpEntry {
             name: "system.log".to_string(),
             is_dir: false,
@@ -422,20 +400,18 @@ mod tests {
         let tabs = session_tab_views(&sessions);
         let sftp = active_sftp_view(Some(active)).unwrap();
         let monitor = active_monitor_view(Some(active)).unwrap();
-        let status = status_bar_session_view(Some(active)).unwrap();
 
         assert_eq!(tabs[0].status, SessionConnectionStatus::Connected);
         assert_eq!(sftp.session_id, SessionId(7));
         assert_eq!(sftp.path, "/var/log");
         assert!(sftp.loading);
         assert_eq!(sftp.error.as_deref(), Some("读取失败"));
+        assert!(sftp.auto_sync);
         assert_eq!(sftp.entries[0].name, "system.log");
         assert_eq!(monitor.session_id, SessionId(7));
         assert!(monitor.loading);
         assert_eq!(monitor.error.as_deref(), Some("监控启动失败"));
         assert!(!monitor.has_sample);
-        assert_eq!(status.title, "Web Server 01");
-        assert_eq!(status.status, SessionConnectionStatus::Connected);
     }
 
     #[test]
@@ -450,8 +426,8 @@ mod tests {
             group: None,
             params: ConnectParams::new("b.test", "root"),
         };
-        let mut a = session_state_from_profile(SessionId(1), &first);
-        let mut b = session_state_from_profile(SessionId(2), &second);
+        let mut a = session_state_from_profile(SessionId(1), &first, false);
+        let mut b = session_state_from_profile(SessionId(2), &second, false);
         b.auth_challenge = Some(kt_core::AuthChallenge::Password {
             user: "root".to_string(),
             host: "b.test".to_string(),

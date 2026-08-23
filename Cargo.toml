@@ -4,6 +4,7 @@ members = [
     "crates/kt-core",
     "crates/kt-config",
     "crates/kt-secrets",
+    "crates/kt-sync",
     "crates/kt-ui",
     "crates/kt-app",
 ]
@@ -11,7 +12,6 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
 license = "Apache-2.0"
 authors = ["KitonyTerms contributors"]
 repository = "https://github.com/nzesupb/KitonyTerms"
@@ -24,9 +24,11 @@ kt-config = { path = "crates/kt-config" }
 kt-secrets = { path = "crates/kt-secrets" }
 kt-core = { path = "crates/kt-core" }
 kt-ui = { path = "crates/kt-ui" }
+kt-sync = { path = "crates/kt-sync" }
 
 # --- async runtime ---
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "sync", "macros", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # --- SSH (pure Rust) ---
 russh = "0.61"
@@ -43,6 +45,17 @@ alacritty_terminal = "=0.26.0"
 # --- serialization / config ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "stream"] }
+url = "2.5"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+hmac = "0.12"
+hex = "0.4"
+if-addrs = "0.13"
+sha2 = "0.10"
+subtle = "2.6"
 toml = "0.9"
 directories = "6"
 fs2 = "0.4.3"
@@ -55,7 +68,8 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # --- UI framework ---
-dioxus = { version = "0.7", features = ["desktop", "mobile"] }
+# 不限制稳定版本线；Cargo.lock 记录每次更新后实际验证的版本。
+dioxus = { version = ">=0", features = ["desktop", "mobile"] }
 
 # --- 桌面端原生剪贴板（绕开 WebView 的系统粘贴确认） ---
 arboard = { version = "3.6.1", default-features = false }
@@ -86,3 +100,19 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# 本地开发/测试优先控制可重建产物体积：依赖不保留完整调试信息，
+# 主项目仍保留行号级调试信息；关闭增量缓存避免多轮 workspace 检查堆积。
+[profile.dev]
+debug = 1
+incremental = false
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = 1
+incremental = false
+
+[profile.test.package."*"]
+debug = 0

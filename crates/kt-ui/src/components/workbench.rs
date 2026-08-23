@@ -11,6 +11,25 @@ use crate::components::external_edit::{detect_editors, env_editor_command};
 use crate::components::icons::{AppLogo, Icon};
 use crate::i18n::texts;
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum SyncAction {
+    WebDavUpload {
+        url: String,
+        username: String,
+        password: String,
+    },
+    WebDavDownload {
+        url: String,
+        username: String,
+        password: String,
+    },
+    StartLanShare,
+    ImportLanShare {
+        url: String,
+        pairing_code: String,
+    },
+}
+
 #[component]
 pub fn SettingsPanel(
     show: Signal<bool>,
@@ -19,11 +38,19 @@ pub fn SettingsPanel(
     on_language_change: EventHandler<AppLanguage>,
     on_theme_change: EventHandler<String>,
     on_settings_change: EventHandler<AppSettings>,
+    sync_busy: bool,
+    sync_status: Option<String>,
+    on_sync_action: EventHandler<SyncAction>,
 ) -> Element {
     // hooks 必须在 early return 之前初始化，避免随 show 抖动改变 hooks 顺序。
     let detected_editors = use_signal(detect_editors);
     let env_editor = use_signal(env_editor_command);
     let mut new_editor_command = use_signal(String::new);
+    let mut sync_url = use_signal(String::new);
+    let mut sync_username = use_signal(String::new);
+    let mut sync_password = use_signal(String::new);
+    let mut share_url = use_signal(String::new);
+    let mut share_code = use_signal(String::new);
 
     if !show() {
         return rsx! {};
@@ -32,6 +59,11 @@ pub fn SettingsPanel(
     let t = texts(language).app;
     let theme = settings.theme.clone();
     let selected_theme = normalize_theme_name(&theme);
+    let overlay_class = if cfg!(any(target_os = "android", target_os = "ios")) {
+        "settings-overlay app-settings-overlay is-mobile"
+    } else {
+        "settings-overlay app-settings-overlay is-desktop"
+    };
 
     let default_editor_value = settings.default_editor.clone().unwrap_or_default();
     let detected_list = detected_editors();
@@ -51,11 +83,11 @@ pub fn SettingsPanel(
 
     rsx! {
         div {
-            class: "settings-overlay",
+            class: overlay_class,
             onclick: move |_| show.set(false),
 
             section {
-                class: "settings-panel",
+                class: "settings-panel app-settings-panel",
                 onclick: move |evt| evt.stop_propagation(),
 
                 div {
@@ -194,6 +226,107 @@ pub fn SettingsPanel(
                                 "{t.editor_custom}: {default_editor_value}"
                             }
                         }
+                    }
+                }
+
+                div {
+                    class: "settings-row settings-row-stacked sync-settings-row",
+                    div {
+                        strong { "{t.sync_title}" }
+                        p { "{t.sync_hint}" }
+                    }
+                    input {
+                        class: "settings-text-input",
+                        r#type: "url",
+                        placeholder: "https://dav.example.com/kitonyterms.json",
+                        value: "{sync_url}",
+                        oninput: move |evt| sync_url.set(evt.value()),
+                    }
+                    div { class: "settings-sync-fields",
+                        input {
+                            class: "settings-text-input",
+                            r#type: "text",
+                            placeholder: "{t.sync_username}",
+                            value: "{sync_username}",
+                            oninput: move |evt| sync_username.set(evt.value()),
+                        }
+                        input {
+                            class: "settings-text-input",
+                            r#type: "password",
+                            placeholder: "{t.sync_password}",
+                            value: "{sync_password}",
+                            oninput: move |evt| sync_password.set(evt.value()),
+                        }
+                    }
+                    div { class: "settings-sync-actions",
+                        button {
+                            disabled: sync_busy,
+                            onclick: {
+                                let url = sync_url;
+                                let username = sync_username;
+                                let mut password = sync_password;
+                                move |_| {
+                                    on_sync_action.call(SyncAction::WebDavUpload {
+                                        url: url(), username: username(), password: password(),
+                                    });
+                                    password.set(String::new());
+                                }
+                            },
+                            "{t.sync_upload}"
+                        }
+                        button {
+                            disabled: sync_busy,
+                            onclick: {
+                                let url = sync_url;
+                                let username = sync_username;
+                                let mut password = sync_password;
+                                move |_| {
+                                    on_sync_action.call(SyncAction::WebDavDownload {
+                                        url: url(), username: username(), password: password(),
+                                    });
+                                    password.set(String::new());
+                                }
+                            },
+                            "{t.sync_download}"
+                        }
+                        button {
+                            disabled: sync_busy,
+                            onclick: move |_| on_sync_action.call(SyncAction::StartLanShare),
+                            "{t.sync_share}"
+                        }
+                    }
+                    div { class: "settings-sync-fields",
+                        input {
+                            class: "settings-text-input",
+                            r#type: "url",
+                            placeholder: "http://192.168.1.20:12345/v1/config",
+                            value: "{share_url}",
+                            oninput: move |evt| share_url.set(evt.value()),
+                        }
+                        input {
+                            class: "settings-text-input",
+                            r#type: "text",
+                            placeholder: "{t.sync_pairing_code}",
+                            value: "{share_code}",
+                            oninput: move |evt| share_code.set(evt.value()),
+                        }
+                        button {
+                            disabled: sync_busy,
+                            onclick: {
+                                let url = share_url;
+                                let mut code = share_code;
+                                move |_| {
+                                    on_sync_action.call(SyncAction::ImportLanShare {
+                                        url: url(), pairing_code: code(),
+                                    });
+                                    code.set(String::new());
+                                }
+                            },
+                            "{t.sync_import}"
+                        }
+                    }
+                    if let Some(status) = sync_status.as_deref() {
+                        p { class: "settings-sync-status", "{status}" }
                     }
                 }
 

@@ -195,15 +195,19 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                                             let profile = profile.clone();
                                             let state = state.clone();
                                             move |_| {
+                                                let settings = settings.peek().clone();
                                                 let params = params_with_ssh_config(
                                                     profile.params.clone(),
-                                                    settings.peek().use_ssh_config,
+                                                    settings.use_ssh_config,
                                                 );
                                                 if let Ok(mut app_state) = state.lock() {
                                                     let id = app_state.next_session_id();
                                                     let pty = PtySize { cols: 100, rows: 30 };
-                                                    let mut session =
-                                                        session_state_from_profile(id, &profile);
+                                                    let mut session = session_state_from_profile(
+                                                        id,
+                                                        &profile,
+                                                        settings.sftp_auto_sync,
+                                                    );
                                                     session.connect_params = params.clone();
                                                     session.pty = pty;
                                                     app_state.sessions.insert(
@@ -296,11 +300,26 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         entries: sftp.entries.clone(),
                         loading: sftp.loading,
                         error: sftp.error.clone(),
-                        syncing_terminal_directory: sftp.syncing_terminal_directory,
+                        auto_sync: sftp.auto_sync,
                         language,
                         on_context_menu: move |menu| show_context_menu(context_menu, menu),
                         on_entry_open: move |ctx| on_sftp_entry_open.call(ctx),
                         on_entry_external_edit: move |ctx| on_sftp_entry_external_edit.call(ctx),
+                        on_auto_sync_change: {
+                            let store = Arc::clone(&store);
+                            let mut settings = settings;
+                            move |enabled: bool| {
+                                let mut next = settings.peek().clone();
+                                if next.sftp_auto_sync == enabled {
+                                    return;
+                                }
+                                next.sftp_auto_sync = enabled;
+                                match store.update_settings(next.clone()) {
+                                    Ok(()) => settings.set(next),
+                                    Err(e) => tracing::error!("保存自动同步设置失败: {}", e),
+                                }
+                            }
+                        },
                     }
                 } else {
                     div {

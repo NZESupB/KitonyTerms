@@ -2,7 +2,6 @@
 name = "kt-ui"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -15,12 +14,14 @@ dioxus.workspace = true
 kt-core.workspace = true
 kt-config.workspace = true
 kt-secrets.workspace = true
+kt-sync.workspace = true
 
 # SSH（用于类型）
 russh.workspace = true
 
 # 异步运行时
 tokio.workspace = true
+tokio-util.workspace = true
 
 # 错误处理
 anyhow.workspace = true
@@ -38,3 +39,8 @@ arboard.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# 开发用：让桌面端也按视口短边判定设备类型，把窗口缩到手机尺寸即可预览手机 Shell。
+# 正式构建不启用；移动端本就走运行时判定，与本特性无关。
+phone-preview = []
