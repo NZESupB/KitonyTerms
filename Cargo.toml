@@ -54,6 +54,10 @@ bytes = "1"
 hmac = "0.12"
 hex = "0.4"
 if-addrs = "0.13"
+# 局域网分享配对二维码（只做编码，不需要 image/svg 渲染后端）
+qrcode = { version = "0.14.1", default-features = false }
+# 摄像头帧的二维码识别（灰度缓冲直接解码，不引入图像编解码依赖）
+rqrr = { version = "0.10.1", default-features = false }
 sha2 = "0.10"
 subtle = "2.6"
 toml = "0.9"

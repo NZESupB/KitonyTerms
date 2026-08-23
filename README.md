@@ -146,9 +146,14 @@ passphrases go into the encrypted vault, not into `config.toml`.
 
 In Settings, WebDAV accepts a complete HTTP(S) resource URL and uses ETag
 preconditions to avoid silently overwriting concurrent changes. LAN sharing
-uses a temporary random-port HTTP endpoint with a one-time bearer pairing code
-and a ten-minute expiry. Only `config.toml`-equivalent non-secret settings and
-saved sessions are synchronized.
+uses a temporary random-port HTTP endpoint with a one-time pairing code and a
+ten-minute expiry. LAN protocol v2 uses a 26-character Crockford Base32 pairing
+secret (I/L/O/U are excluded) and also renders it as a QR code, so mobile devices
+can scan it with the camera instead of typing; manual entry normalizes case,
+spaces, hyphens, and the O/I/L lookalikes. Legacy v1 and short pairing codes are
+not accepted. Address discovery ranks VPN and tunnel interfaces last, so
+sharing while a VPN is up does not hand out an unreachable address. Only
+`config.toml`-equivalent non-secret settings and saved sessions are synchronized.
 
 ## Developer Map
 

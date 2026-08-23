@@ -33,6 +33,11 @@ chrono = "0.4"
 # 本机密码库随机密钥生成
 rand_core.workspace = true
 
+# 局域网分享配对二维码
+base64.workspace = true
+qrcode.workspace = true
+rqrr.workspace = true
+
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 # 桌面端原生剪贴板读取
 arboard.workspace = true

@@ -12,6 +12,23 @@ pub fn read_text() -> Result<Option<String>, String> {
     clipboard_text(clipboard.get_text())
 }
 
+/// 写入剪贴板文本。
+///
+/// 桌面端用原生剪贴板；移动端没有原生实现，返回 `Err` 让调用方回退到 WebView 的
+/// `navigator.clipboard.writeText`（写入不像读取那样需要系统确认）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub fn write_text(text: &str) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn write_text(_text: &str) -> Result<(), String> {
+    Err("当前平台没有原生剪贴板写入".to_string())
+}
+
 /// 把剪贴板读取结果归一化：空剪贴板不是错误，其余错误保留原始描述。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn clipboard_text(result: Result<String, arboard::Error>) -> Result<Option<String>, String> {

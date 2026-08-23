@@ -13,8 +13,8 @@ use dioxus::prelude::*;
 use kt_config::SessionProfile;
 use kt_core::{AuthChallenge, AuthResponse, SessionId, SessionManager, SftpRequest, ToCore};
 use kt_sync::{
-    import_share, start_share, PutPrecondition, ShareHandle, SyncEnvelope, WebDavClient,
-    WebDavEndpoint, DEFAULT_SHARE_TTL,
+    encode_share_payload, import_share, normalize_pairing_code, parse_share_payload, start_share,
+    PutPrecondition, ShareHandle, SyncEnvelope, WebDavClient, WebDavEndpoint, DEFAULT_SHARE_TTL,
 };
 
 use crate::components::app_logic::{
@@ -40,11 +40,12 @@ use crate::components::main_shell::{
     SFTP_MIN_HEIGHT, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
 };
 use crate::components::phone_shell::{render_phone_shell, PhoneExtras, PhoneSheet, PhoneTab};
+use crate::components::scanner::{scan_supported, PairingScanner, ScanOutcome};
 use crate::components::security_dialogs::{AuthChallengeDialog, HostKeyConfirmDialog};
+use crate::components::settings::{ActiveShare, SettingsPanel, SyncAction};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
 use crate::components::state_controller::{use_state_controller, EditSignals, StoreSignals};
-use crate::components::workbench::{SettingsPanel, SyncAction};
 use crate::device::use_device_class;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
@@ -127,6 +128,31 @@ pub fn App() -> Element {
     let mut sync_busy = use_signal(|| false);
     let mut sync_status = use_signal(|| None::<String>);
     let mut sync_share_handle = use_signal(|| None::<ShareHandle>);
+    // 正在进行的分享：展示二维码与配对码，并允许主动停止。
+    let mut active_share = use_signal(|| None::<ActiveShare>);
+    let mut show_scanner = use_signal(|| false);
+    // 扫码结果：由设置面板取用后填入地址与配对码输入框。
+    let mut share_scan_result = use_signal(|| None::<(String, String)>);
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+            let share_finished = sync_share_handle
+                .peek()
+                .as_ref()
+                .is_some_and(ShareHandle::is_finished);
+            if share_finished {
+                sync_share_handle.take();
+                active_share.set(None);
+                let status_was_share_active = sync_status.peek().as_deref().is_some_and(|status| {
+                    status == texts(kt_config::AppLanguage::Chinese).app.sync_share_active
+                        || status == texts(kt_config::AppLanguage::English).app.sync_share_active
+                });
+                if status_was_share_active {
+                    sync_status.set(None);
+                }
+            }
+        }
+    });
     // 仅保留最近一次成功下载/上传得到的远端 ETag，并绑定完整 URL，避免把
     // 一个资源的版本条件误用于另一个 WebDAV 地址。
     let mut sync_remote_revision = use_signal(|| None::<(String, String)>);
@@ -1188,15 +1214,70 @@ pub fn App() -> Element {
                 },
             }
 
+            PairingScanner {
+                show: show_scanner,
+                language,
+                on_result: move |outcome: ScanOutcome| {
+                    show_scanner.set(false);
+                    let t = texts(language).app;
+                    match outcome {
+                        ScanOutcome::Decoded(text) => match parse_share_payload(&text) {
+                            Some((url, code)) => {
+                                share_scan_result.set(Some((url, code)));
+                                sync_status.set(None);
+                            }
+                            // 扫到的不是本应用的配对二维码。
+                            None => sync_status.set(Some(t.sync_scan_unsupported.to_string())),
+                        },
+                        ScanOutcome::PermissionDenied => {
+                            sync_status.set(Some(t.sync_scan_denied.to_string()))
+                        }
+                        ScanOutcome::Unsupported => {
+                            sync_status.set(Some(t.sync_scan_unsupported.to_string()))
+                        }
+                        ScanOutcome::Cancelled => {
+                            sync_status.set(Some(t.sync_scan_cancelled.to_string()))
+                        }
+                    }
+                },
+            }
+
             SettingsPanel {
                 show: show_settings,
                 language,
                 settings: current_settings.clone(),
                 sync_busy: sync_busy(),
                 sync_status: sync_status(),
+                is_phone,
+                active_share: active_share(),
+                scan_supported: scan_supported(),
+                scan_result: share_scan_result,
                 on_sync_action: {
                     let store = Arc::clone(store);
                     move |action: SyncAction| {
+                        // 这几个动作是本地即时操作，不占用同步忙状态。
+                        match &action {
+                            SyncAction::ScanPairingCode => {
+                                show_scanner.set(true);
+                                return;
+                            }
+                            SyncAction::StopLanShare => {
+                                if let Some(handle) = sync_share_handle.take() {
+                                    handle.stop();
+                                }
+                                active_share.set(None);
+                                sync_status.set(None);
+                                return;
+                            }
+                            SyncAction::CopyText(text) => {
+                                copy_to_clipboard(text);
+                                sync_status.set(Some(
+                                    texts(language).app.sync_copied.to_string(),
+                                ));
+                                return;
+                            }
+                            _ => {}
+                        }
                         if sync_busy() {
                             return;
                         }
@@ -1280,20 +1361,27 @@ pub fn App() -> Element {
                                     .await
                                     .map_err(|error| error.to_string())?;
                                     sync_share_handle.set(Some(handle));
-                                    Ok(Some(format!(
-                                        "{}\n{}: {}",
-                                        info.url,
-                                        match language {
-                                            kt_config::AppLanguage::Chinese => "配对码",
-                                            kt_config::AppLanguage::English => "Pairing code",
-                                        },
-                                        info.pairing_code
-                                    )))
+                                    // 地址与配对码交给设置面板渲染二维码，不再塞进状态文本。
+                                    active_share.set(Some(ActiveShare {
+                                        payload: encode_share_payload(
+                                            &info.url,
+                                            &info.pairing_code,
+                                        ),
+                                        url: info.url,
+                                        pairing_code: info.pairing_code,
+                                    }));
+                                    Ok(Some(
+                                        texts(language).app.sync_share_active.to_string(),
+                                    ))
                                 }.await,
+                                // 本地即时动作已在上面提前返回。
+                                SyncAction::ScanPairingCode
+                                | SyncAction::StopLanShare
+                                | SyncAction::CopyText(_) => Ok(None),
                                 SyncAction::ImportLanShare { url, pairing_code } => async {
                                     let pending = import_share(
                                         &url,
-                                        &pairing_code,
+                                        &normalize_pairing_code(&pairing_code),
                                         &tokio_util::sync::CancellationToken::new(),
                                     )
                                     .await
@@ -1551,6 +1639,10 @@ fn save_pending_secret(
 }
 
 pub(crate) fn copy_to_clipboard(value: &str) {
+    // 桌面端优先原生剪贴板：WebView 的异步剪贴板在部分平台会弹系统确认。
+    if crate::clipboard::write_text(value).is_ok() {
+        return;
+    }
     let js_value = format!("{value:?}");
     let script = format!(
         r#"

@@ -94,6 +94,31 @@ fn IconPath(name: &'static str) -> Element {
         "chevron-down" => rsx! {
             path { d: "M6 9L12 15L18 9" }
         },
+        "chevron-left" => rsx! {
+            path { d: "M15 6L9 12L15 18" }
+        },
+        "chevron-right" => rsx! {
+            path { d: "M9 6L15 12L9 18" }
+        },
+        "terminal" => rsx! {
+            path { d: "M4 5H20V19H4z" }
+            path { d: "M7 10L9.5 12L7 14" }
+            path { d: "M12 15H17" }
+        },
+        "sync" => rsx! {
+            path { d: "M4 12A8 8 0 0 1 17.7 6.3" }
+            path { d: "M20 12A8 8 0 0 1 6.3 17.7" }
+            path { d: "M17 3V7H21" }
+            path { d: "M7 21V17H3" }
+        },
+        // 扫码：四角取景框 + 中央扫描线。
+        "scan" => rsx! {
+            path { d: "M4 8V6A2 2 0 0 1 6 4H8" }
+            path { d: "M16 4H18A2 2 0 0 1 20 6V8" }
+            path { d: "M20 16V18A2 2 0 0 1 18 20H16" }
+            path { d: "M8 20H6A2 2 0 0 1 4 18V16" }
+            path { d: "M4 12H20" }
+        },
         "close" => rsx! {
             path { d: "M6 6L18 18" }
             path { d: "M18 6L6 18" }

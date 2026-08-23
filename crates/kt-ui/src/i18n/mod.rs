@@ -146,6 +146,27 @@ pub struct AppText {
     pub sync_share: &'static str,
     pub sync_pairing_code: &'static str,
     pub sync_import: &'static str,
+    // 设置面板分类导航
+    pub settings_nav_general: &'static str,
+    pub settings_nav_terminal: &'static str,
+    pub settings_nav_editor: &'static str,
+    pub settings_nav_sync: &'static str,
+    pub settings_back: &'static str,
+    // 局域网分享：二维码与高熵配对秘密
+    pub sync_webdav_title: &'static str,
+    pub sync_lan_title: &'static str,
+    pub sync_lan_hint: &'static str,
+    pub sync_lan_url: &'static str,
+    pub sync_qr_label: &'static str,
+    pub sync_scan_hint: &'static str,
+    pub sync_scan: &'static str,
+    pub sync_copy: &'static str,
+    pub sync_copied: &'static str,
+    pub sync_stop_share: &'static str,
+    pub sync_share_active: &'static str,
+    pub sync_scan_unsupported: &'static str,
+    pub sync_scan_denied: &'static str,
+    pub sync_scan_cancelled: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

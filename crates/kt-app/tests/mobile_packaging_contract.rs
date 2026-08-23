@@ -151,6 +151,43 @@ fn rust_and_dioxus_follow_latest_stable_channels() {
     assert!(!ios.contains("REQUIRED_DX_VERSION"));
 }
 
+/// 扫码需要相机权限，且必须走 dx 认可的配置键。
+///
+/// 键名写错时 dx 会静默忽略，生成的 manifest 不含 CAMERA，扫码在真机上直接失败，
+/// 因此这里按 `dx config schema` 校验过的结构固定下来。
+#[test]
+fn android_declares_camera_permission_for_pairing_scan() {
+    let dioxus = read_workspace_file("Dioxus.toml")
+        .parse::<toml::Table>()
+        .expect("Dioxus.toml 必须是合法 TOML");
+
+    // 统一权限表：dx 会把它映射成 android.permission.CAMERA 与 iOS 的用途描述。
+    let camera = dioxus
+        .get("permissions")
+        .and_then(|permissions| permissions.get("camera"))
+        .expect("缺少 [permissions].camera，Android 将不会申请相机权限");
+    assert!(
+        camera
+            .get("description")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|description| !description.trim().is_empty()),
+        "相机权限必须带用户可见的用途说明"
+    );
+
+    // 没有摄像头的设备仍需可安装：扫码是可选路径。
+    let raw_manifest = dioxus
+        .get("android")
+        .and_then(|android| android.get("raw"))
+        .and_then(|raw| raw.get("manifest"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        raw_manifest.contains("android.hardware.camera")
+            && raw_manifest.contains("android:required=\"false\""),
+        "必须把摄像头声明为非必需硬件，否则无摄像头设备无法安装"
+    );
+}
+
 #[test]
 fn mobile_objcopy_runtime_contract_is_cross_platform_and_fail_closed() {
     let helper = read_workspace_file(".github/scripts/prepare-rust-objcopy.sh");
@@ -651,6 +688,8 @@ fn android_packager_fails_closed_on_signing_identity_mismatch() {
         "isNavigationBarContrastEnforced = false",
         "AAPT\" dump permissions",
         "android.permission.INTERNET",
+        "android.permission.CAMERA",
+        "局域网配对扫码不可用",
         "Android Gradle Plugin 可能缩短 APK 内资源路径",
         "dx --version",
     ] {
@@ -688,6 +727,8 @@ fn ios_packager_outputs_a_verified_unsigned_arm64_ipa() {
         "未签名 iOS IPA 已生成并通过结构校验",
         "NSLocalNetworkUsageDescription",
         "局域网设备以同步配置",
+        "NSCameraUsageDescription",
+        "相机扫码用途说明",
         "dx --version",
     ] {
         assert!(ios.contains(required), "iOS 未签名脚本缺少: {required}");

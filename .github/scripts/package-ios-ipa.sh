@@ -144,6 +144,9 @@ plutil -lint "$verified_info" >/dev/null || fail "IPA 中的 Info.plist 无效"
   || fail "IPA 的 CFBundleVersion 校验失败"
 [[ "$(plutil -extract NSLocalNetworkUsageDescription raw -o - "$verified_info")" == "KitonyTerms 需要访问局域网设备以同步配置" ]] \
   || fail "IPA 缺少局域网同步用途说明"
+camera_usage_description="$(plutil -extract NSCameraUsageDescription raw -o - "$verified_info" 2>/dev/null || true)"
+[[ -n "${camera_usage_description//[[:space:]]/}" ]] \
+  || fail "IPA 缺少相机扫码用途说明"
 
 verified_executable_name="$(plutil -extract CFBundleExecutable raw -o - "$verified_info")"
 verified_executable="$verified_app/$verified_executable_name"

@@ -205,6 +205,8 @@ permissions_file="$work_dir/permissions.txt"
 "$AAPT" dump permissions "$signed_apk" >"$permissions_file"
 grep -Fq "android.permission.INTERNET" "$permissions_file" ||
   fail "Android APK 未声明 INTERNET 权限，WebDAV/局域网同步不可用"
+grep -Fq "android.permission.CAMERA" "$permissions_file" ||
+  fail "Android APK 未声明 CAMERA 权限，局域网配对扫码不可用"
 package_line="$(grep -m1 '^package:' "$badging_file" || true)"
 actual_bundle_id="$(printf '%s\n' "$package_line" | sed -n "s/.* name='\([^']*\)'.*/\1/p")"
 actual_version_code="$(printf '%s\n' "$package_line" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"

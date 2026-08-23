@@ -30,6 +30,7 @@ use hyper::{
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::TokioIo;
+use if_addrs::{IfAddr, Interface};
 use kt_config::Config;
 use rand_core::{OsRng, RngCore};
 use reqwest::{redirect::Policy, Client};
@@ -46,12 +47,12 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_SHARE_TTL: Duration = Duration::from_secs(10 * 60);
 const ENVELOPE_FORMAT: &str = "kitonyterms.config";
 const ENVELOPE_VERSION: u16 = 1;
-const LAN_PROTOCOL_VERSION: &str = "1";
-const LAN_CONFIG_PATH: &str = "/v1/config";
-const LAN_ACK_PATH: &str = "/v1/ack";
-const LAN_AUTH_DOMAIN: &[u8] = b"kitonyterms.lan.auth.v1";
-const LAN_ENCRYPTION_DOMAIN: &[u8] = b"kitonyterms.lan.encryption.v1";
-const LAN_RESPONSE_DOMAIN: &[u8] = b"kitonyterms.lan.response.v1";
+const LAN_PROTOCOL_VERSION: &str = "2";
+const LAN_CONFIG_PATH: &str = "/v2/config";
+const LAN_ACK_PATH: &str = "/v2/ack";
+const LAN_AUTH_DOMAIN: &[u8] = b"kitonyterms.lan.auth.v2";
+const LAN_ENCRYPTION_DOMAIN: &[u8] = b"kitonyterms.lan.encryption.v2";
+const LAN_RESPONSE_DOMAIN: &[u8] = b"kitonyterms.lan.response.v2";
 const LAN_HEADER_PROTOCOL: &str = "x-kitonyterms-protocol";
 const LAN_HEADER_NONCE: &str = "x-kitonyterms-nonce";
 const LAN_HEADER_AUTH: &str = "x-kitonyterms-auth";
@@ -321,7 +322,7 @@ async fn run_cancelled<T>(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ShareInfo {
     pub url: String,
     pub pairing_code: String,
@@ -336,6 +337,10 @@ pub struct ShareHandle {
 impl ShareHandle {
     pub fn stop(&self) {
         self.cancel.cancel();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
     }
 }
 
@@ -436,14 +441,10 @@ struct LanKeys {
 
 impl LanKeys {
     fn from_pairing_code(pairing_code: &str) -> Result<Self, SyncError> {
-        let pairing_code = pairing_code.trim();
-        let pairing_code: [u8; 16] = hex::decode(pairing_code)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| SyncError::Share("配对码格式无效".to_string()))?;
+        let secret = decode_pairing_code(pairing_code)?;
         Ok(Self {
-            auth: derive_lan_key(&pairing_code, LAN_AUTH_DOMAIN),
-            encryption: derive_lan_key(&pairing_code, LAN_ENCRYPTION_DOMAIN),
+            auth: derive_lan_key(&secret, LAN_AUTH_DOMAIN),
+            encryption: derive_lan_key(&secret, LAN_ENCRYPTION_DOMAIN),
         })
     }
 }
@@ -589,10 +590,12 @@ async fn start_share_for_host(
                         let service = service_fn(move |request| {
                             share_response(
                                 request,
-                                Arc::clone(&delivery),
-                                auth_key,
-                                Arc::clone(&response_state),
-                                Arc::clone(&response_used_nonces),
+                                ShareServer {
+                                    delivery: Arc::clone(&delivery),
+                                    auth_key,
+                                    state: Arc::clone(&response_state),
+                                    used_nonces: Arc::clone(&response_used_nonces),
+                                },
                                 request_cancel.clone(),
                                 Arc::clone(&response_transition),
                             )
@@ -631,15 +634,27 @@ async fn start_share_for_host(
     Ok((ShareHandle { cancel, task }, info))
 }
 
-async fn share_response(
-    request: Request<Incoming>,
+/// 一次分享服务的共享状态。按连接克隆，内部都是 `Arc`。
+#[derive(Clone)]
+struct ShareServer {
     delivery: Arc<EncryptedDelivery>,
     auth_key: [u8; 32],
     state: Arc<Mutex<ShareState>>,
     used_nonces: Arc<Mutex<NonceCache>>,
+}
+
+async fn share_response(
+    request: Request<Incoming>,
+    server: ShareServer,
     cancel: CancellationToken,
     transition: Arc<Mutex<Option<ConnectionTransition>>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let ShareServer {
+        delivery,
+        auth_key,
+        state,
+        used_nonces,
+    } = server;
     if cancel.is_cancelled() {
         return Ok(text_response(StatusCode::GONE, "share expired"));
     }
@@ -1068,25 +1083,215 @@ fn non_empty(value: Option<String>) -> Option<String> {
     })
 }
 
+/// 配对负载的 URI scheme。二维码里同时带上地址与配对码，扫一次即可完成导入。
+const SHARE_PAYLOAD_SCHEME: &str = "kitonyterms://lan-share";
+
+/// 把地址与配对码编码为二维码负载。
+///
+/// 用自定义 scheme 而不是裸 URL：避免第三方扫码器把它当网页直接打开，同时让
+/// 本应用能明确识别这是配对信息。
+pub fn encode_share_payload(url: &str, pairing_code: &str) -> String {
+    format!(
+        "{SHARE_PAYLOAD_SCHEME}?v={LAN_PROTOCOL_VERSION}&url={}&code={}",
+        urlencoding_minimal(url),
+        normalize_pairing_code(pairing_code)
+    )
+}
+
+/// 解析扫码结果，返回 `(地址, 配对码)`。
+///
+/// 同时容忍用户直接粘贴分享地址（此时配对码为空，需要手动补充）。
+pub fn parse_share_payload(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    if let Some(query) = text.strip_prefix(&format!("{SHARE_PAYLOAD_SCHEME}?")) {
+        let mut version = None;
+        let mut url = None;
+        let mut code = None;
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=')?;
+            match key {
+                "v" => version = Some(value),
+                "url" => url = Some(urldecoding_minimal(value)),
+                "code" => code = Some(normalize_pairing_code(value)),
+                _ => {}
+            }
+        }
+        if version != Some(LAN_PROTOCOL_VERSION) {
+            return None;
+        }
+        return Some((url?, code.unwrap_or_default()));
+    }
+    // 裸地址：只认 http(s)，配对码留空由用户输入。
+    if text.starts_with("http://") || text.starts_with("https://") {
+        return Some((text.to_string(), String::new()));
+    }
+    None
+}
+
+/// 只转义会破坏负载结构的字符。配对负载里的 URL 形如
+/// `http://192.168.1.20:12345/v2/config`，不含需要完整百分号编码的字符。
+fn urlencoding_minimal(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '%' => "%25".to_string(),
+            '&' => "%26".to_string(),
+            '=' => "%3D".to_string(),
+            ' ' => "%20".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+fn urldecoding_minimal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        let hi = chars.next();
+        let lo = chars.next();
+        match (hi, lo) {
+            (Some(hi), Some(lo)) => {
+                match u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                    Ok(byte) => out.push(byte as char),
+                    // 非法转义原样保留，让上层的 URL 校验去报错。
+                    Err(_) => {
+                        out.push('%');
+                        out.push(hi);
+                        out.push(lo);
+                    }
+                }
+            }
+            _ => out.push('%'),
+        }
+    }
+    out
+}
+/// 配对码字母表：Crockford Base32 去掉 I/L/O/U，避免与 1/0 混淆且不会拼出词。
+const PAIRING_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// 26 个字符提供 130 位随机熵，可直接作为现有 HMAC/AEAD 派生的根秘密。
+pub const PAIRING_CODE_LEN: usize = 26;
+
+/// 生成人可输入的配对码。32 整除 256，字节取模无模偏，无需拒绝采样。
 fn random_pairing_code() -> String {
-    hex::encode_upper(random_bytes::<16>())
+    random_bytes::<PAIRING_CODE_LEN>()
+        .into_iter()
+        .map(|byte| PAIRING_ALPHABET[(byte % 32) as usize] as char)
+        .collect()
+}
+
+/// 归一化用户输入的配对码：忽略大小写、空格与连字符，并把易混字符映射回
+/// 字母表（O→0、I/L→1）。U 和其它非法字符由解码器明确拒绝。
+pub fn normalize_pairing_code(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-')
+        .map(|ch| match ch.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            other => other,
+        })
+        .collect()
+}
+
+/// 把配对码解码为派生密钥的原始秘密。
+fn decode_pairing_code(pairing_code: &str) -> Result<Vec<u8>, SyncError> {
+    let normalized = normalize_pairing_code(pairing_code);
+    if normalized.len() != PAIRING_CODE_LEN {
+        return Err(SyncError::Share(format!(
+            "配对码应为 {PAIRING_CODE_LEN} 位字符"
+        )));
+    }
+    if !normalized
+        .bytes()
+        .all(|byte| PAIRING_ALPHABET.contains(&byte))
+    {
+        return Err(SyncError::Share("配对码包含无效字符".to_string()));
+    }
+    Ok(normalized.into_bytes())
 }
 
 fn discover_lan_ip() -> Option<IpAddr> {
     discover_lan_ips().into_iter().next()
 }
 
+/// 候选局域网地址，按「越可能是真实局域网」排序。
+///
+/// VPN 开启时系统路由表会把默认路由指向隧道，靠 UDP connect 探测出口地址只会拿到
+/// 隧道内网地址，对端根本连不上。所以这里不看路由，只按接口自身特征排序：真实的
+/// 以太网/Wi-Fi 接口是广播型且地址在 RFC1918 私有段内，隧道接口通常是点对点、
+/// 名字形如 utun/tun/wg，或地址落在 CGNAT、fake-ip 等隧道专用段。
 fn discover_lan_ips() -> Vec<IpAddr> {
-    let mut addresses = if_addrs::get_if_addrs()
+    let mut candidates = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
         .filter(|interface| !interface.is_loopback())
-        .map(|interface| interface.ip())
-        .filter(|address| is_usable_lan_ip(*address))
+        .filter(|interface| is_usable_lan_ip(interface.ip()))
+        .map(|interface| (interface_rank(&interface), interface.ip()))
         .collect::<Vec<_>>();
-    addresses.sort_by_key(|address| lan_ip_priority(*address));
+    candidates.sort_by_key(|(rank, address)| (*rank, *address));
+    let mut addresses = candidates
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect::<Vec<_>>();
     addresses.dedup();
     addresses
+}
+
+/// 排序键：先把疑似 VPN/隧道的接口排到后面，再套用地址族优先级。
+fn interface_rank(interface: &Interface) -> (u8, u8) {
+    let tunnel = u8::from(is_tunnel_interface(interface));
+    (tunnel, lan_ip_priority(interface.ip()))
+}
+
+/// 隧道接口名前缀。覆盖各平台的通用 VPN 虚拟网卡与常见客户端自建网卡。
+const TUNNEL_NAME_PREFIXES: &[&str] = &[
+    "utun",
+    "tun",
+    "tap",
+    "ppp",
+    "ipsec",
+    "wg",
+    "nordlynx",
+    "proton",
+    "tailscale",
+    "zt",
+    "clash",
+    "surge",
+    "wireguard",
+    "openvpn",
+];
+
+/// 判断接口是否疑似 VPN/隧道。三个独立信号任一命中即降权：
+/// 名字前缀、IPv4 缺少广播地址（点对点），以及隧道专用地址段。
+fn is_tunnel_interface(interface: &Interface) -> bool {
+    let name = interface.name.to_ascii_lowercase();
+    if TUNNEL_NAME_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
+        return true;
+    }
+    // Windows 用的是可读别名，只能靠关键字兜底。
+    if name.contains("vpn") || name.contains("tunnel") {
+        return true;
+    }
+    match &interface.addr {
+        // 真实以太网/Wi-Fi 一定有广播地址；点对点隧道没有。
+        IfAddr::V4(v4) => v4.broadcast.is_none() || is_tunnel_only_v4(v4.ip),
+        IfAddr::V6(_) => false,
+    }
+}
+
+/// 只可能出现在隧道里的 IPv4 段：CGNAT（Tailscale 等）与 benchmark 段
+/// （Clash/Surge 的 fake-ip 默认段）。这些地址不可能是家用/办公局域网。
+fn is_tunnel_only_v4(address: Ipv4Addr) -> bool {
+    let [a, b, ..] = address.octets();
+    matches!((a, b), (100, 64..=127) | (198, 18 | 19))
 }
 
 fn is_usable_lan_ip(address: IpAddr) -> bool {
@@ -1160,6 +1365,8 @@ mod tests {
         }
     }
 
+    const TEST_PAIRING_CODE: &str = "0123456789ABCDEFGHJKMNPQRS";
+
     #[test]
     fn envelope_round_trip_keeps_non_secret_config() {
         let bytes = SyncEnvelope::new(sample_config()).encode().unwrap();
@@ -1205,7 +1412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lan_share_requires_hmac_and_ack_consumes_once() {
+    async fn lan_share_requires_hmac_without_global_failure_cancellation() {
         let (handle, info) = start_share_on(
             sample_config(),
             Duration::from_secs(5),
@@ -1214,8 +1421,10 @@ mod tests {
         .await
         .unwrap();
         let client = Client::new();
-        let unauthorized = client.get(&info.url).send().await.unwrap();
-        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        for _ in 0..16 {
+            let unauthorized = client.get(&info.url).send().await.unwrap();
+            assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        }
 
         let cancel = CancellationToken::new();
         let imported = import_share(&info.url, &info.pairing_code, &cancel)
@@ -1230,9 +1439,15 @@ mod tests {
         drop(second);
 
         imported.acknowledge(&cancel).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !handle.is_finished() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         let third = import_share(&info.url, &info.pairing_code, &cancel).await;
         assert!(third.is_err());
-        handle.stop();
     }
 
     #[tokio::test]
@@ -1245,9 +1460,12 @@ mod tests {
         .await
         .unwrap();
         let cancel = CancellationToken::new();
-        assert!(import_share(&info.url, &"00".repeat(16), &cancel)
-            .await
-            .is_err());
+        let wrong_code = if info.pairing_code.starts_with('0') {
+            "1".repeat(PAIRING_CODE_LEN)
+        } else {
+            "0".repeat(PAIRING_CODE_LEN)
+        };
+        assert!(import_share(&info.url, &wrong_code, &cancel).await.is_err());
         assert!(import_share(&info.url, &info.pairing_code, &cancel)
             .await
             .is_ok());
@@ -1256,7 +1474,7 @@ mod tests {
 
     #[test]
     fn encrypted_delivery_rejects_tampering() {
-        let keys = LanKeys::from_pairing_code(&"AB".repeat(16)).unwrap();
+        let keys = LanKeys::from_pairing_code(TEST_PAIRING_CODE).unwrap();
         let delivery = encrypt_delivery(b"config payload", &keys.encryption).unwrap();
         let mut tampered = delivery.ciphertext.to_vec();
         tampered[0] ^= 1;
@@ -1275,6 +1493,172 @@ mod tests {
             format_url_host(IpAddr::V6("fd00::4".parse().unwrap())),
             "[fd00::4]"
         );
+    }
+
+    fn v4_interface(name: &str, ip: Ipv4Addr, broadcast: Option<Ipv4Addr>) -> Interface {
+        Interface {
+            name: name.to_string(),
+            addr: IfAddr::V4(if_addrs::Ifv4Addr {
+                ip,
+                netmask: Ipv4Addr::new(255, 255, 255, 0),
+                prefixlen: 24,
+                broadcast,
+            }),
+            index: None,
+            #[cfg(windows)]
+            adapter_name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn share_payload_round_trips_url_and_code() {
+        let url = "http://192.168.1.20:12345/v2/config";
+        let payload = encode_share_payload(url, "0123-4567-89ab-cdef-ghjk-mnpq-rs");
+        let (parsed_url, parsed_code) = parse_share_payload(&payload).unwrap();
+        assert_eq!(parsed_url, url);
+        // 负载里保存的是归一化后的配对码。
+        assert_eq!(parsed_code, TEST_PAIRING_CODE);
+        assert!(LanKeys::from_pairing_code(&parsed_code).is_ok());
+    }
+
+    #[test]
+    fn share_payload_accepts_a_bare_url_without_a_code() {
+        let (url, code) = parse_share_payload(" http://192.168.1.20:12345/v2/config ").unwrap();
+        assert_eq!(url, "http://192.168.1.20:12345/v2/config");
+        assert!(code.is_empty());
+    }
+
+    #[test]
+    fn share_payload_rejects_unrelated_text() {
+        assert!(parse_share_payload("hello world").is_none());
+        assert!(parse_share_payload("ftp://example.com").is_none());
+        assert!(parse_share_payload(
+            "kitonyterms://lan-share?v=1&url=http://host/v1/config&code=ABCD2345"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn share_payload_escapes_structural_characters() {
+        // URL 里出现 & / = 时不能破坏负载的键值结构。
+        let payload = encode_share_payload("http://h/v2/config?a=1&b=2", TEST_PAIRING_CODE);
+        let (url, code) = parse_share_payload(&payload).unwrap();
+        assert_eq!(url, "http://h/v2/config?a=1&b=2");
+        assert_eq!(code, TEST_PAIRING_CODE);
+    }
+
+    #[test]
+    fn pairing_code_has_high_entropy_and_uses_unambiguous_alphabet() {
+        for _ in 0..64 {
+            let code = random_pairing_code();
+            assert_eq!(code.len(), PAIRING_CODE_LEN);
+            assert!(code.bytes().all(|byte| PAIRING_ALPHABET.contains(&byte)));
+            // 生成的配对码必须能被自己的解码器接受。
+            assert!(decode_pairing_code(&code).is_ok());
+        }
+    }
+
+    #[test]
+    fn pairing_code_input_tolerates_case_separators_and_lookalikes() {
+        // 小写、空格、连字符都应归一化到同一个秘密。
+        let canonical = decode_pairing_code(TEST_PAIRING_CODE).unwrap();
+        assert_eq!(
+            decode_pairing_code("0123-4567-89ab-cdef-ghjk-mnpq-rs").unwrap(),
+            canonical
+        );
+        assert_eq!(
+            decode_pairing_code(" 0123456789abcdefghjkmnpqrs ").unwrap(),
+            canonical
+        );
+        // O/I/L 映射回 0/1，避免手抄歧义。
+        assert_eq!(
+            decode_pairing_code("OI23456789ABCDEFGHJKMNPQRS").unwrap(),
+            decode_pairing_code("0123456789ABCDEFGHJKMNPQRS").unwrap()
+        );
+    }
+
+    #[test]
+    fn pairing_code_rejects_wrong_length_and_invalid_characters() {
+        assert!(decode_pairing_code("ABC").is_err());
+        assert!(decode_pairing_code("ABCD234567890ABCDEFGHJKMNPQRS").is_err());
+        assert!(decode_pairing_code("0123456789ABCDEFGHJKMNPQRSU").is_err());
+        assert!(decode_pairing_code("").is_err());
+    }
+
+    #[test]
+    fn legacy_pairing_codes_are_rejected() {
+        assert!(decode_pairing_code(&"AB".repeat(16)).is_err());
+        assert!(LanKeys::from_pairing_code(&"AB".repeat(16)).is_err());
+    }
+
+    /// 在真实网络环境上跑一遍：如果本机同时存在普通网卡与隧道网卡，
+    /// 首选地址必须来自非隧道网卡，否则开着 VPN 时分享出去的地址对方连不上。
+    #[test]
+    fn discovery_prefers_a_non_tunnel_address_on_this_host() {
+        let interfaces = if_addrs::get_if_addrs().unwrap_or_default();
+        let has_real_lan = interfaces.iter().any(|interface| {
+            !interface.is_loopback()
+                && is_usable_lan_ip(interface.ip())
+                && !is_tunnel_interface(interface)
+        });
+        let discovered = discover_lan_ips();
+
+        if !has_real_lan {
+            // CI 容器里可能只有回环，此时不做断言。
+            return;
+        }
+        let first = discovered.first().expect("存在可用网卡时必须发现地址");
+        let owner = interfaces
+            .iter()
+            .find(|interface| interface.ip() == *first)
+            .expect("首选地址必须来自某个真实网卡");
+        assert!(
+            !is_tunnel_interface(owner),
+            "首选地址来自隧道网卡 {}（{first}），VPN 开启时会导致对端无法连接",
+            owner.name
+        );
+    }
+
+    #[test]
+    fn real_lan_interface_outranks_vpn_tunnel() {
+        // 典型的 VPN 场景：utun 隧道与真实 Wi-Fi 同时在线。
+        let wifi = v4_interface(
+            "en0",
+            Ipv4Addr::new(192, 168, 32, 117),
+            Some(Ipv4Addr::new(192, 168, 32, 255)),
+        );
+        let tunnel = v4_interface("utun6", Ipv4Addr::new(198, 18, 0, 1), None);
+        assert!(!is_tunnel_interface(&wifi));
+        assert!(is_tunnel_interface(&tunnel));
+        assert!(interface_rank(&wifi) < interface_rank(&tunnel));
+    }
+
+    #[test]
+    fn tunnel_detection_uses_name_broadcast_and_address_range() {
+        // 名字命中。
+        assert!(is_tunnel_interface(&v4_interface(
+            "wg0",
+            Ipv4Addr::new(192, 168, 9, 2),
+            Some(Ipv4Addr::new(192, 168, 9, 255)),
+        )));
+        // 缺少广播地址（点对点）。
+        assert!(is_tunnel_interface(&v4_interface(
+            "ppp0",
+            Ipv4Addr::new(10, 8, 0, 2),
+            None,
+        )));
+        // CGNAT 段：Tailscale 之类的隧道专用地址。
+        assert!(is_tunnel_interface(&v4_interface(
+            "eth9",
+            Ipv4Addr::new(100, 100, 5, 5),
+            Some(Ipv4Addr::new(100, 100, 5, 255)),
+        )));
+        // 正常私有段的广播型接口不应被误判。
+        assert!(!is_tunnel_interface(&v4_interface(
+            "eth0",
+            Ipv4Addr::new(10, 0, 1, 20),
+            Some(Ipv4Addr::new(10, 0, 1, 255)),
+        )));
     }
 
     #[test]
@@ -1355,7 +1739,7 @@ mod tests {
 
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
-        let pairing_code = "AB".repeat(16);
+        let pairing_code = TEST_PAIRING_CODE.to_string();
         let pairing_code_for_server = pairing_code.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -1416,7 +1800,7 @@ mod tests {
 
     #[test]
     fn pairing_code_is_not_part_of_request_mac_or_ciphertext() {
-        let pairing_code = "AB".repeat(16);
+        let pairing_code = TEST_PAIRING_CODE.to_string();
         let keys = LanKeys::from_pairing_code(&pairing_code).unwrap();
         let delivery = encrypt_delivery(pairing_code.as_bytes(), &keys.encryption).unwrap();
         assert!(!delivery

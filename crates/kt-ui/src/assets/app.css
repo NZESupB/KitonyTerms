@@ -24,6 +24,10 @@
     --shadow: rgba(0, 0, 0, 0.35);
     --radius: 8px;
     --terminal-default-fg: #d0d0d0;
+    /* 终端 gutter 前景色：行号/时间戳要在终端底色上保持可读对比度。 */
+    --terminal-gutter-lineno: #7f8fa6;
+    --terminal-gutter-continuation: #5a6779;
+    --terminal-gutter-time: #7d94b4;
 }
 
 html,
@@ -394,6 +398,10 @@ button[title]:focus-visible::after {
     --red: #dc2626;
     --shadow: rgba(27, 39, 56, 0.16);
     --terminal-default-fg: #17212f;
+    /* 浅色终端底色是 #f8fbff：gutter 必须用足够深的前景色才看得清。 */
+    --terminal-gutter-lineno: #4a5a6e;
+    --terminal-gutter-continuation: #78889c;
+    --terminal-gutter-time: #3f6591;
     background:
         linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(235, 241, 248, 0.96) 100%);
 }
@@ -405,9 +413,13 @@ button[title]:focus-visible::after {
 .kt-window.theme-light .sidebar,
 .kt-window.theme-light .terminal-panel,
 .kt-window.theme-light .monitor-dock,
-.kt-window.theme-light .sftp-shell,
-.kt-window.theme-light .settings-panel {
+.kt-window.theme-light .sftp-shell {
     background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 16px 38px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+/* 设置面板底色由 --panel 提供；这里只补浅色下更柔和的投影。 */
+.kt-window.theme-light .settings-panel {
     box-shadow: 0 16px 38px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -445,8 +457,6 @@ button[title]:focus-visible::after {
 .kt-window.theme-light .sftp-table-head,
 .kt-window.theme-light .sftp-footer,
 .kt-window.theme-light .metric-value-row strong,
-.kt-window.theme-light .settings-head h2,
-.kt-window.theme-light .settings-row strong,
 .kt-window.theme-light .group-form input,
 .kt-window.theme-light .dialog-field span,
 .kt-window.theme-light .dialog-field input {
@@ -545,6 +555,17 @@ button[title]:focus-visible::after {
 
 .kt-window.theme-light .app-settings-panel {
     background: #ffffff;
+}
+
+/* 浅色下面板是纯白，导航栏需要一点灰底才能和内容区分开。 */
+.kt-window.theme-light .settings-nav {
+    background: rgba(241, 245, 249, 0.86);
+}
+
+/* 二维码卡片同理：纯白底上再放白卡片会看不出边界。 */
+.kt-window.theme-light .settings-share-card,
+.kt-window.theme-light .settings-editor-item {
+    background: rgba(241, 245, 249, 0.7);
 }
 
 .kt-window.theme-light .external-edit-overlay {
@@ -1395,7 +1416,7 @@ button[title]:focus-visible::after {
     padding-left: 8px;
     display: flex;
     flex-direction: column;
-    color: rgba(140, 156, 178, 0.7);
+    color: var(--terminal-gutter-lineno);
     font-size: inherit;
     line-height: var(--terminal-row-height);
     user-select: none;
@@ -1410,21 +1431,22 @@ button[title]:focus-visible::after {
     gap: 0.5ch;
 }
 
+/* gutter 前景色统一用不透明主题变量：半透明灰在浅色终端底色上会被冲淡到看不见。 */
 .terminal-gutter-lineno {
     display: inline-block;
     width: 5ch;
     text-align: right;
-    color: rgba(120, 136, 158, 0.65);
+    color: var(--terminal-gutter-lineno);
 }
 
 .terminal-gutter-lineno.is-continuation {
-    color: rgba(120, 136, 158, 0.38);
+    color: var(--terminal-gutter-continuation);
 }
 
 .terminal-gutter-time {
     display: inline-block;
     min-width: 10ch;
-    color: rgba(120, 152, 190, 0.7);
+    color: var(--terminal-gutter-time);
 }
 
 .terminal-screen {
@@ -2237,7 +2259,7 @@ button[title]:focus-visible::after {
     flex: none;
 }
 
-.group-dialog {
+.settings-panel.group-dialog {
     width: min(420px, 100%);
 }
 
@@ -2289,7 +2311,7 @@ button[title]:focus-visible::after {
     background: rgba(90, 167, 255, 0.38);
 }
 
-.external-edit-dialog {
+.settings-panel.external-edit-dialog {
     width: min(520px, 100%);
     background: #111822;
 }
@@ -2446,7 +2468,7 @@ button[title]:focus-visible::after {
 }
 
 /* 连接对话框：左侧选项卡 + 右侧表单 */
-.connection-dialog {
+.settings-panel.connection-dialog {
     width: min(560px, 100%);
     display: flex;
     flex-direction: column;
@@ -2593,6 +2615,7 @@ button[title]:focus-visible::after {
     max-height: calc(100vh - 80px);
 }
 
+/* 分类导航后面板变宽：左导航 + 右内容需要并排空间。 */
 .settings-panel {
     width: min(520px, 100%);
     max-height: calc(100vh - 48px);
@@ -2604,39 +2627,152 @@ button[title]:focus-visible::after {
 }
 
 .app-settings-panel {
-    background: #111822;
-}
-
-.settings-head,
-.settings-row {
     display: flex;
-    align-items: center;
+    width: min(760px, 100%);
+    max-height: calc(100vh - 48px);
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: 0 24px 70px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .settings-head {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
     justify-content: space-between;
-    padding: 16px 18px;
+    gap: 8px;
+    padding: 14px 16px;
     border-bottom: 1px solid var(--border-soft);
 }
 
 .settings-head h2 {
-    color: #f4f8ff;
+    flex: 1;
+    color: var(--text);
+    font-size: 16px;
+}
+
+/* 桌面：左导航 + 右内容，两栏各自滚动，导航始终可见。 */
+.settings-layout {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.settings-nav {
+    display: flex;
+    width: 168px;
+    flex: 0 0 168px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 10px;
+    border-right: 1px solid var(--border-soft);
+    background: var(--panel-soft);
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+}
+
+.settings-nav-item:hover {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text);
+}
+
+.settings-nav-item.is-active {
+    background: rgba(90, 167, 255, 0.16);
+    color: var(--text);
+    font-weight: 650;
+}
+
+.settings-nav-item .kt-icon {
+    flex: 0 0 auto;
+    font-size: 15px;
+}
+
+.settings-body {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+/* 手机：一级分类列表，点进去才是二级页面。 */
+.settings-nav-list {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.settings-nav-list-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 15px;
+    text-align: left;
+}
+
+.settings-nav-list-item:active {
+    background: rgba(148, 163, 184, 0.14);
+}
+
+/* 第一个图标是分类图标，最后一个是右指箭头。 */
+.settings-nav-list-item span {
+    flex: 1;
+}
+
+.settings-nav-list-item .kt-icon {
+    flex: 0 0 auto;
+    color: var(--muted);
     font-size: 18px;
 }
 
 .settings-row {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 18px;
+    padding: 16px 18px;
+}
+
+.settings-row + .settings-row {
+    border-top: 1px solid var(--border-soft);
+}
+
+.settings-row-copy {
+    min-width: 0;
 }
 
 .settings-row strong {
-    color: #eef4ff;
+    color: var(--text);
     font-size: 14px;
 }
 
 .settings-row p {
-    max-width: 300px;
+    max-width: 380px;
     margin-top: 4px;
     color: var(--muted);
     font-size: 12px;
@@ -2650,7 +2786,7 @@ button[title]:focus-visible::after {
     padding: 3px;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: rgba(8, 13, 19, 0.7);
+    background: var(--bg);
 }
 
 .segmented-control button {
@@ -2661,11 +2797,14 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
 }
 
 .segmented-control button.is-selected {
     background: rgba(90, 167, 255, 0.22);
-    color: #f4f8ff;
+    color: var(--text);
+    font-weight: 650;
 }
 
 /* 设置：堆叠行 / 编辑器与终端显示项 */
@@ -2678,17 +2817,95 @@ button[title]:focus-visible::after {
     max-width: none;
 }
 
+/* 输入框与下拉统一：字号、高度、配色全部跟随主题变量，
+   避免浅色模式下出现深底深字或字号不一致。 */
 .settings-text-input,
-.settings-editor-add input {
+select.settings-text-input {
     width: 100%;
-    height: 32px;
-    margin-top: 8px;
+    height: 34px;
     padding: 0 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: rgba(8, 13, 19, 0.7);
-    color: #eef4ff;
+    background: var(--bg-strong);
+    color: var(--text);
+    font-family: inherit;
     font-size: 13px;
+}
+
+.settings-text-input::placeholder {
+    color: var(--faint);
+}
+
+.settings-text-input:focus-visible {
+    border-color: var(--blue);
+    outline: none;
+}
+
+/* 配对秘密用等宽字体并放宽字距，核对时不易看错。 */
+.settings-text-input.is-code {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.settings-field-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+/* 设置内所有按钮共用一套尺寸与字体，消除此前 WebDAV/局域网按钮的样式漂移。 */
+.settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.settings-button {
+    display: inline-flex;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-raised);
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    white-space: nowrap;
+}
+
+.settings-button:hover:not(:disabled) {
+    border-color: var(--blue);
+}
+
+.settings-button.primary {
+    border-color: transparent;
+    background: var(--blue);
+    color: #f8fbff;
+}
+
+.settings-button.danger {
+    border-color: transparent;
+    background: rgba(255, 111, 111, 0.16);
+    color: var(--red);
+}
+
+.settings-button.slim {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.settings-button .kt-icon {
+    font-size: 15px;
 }
 
 .settings-toggle-group {
@@ -2701,16 +2918,85 @@ button[title]:focus-visible::after {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: #eef4ff;
+    color: var(--text);
     font-size: 13px;
     cursor: pointer;
+}
+
+/* 局域网分享卡片：二维码 + 地址 + 配对码。 */
+.settings-share-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 16px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--panel-soft);
+}
+
+/* 二维码自带白底与静默区；固定浅底不随主题反色，扫码器依赖高对比度。 */
+.qr-code {
+    width: 200px;
+    height: 200px;
+    max-width: 100%;
+    padding: 6px;
+    border-radius: 6px;
+    background: #ffffff;
+}
+
+.settings-share-hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.settings-share-field {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-share-label {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.settings-share-value {
+    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 12px;
+}
+
+/* 配对码是要念给人听、手抄的，字号放大、字距拉开。 */
+.settings-share-value.is-code {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+}
+
+.settings-sync-status {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .settings-editor-list {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    margin-top: 8px;
+    margin-top: 10px;
 }
 
 .settings-editor-item {
@@ -2720,12 +3006,12 @@ button[title]:focus-visible::after {
     padding: 6px 8px;
     border: 1px solid var(--border-soft);
     border-radius: 6px;
-    background: rgba(8, 13, 19, 0.5);
+    background: var(--panel-soft);
 }
 
 .settings-editor-name {
     flex: 0 0 auto;
-    color: #eef4ff;
+    color: var(--text);
     font-size: 13px;
     font-weight: 600;
 }
@@ -2744,12 +3030,11 @@ button[title]:focus-visible::after {
     display: flex;
     gap: 8px;
     align-items: center;
+    margin-top: 8px;
 }
 
-.settings-editor-add input,
-.settings-editor-add select {
+.settings-editor-add .settings-text-input {
     flex: 1;
-    margin-top: 0;
 }
 
 .settings-editor-empty {
@@ -2757,15 +3042,67 @@ button[title]:focus-visible::after {
     font-size: 12px;
 }
 
-.settings-editor-add button.primary {
+/* ========== 扫码取景 ========== */
+
+.scanner-overlay {
+    position: fixed;
+    z-index: 1200;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    background: #05080c;
+}
+
+.scanner-head {
+    display: flex;
     flex: 0 0 auto;
-    height: 32px;
-    padding: 0 14px;
-    border-radius: 6px;
-    background: rgba(90, 167, 255, 0.22);
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 14px 16px;
+}
+
+.scanner-head h2 {
     color: #f4f8ff;
-    cursor: pointer;
-    white-space: nowrap;
+    font-size: 16px;
+}
+
+.scanner-viewport {
+    position: relative;
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+/* 取景按短边裁切填满，与 Rust 侧取中央正方形解码保持一致。 */
+.scanner-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.scanner-reticle {
+    position: absolute;
+    width: min(64vw, 280px);
+    height: min(64vw, 280px);
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    border-radius: 16px;
+    box-shadow: 0 0 0 100vmax rgba(2, 6, 12, 0.55);
+    pointer-events: none;
+}
+
+.scanner-hint {
+    flex: 0 0 auto;
+    padding: 16px 20px 24px;
+    color: rgba(238, 244, 255, 0.78);
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: center;
 }
 
 /* ========== 滚动条 ========== */
@@ -3691,26 +4028,12 @@ button[title]:focus-visible::after {
     font-size: 16px;
 }
 
-.settings-sync-fields,
-.settings-sync-actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    align-items: center;
+/* 手机端设置面板铺满屏幕，两级导航各自占满高度。 */
+.kt-window.is-phone .app-settings-panel {
+    width: 100%;
 }
 
-.settings-sync-fields > .settings-text-input {
-    min-width: 0;
-    flex: 1 1 180px;
-}
-
-.settings-sync-actions button {
-    min-height: 34px;
-}
-
-.settings-sync-status {
-    margin: 0;
-    color: var(--muted);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+/* 手机上按钮与输入等宽排布，避免一行挤两个窄按钮。 */
+.kt-window.is-phone .settings-actions .settings-button {
+    flex: 1 1 auto;
 }

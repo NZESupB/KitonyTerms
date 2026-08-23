@@ -15,6 +15,7 @@
 
 ## 已归档完成任务摘要
 
+- 局域网 v2 配对与扫码修复（`260824-fix-lan-pairing-and-scanner`）：旧 v1/32 位 hex/8 位短码全部废弃，只接受 26 位 Crockford Base32 高熵秘密；删除全局认证失败销毁分享，ACK/TTL 完成后 UI 自动回收；扫码改为 8 FPS Base64 灰度帧并显式释放摄像头，移动产物校验 CAMERA/NSCameraUsageDescription。
 - 终端与文件管理目录双向同步重构(`260818-shell-cwd-sync`)：终端→文件管理改为「每连接一次的 shell 集成注入 + 输入推断兜底」，注入期用静默窗口做到终端完全不可见；文件管理→终端收敛到唯一写入点并加 Ctrl+U 清行、回显自擦除、备用屏拒绝；开关持久化到 `AppSettings.sftp_auto_sync`。
 - Rust/Dioxus 升级与 Android 验证（`260821-rust-dioxus-android-validation`）：当次以 Rust 1.98.0、Dioxus 0.7.10 完成验证；当前版本策略已改为跟随最新稳定版。dev/test profile 限制依赖调试符号并关闭增量；Android API 35 debug APK 已在 `ktdbg` 模拟器通过 ADB 启动，edge-to-edge、同步入口和 native 加载已验证；临时 Cargo target、Android 专用中间产物及旧 incremental 合计回收约 17.6 GiB。
 - Rust/Dioxus 滚动稳定版策略（`260821-follow-latest-stable-toolchain`）：Rust 工具链与 CI 使用 `stable` 且不声明数字 MSRV；Dioxus crate 使用开放稳定版本范围，CLI 安装不传 `--version`；`Cargo.lock` 继续提交为当次全量门禁验证快照，依赖升级通过 `cargo update` 显式完成。移动打包契约会阻止数字版本固定回归。
@@ -52,7 +53,7 @@
 ## 全局重要记忆
 
 - 项目为 Rust workspace，按职责拆分为核心协议与会话、配置解析、密钥存储、UI 与应用入口等 crate。
-- 配置同步由 `kt-sync` 承担：只同步 `kt_config::Config`，不触碰 vault、vault key、known_hosts、锁文件或运行时状态；WebDAV 通过完整 URL 与 ETag 条件写避免并发覆盖。局域网分享不传输配对码，使用 HMAC nonce 请求认证与 ChaCha20Poly1305 加密载荷；UI 必须先经 Store 的 snapshot/replace 原子边界成功落盘，再发送 ACK 消费分享。连接处理必须保留并发上限、超时、失败回滚与 IPv4/IPv6 接口枚举。
+- 配置同步由 `kt-sync` 承担：只同步 `kt_config::Config`，不触碰 vault、vault key、known_hosts、锁文件或运行时状态；WebDAV 通过完整 URL 与 ETag 条件写避免并发覆盖。局域网仅支持 v2 和 26 位 Crockford Base32 配对秘密，不兼容 v1、32 位 hex 或 8 位短码；秘密不经网络发送，使用 HMAC nonce 请求认证与 ChaCha20Poly1305 加密载荷，认证失败不得全局销毁分享。UI 必须先经 Store 的 snapshot/replace 原子边界成功落盘，再发送 ACK 消费分享，并在 ACK/TTL 结束后回收分享状态。连接处理必须保留并发上限、超时、失败回滚与 IPv4/IPv6 接口枚举。
 - UI 中接收 `Arc<Mutex<AppState>>`、`Arc<Store>` 或大量 `Signal` 的重状态入口优先使用普通函数返回 `Element`；仅展示型、props 可自然比较的单元使用 Dioxus `#[component]`。
 - Dioxus Desktop 会把布尔 HTML 属性写成 `attr="false"`；对 `inert`、`hidden` 等按属性存在与否生效的布尔属性，false 必须传 `None` 让渲染器移除属性，不能直接传 bool。
 - 主工作台子布局应优先接收 `app_logic.rs` 中的轻量 selector 视图（如 SFTP、Monitor、状态栏、会话标签），避免直接传递完整 `SessionState`。

@@ -28,6 +28,7 @@ rfd.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+toml.workspace = true
 
 [features]
 # 开发用：转发到 kt-ui，让桌面窗口缩到手机尺寸时渲染手机 Shell。
