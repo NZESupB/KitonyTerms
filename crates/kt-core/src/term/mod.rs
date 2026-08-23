@@ -18,7 +18,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{point_to_viewport, Config, Term};
+use alacritty_terminal::term::{point_to_viewport, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape as VteCursorShape, NamedColor, Processor};
 
 pub mod color;
@@ -291,6 +291,7 @@ impl TermEngine {
             display_offset,
             history_size: self.term.grid().history_size(),
             wrapped,
+            alt_screen: self.term.mode().contains(TermMode::ALT_SCREEN),
         }
     }
 }
@@ -432,6 +433,47 @@ mod tests {
             .cells
             .iter()
             .all(|cell| cell.bg != color::Rgb::new(0x7a, 0xa2, 0xf7)));
+    }
+
+    /// 文件管理→终端方向的 `cd` 靠命令自带的擦除序列把回显抹掉。这里按真实时序
+    /// 走一遍：shell 先回显命令的**字面文本**，执行时 printf 才输出真正的 ANSI
+    /// 序列，最后新 prompt 落回原位置。
+    #[test]
+    fn cd_echo_is_erased_by_the_sequence_the_command_prints() {
+        let mut eng = TermEngine::new(60, 4, 20);
+        eng.advance(b"user@host:~$ ");
+        eng.advance(b" printf '\\033[A\\r\\033[J'; cd -- '/var/log'\r\n");
+        assert!(
+            eng.snapshot().row_text(0).contains("cd -- '/var/log'"),
+            "回显应先出现，否则这个测试就没在验证擦除"
+        );
+
+        eng.advance(b"\x1b[A\r\x1b[J");
+        eng.advance(b"user@host:/var/log$ ");
+
+        let snap = eng.snapshot();
+        assert_eq!(snap.row_text(0), "user@host:/var/log$");
+        // 整屏都不该再有那条命令的痕迹。
+        for row in 0..snap.rows {
+            assert!(
+                !snap.row_text(row).contains("cd --"),
+                "第 {row} 行残留了命令回显: {:?}",
+                snap.row_text(row)
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_alternate_screen_state() {
+        let mut eng = TermEngine::new(20, 4, 50);
+        assert!(!eng.snapshot().alt_screen);
+
+        // 进入备用屏（vim/top/less 的典型序列）后必须置位，退出后复位。
+        eng.advance(b"\x1b[?1049h");
+        assert!(eng.snapshot().alt_screen);
+
+        eng.advance(b"\x1b[?1049l");
+        assert!(!eng.snapshot().alt_screen);
     }
 
     #[test]

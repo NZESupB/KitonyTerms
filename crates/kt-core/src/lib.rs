@@ -9,10 +9,12 @@
 //! * [`sftp`] — SFTP subtask driving russh-sftp over the same session
 //! * [`monitor`] — server resource monitor subtask (CPU/mem/net/disk/procs)
 //! * [`session`] — session lifecycle + the UI⇄core message protocol
+//! * [`shell_integration`] — remote shell CWD reporting hook + directory commands
 
 pub mod monitor;
 pub mod session;
 pub mod sftp;
+pub mod shell_integration;
 pub mod ssh;
 pub mod term;
 

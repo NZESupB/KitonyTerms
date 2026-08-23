@@ -12,6 +12,18 @@ min_sdk = 24
 target_sdk = 35
 compile_sdk = 35
 
+# 没有摄像头的设备仍可安装：扫码只是可选路径，配对码始终能手动输入。
+[android.raw]
+manifest = """
+<uses-feature android:name="android.hardware.camera" android:required="false" />
+<uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+"""
+
+# 扫描局域网分享配对二维码需要相机。wry 的 WebChromeClient 会把 WebView 的
+# VIDEO_CAPTURE 请求映射到 CAMERA 权限并驱动系统运行时授权，无需自定义 Java。
+[permissions]
+camera = { description = "扫描局域网分享的配对二维码" }
+
 [ios]
 identifier = "com.kitonyterms.app"
 deployment_target = "15.0"

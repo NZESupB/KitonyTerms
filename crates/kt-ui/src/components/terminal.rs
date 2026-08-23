@@ -45,10 +45,13 @@ pub fn Terminal(
     show_timestamps: bool,
     language: AppLanguage,
     split_mode: Signal<Option<SplitMode>>,
+    /// 是否在右键菜单里提供分屏入口。手机屏幕放不下两个终端，手机 Shell 传 `false`。
+    allow_split: bool,
 ) -> Element {
     let snapshot = &snapshot.0;
     let rows = snapshot.rows;
     let cols = snapshot.cols;
+    let terminal_in_history = snapshot.display_offset > 0;
 
     let state = crate::components::app::get_state().clone();
     let state_for_resize = state.clone();
@@ -58,6 +61,7 @@ pub fn Terminal(
     let state_for_key_paste = state.clone();
     let terminal_id = format!("terminal-{}-{}", session_id.0, pane_id);
     let terminal_id_for_key = terminal_id.clone();
+    let terminal_id_for_horizontal_scroll = terminal_id.clone();
     let terminal_screen_id = terminal_screen_id(&terminal_id);
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
@@ -138,7 +142,13 @@ pub fn Terminal(
                         || 18;
                     const paddingX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
                     const paddingY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-                    const cols = Math.floor(Math.max(0, element.clientWidth - paddingX) / charWidth);
+                    // 保留一段可横向查看的终端宽度，systemctl/journalctl 的长行不会在
+                    // 视口边缘立即折成多行；移动端使用较小的下限避免初始视图过宽。
+                    const minColumns = window.innerWidth < 700 ? 80 : 160;
+                    const cols = Math.max(
+                        minColumns,
+                        Math.floor(Math.max(0, element.clientWidth - paddingX) / charWidth),
+                    );
                     const rows = Math.floor(Math.max(0, element.clientHeight - paddingY) / lineHeight);
                     dioxus.send([cols, rows]);
                 }};
@@ -235,6 +245,11 @@ pub fn Terminal(
 
             // 滚轮事件（滚动查看历史）
             onwheel: move |evt| {
+                let delta_x = evt.delta().strip_units().x;
+                if let Some(scroll_x) = terminal_horizontal_scroll_from_wheel(delta_x) {
+                    scroll_terminal_horizontally(&terminal_id_for_horizontal_scroll, scroll_x);
+                    return;
+                }
                 let delta_y = evt.delta().strip_units().y;
                 if let Some(scroll_lines) = terminal_scroll_delta_from_wheel(delta_y) {
                     if let Ok(app_state) = state_for_scroll.lock() {
@@ -249,6 +264,15 @@ pub fn Terminal(
                 terminal_context_menu.set(None);
 
                 let modifiers = evt.modifiers();
+                if let Some(scroll_x) = terminal_horizontal_key_delta(
+                    &evt.key(),
+                    terminal_in_history,
+                    modifiers.shift(),
+                ) {
+                    evt.prevent_default();
+                    scroll_terminal_horizontally(&terminal_id_for_key, scroll_x);
+                    return;
+                }
                 match terminal_key_action(
                     &evt.key(),
                     modifiers.ctrl(),
@@ -267,11 +291,8 @@ pub fn Terminal(
                     TerminalKeyAction::Input(data) => {
                         evt.prevent_default();
                         tracing::debug!("发送终端输入: {} bytes", data.len());
-                        if let Ok(app_state) = state_for_input.lock() {
-                            app_state.manager.send(ToCore::Input {
-                                id: session_id,
-                                data,
-                            });
+                        if let Ok(mut app_state) = state_for_input.lock() {
+                            app_state.send_terminal_input(session_id, data);
                         }
                     }
                     TerminalKeyAction::Ignore => {}
@@ -392,31 +413,33 @@ pub fn Terminal(
                         span { "{t.select_all}" }
                         small { "Cmd/Ctrl+A" }
                     }
-                    div { class: "context-separator" }
-                    button {
-                        onclick: move |_| {
-                            terminal_context_menu.set(None);
-                            split_mode.set(Some(SplitMode::Horizontal));
-                        },
-                        Icon { name: "split-horizontal" }
-                        span { "{t.split_horizontal}" }
-                    }
-                    button {
-                        onclick: move |_| {
-                            terminal_context_menu.set(None);
-                            split_mode.set(Some(SplitMode::Vertical));
-                        },
-                        Icon { name: "split-vertical" }
-                        span { "{t.split_vertical}" }
-                    }
-                    if split_mode().is_some() {
+                    if allow_split {
+                        div { class: "context-separator" }
                         button {
                             onclick: move |_| {
                                 terminal_context_menu.set(None);
-                                split_mode.set(None);
+                                split_mode.set(Some(SplitMode::Horizontal));
                             },
-                            Icon { name: "split" }
-                            span { "{t.unsplit}" }
+                            Icon { name: "split-horizontal" }
+                            span { "{t.split_horizontal}" }
+                        }
+                        button {
+                            onclick: move |_| {
+                                terminal_context_menu.set(None);
+                                split_mode.set(Some(SplitMode::Vertical));
+                            },
+                            Icon { name: "split-vertical" }
+                            span { "{t.split_vertical}" }
+                        }
+                        if split_mode().is_some() {
+                            button {
+                                onclick: move |_| {
+                                    terminal_context_menu.set(None);
+                                    split_mode.set(None);
+                                },
+                                Icon { name: "split" }
+                                span { "{t.unsplit}" }
+                            }
                         }
                     }
                 }
@@ -431,7 +454,7 @@ struct TerminalContextMenuState {
     y: f64,
 }
 
-fn terminal_screen_id(terminal_id: &str) -> String {
+pub(crate) fn terminal_screen_id(terminal_id: &str) -> String {
     format!("{terminal_id}-screen")
 }
 
@@ -532,7 +555,7 @@ fn terminal_context_menu_style(menu: TerminalContextMenuState) -> String {
     format!("left: {:.0}px; top: {:.0}px;", menu.x, menu.y)
 }
 
-fn copy_selected_terminal_text(terminal_id: &str) {
+pub(crate) fn copy_selected_terminal_text(terminal_id: &str) {
     let terminal_id = format!("{terminal_id:?}");
     let script = format!(
         r#"
@@ -579,7 +602,7 @@ fn copy_selected_terminal_text(terminal_id: &str) {
 }
 
 /// 读取系统剪贴板并写入终端。
-fn paste_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_id: SessionId) {
+pub(crate) fn paste_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_id: SessionId) {
     // 桌面端优先读原生剪贴板：WebView 的 `navigator.clipboard.readText()` 会额外
     // 要求系统粘贴确认（macOS 上需再点一次系统弹出的 Paste 按钮）。
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -630,11 +653,8 @@ fn send_terminal_text(state: Arc<Mutex<AppState>>, session_id: SessionId, text: 
         return;
     }
 
-    if let Ok(app_state) = state.lock() {
-        app_state.manager.send(ToCore::Input {
-            id: session_id,
-            data,
-        });
+    if let Ok(mut app_state) = state.lock() {
+        app_state.send_terminal_input(session_id, data);
     }
 }
 
@@ -642,7 +662,7 @@ fn terminal_paste_input(text: &str) -> Vec<u8> {
     text.replace("\r\n", "\n").replace('\r', "\n").into_bytes()
 }
 
-fn select_terminal_contents(terminal_screen_id: &str) {
+pub(crate) fn select_terminal_contents(terminal_screen_id: &str) {
     let terminal_screen_id = format!("{terminal_screen_id:?}");
     let script = format!(
         r#"
@@ -763,6 +783,85 @@ fn ss3_final(final_byte: u8) -> Vec<u8> {
     vec![0x1b, b'O', final_byte]
 }
 
+/// 把 Web `KeyboardEvent.key` 名映射为终端字节序列。
+///
+/// 手机端的软键盘桥与键位条只拿得到 key 名字符串，这里复用
+/// [`terminal_input_for_key`] 的转义逻辑，避免出现第二套 escape 序列实现。
+/// `alt` 为真时按 xterm 的 Meta 约定在序列前加 ESC。
+pub(crate) fn terminal_input_for_key_name(name: &str, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
+    let key = key_from_web_name(name)?;
+    let data = terminal_input_for_key(&key, ctrl);
+    if data.is_empty() {
+        return None;
+    }
+    Some(with_alt_prefix(data, alt))
+}
+
+/// 软键盘一次 `input` 事件可能带入多个字符（IME 上屏、粘贴、自动补全）。
+/// 粘滞修饰键只作用于第一个字符，其余按原文发送，与物理键盘上「按住 Ctrl 敲一个键」
+/// 的语义一致。
+pub(crate) fn terminal_input_for_text(text: &str, ctrl: bool, alt: bool) -> Vec<u8> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if !ctrl && !alt {
+        return text.bytes().collect();
+    }
+
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return Vec::new();
+    };
+    let mut data = with_alt_prefix(character_input(&first.to_string(), ctrl), alt);
+    data.extend(chars.as_str().bytes());
+    data
+}
+
+fn with_alt_prefix(data: Vec<u8>, alt: bool) -> Vec<u8> {
+    if !alt {
+        return data;
+    }
+    let mut prefixed = Vec::with_capacity(data.len() + 1);
+    prefixed.push(0x1b);
+    prefixed.extend_from_slice(&data);
+    prefixed
+}
+
+fn key_from_web_name(name: &str) -> Option<Key> {
+    let key = match name {
+        "Enter" => Key::Enter,
+        "Backspace" => Key::Backspace,
+        "Tab" => Key::Tab,
+        "Escape" => Key::Escape,
+        "ArrowUp" => Key::ArrowUp,
+        "ArrowDown" => Key::ArrowDown,
+        "ArrowLeft" => Key::ArrowLeft,
+        "ArrowRight" => Key::ArrowRight,
+        "Home" => Key::Home,
+        "End" => Key::End,
+        "Insert" => Key::Insert,
+        "Delete" => Key::Delete,
+        "PageUp" => Key::PageUp,
+        "PageDown" => Key::PageDown,
+        "F1" => Key::F1,
+        "F2" => Key::F2,
+        "F3" => Key::F3,
+        "F4" => Key::F4,
+        "F5" => Key::F5,
+        "F6" => Key::F6,
+        "F7" => Key::F7,
+        "F8" => Key::F8,
+        "F9" => Key::F9,
+        "F10" => Key::F10,
+        "F11" => Key::F11,
+        "F12" => Key::F12,
+        // 单字符 key 名就是要输入的字符本身（`a`、`-`、`|`）。
+        single if single.chars().count() == 1 => Key::Character(single.to_string()),
+        _ => return None,
+    };
+    Some(key)
+}
+
 fn resize_payload_to_pty(payload: &[f64]) -> Option<(u16, u16)> {
     let cols = payload.first().copied()?;
     let rows = payload.get(1).copied()?;
@@ -779,6 +878,34 @@ fn terminal_scroll_delta_from_wheel(delta_y: f64) -> Option<i32> {
 
     // WebView 的 deltaY 小于 0 表示向上滚；core 中正数表示进入历史。
     Some(if delta_y < 0.0 { 3 } else { -3 })
+}
+
+fn terminal_horizontal_scroll_from_wheel(delta_x: f64) -> Option<f64> {
+    if delta_x.is_finite() && delta_x != 0.0 {
+        Some(delta_x)
+    } else {
+        None
+    }
+}
+
+fn terminal_horizontal_key_delta(key: &Key, in_history: bool, shift: bool) -> Option<f64> {
+    if !in_history && !shift {
+        return None;
+    }
+
+    match key {
+        Key::ArrowLeft => Some(-96.0),
+        Key::ArrowRight => Some(96.0),
+        _ => None,
+    }
+}
+
+fn scroll_terminal_horizontally(terminal_id: &str, delta: f64) {
+    let terminal_id = format!("{terminal_id:?}");
+    let script = format!(
+        r#"document.getElementById({terminal_id})?.scrollBy({{ left: {delta}, behavior: "auto" }});"#
+    );
+    dioxus::document::eval(&script);
 }
 
 fn clamp_pty_dimension(value: f64, min: u16, max: u16) -> u16 {
@@ -980,6 +1107,30 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_wheel_delta_is_preserved_for_terminal_surface() {
+        assert_eq!(terminal_horizontal_scroll_from_wheel(-24.0), Some(-24.0));
+        assert_eq!(terminal_horizontal_scroll_from_wheel(24.0), Some(24.0));
+        assert_eq!(terminal_horizontal_scroll_from_wheel(0.0), None);
+        assert_eq!(terminal_horizontal_scroll_from_wheel(f64::NAN), None);
+    }
+
+    #[test]
+    fn horizontal_arrow_scrolling_is_limited_to_history_or_shifted_input() {
+        assert_eq!(
+            terminal_horizontal_key_delta(&Key::ArrowRight, true, false),
+            Some(96.0)
+        );
+        assert_eq!(
+            terminal_horizontal_key_delta(&Key::ArrowLeft, false, true),
+            Some(-96.0)
+        );
+        assert_eq!(
+            terminal_horizontal_key_delta(&Key::ArrowRight, false, false),
+            None
+        );
+    }
+
+    #[test]
     fn default_background_cells_do_not_paint_full_row_background() {
         let cell = SnapshotCell {
             c: ' ',
@@ -1135,6 +1286,70 @@ mod tests {
     }
 
     #[test]
+    fn web_key_names_reuse_the_physical_keyboard_escape_sequences() {
+        // 手机端拿到的只有 key 名字符串，必须得到与桌面 onkeydown 完全一致的字节。
+        assert_eq!(
+            terminal_input_for_key_name("ArrowUp", false, false),
+            Some(terminal_input_for_key(&Key::ArrowUp, false))
+        );
+        assert_eq!(
+            terminal_input_for_key_name("F5", false, false),
+            Some(terminal_input_for_key(&Key::F5, false))
+        );
+        assert_eq!(
+            terminal_input_for_key_name("Enter", false, false),
+            Some(vec![b'\r'])
+        );
+        assert_eq!(
+            terminal_input_for_key_name("Backspace", false, false),
+            Some(vec![0x7f])
+        );
+        // 单字符 key 名即字符本身。
+        assert_eq!(
+            terminal_input_for_key_name("|", false, false),
+            Some(b"|".to_vec())
+        );
+        // Ctrl+C 走与桌面相同的控制字符换算。
+        assert_eq!(
+            terminal_input_for_key_name("c", true, false),
+            Some(vec![0x03])
+        );
+        // Alt 按 xterm 的 Meta 约定加 ESC 前缀。
+        assert_eq!(
+            terminal_input_for_key_name("b", false, true),
+            Some(vec![0x1b, b'b'])
+        );
+        // 未知或不可输入的 key 名不产生字节。
+        assert_eq!(terminal_input_for_key_name("Shift", false, false), None);
+        assert_eq!(
+            terminal_input_for_key_name("Unidentified", false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn sticky_modifiers_only_apply_to_the_first_character_of_soft_keyboard_text() {
+        // 无修饰键时原文透传，中文 IME 上屏也不被拆改。
+        assert_eq!(
+            terminal_input_for_text("ls -la", false, false),
+            b"ls -la".to_vec()
+        );
+        assert_eq!(
+            terminal_input_for_text("目录", false, false),
+            "目录".as_bytes().to_vec()
+        );
+
+        // 粘滞 Ctrl 只作用于第一个字符，剩下的按原文发送。
+        assert_eq!(
+            terminal_input_for_text("cat", true, false),
+            vec![0x03, b'a', b't']
+        );
+        assert_eq!(terminal_input_for_text("b", false, true), vec![0x1b, b'b']);
+
+        assert!(terminal_input_for_text("", true, false).is_empty());
+    }
+
+    #[test]
     fn gutter_width_and_style_track_enabled_columns() {
         assert_eq!(gutter_width_ch(false, false), 0);
         assert_eq!(gutter_width_ch(true, false), 6);
@@ -1163,6 +1378,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![false, false],
+            alt_screen: false,
         };
 
         let first = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1202,6 +1418,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![true, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1247,6 +1464,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             wrapped: vec![false, false, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1276,6 +1494,7 @@ mod tests {
             display_offset: 5,
             history_size: 0,
             wrapped: vec![false, false],
+            alt_screen: false,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);

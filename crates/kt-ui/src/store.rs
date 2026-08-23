@@ -231,6 +231,22 @@ impl Store {
         self.config.lock().unwrap().settings.clone()
     }
 
+    /// 获取可同步的非机密配置快照。
+    pub fn config_snapshot(&self) -> Config {
+        self.config.lock().unwrap().clone()
+    }
+
+    /// 用同步所得快照原子替换配置。落盘失败时内存保持不变。
+    pub fn replace_config_snapshot(&self, incoming: Config) -> anyhow::Result<()> {
+        validate_imported_config(&incoming)?;
+        let mut config = self.config.lock().unwrap();
+        incoming
+            .save_to(&self.config_file)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        *config = incoming;
+        Ok(())
+    }
+
     /// 更新并持久化应用设置。
     pub fn update_settings(&self, settings: AppSettings) -> anyhow::Result<()> {
         self.update_config(move |config| {
@@ -606,6 +622,20 @@ impl Store {
     }
 }
 
+fn validate_imported_config(config: &Config) -> anyhow::Result<()> {
+    let mut names = std::collections::HashSet::new();
+    for session in &config.sessions {
+        let name = session.name.trim();
+        if name.is_empty() {
+            anyhow::bail!("同步配置包含空连接名称");
+        }
+        if !names.insert(name.to_string()) {
+            anyhow::bail!("同步配置包含重复连接名称: {name}");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +777,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reloaded.settings().theme, DEFAULT_LIGHT_THEME);
+    }
+
+    #[test]
+    fn config_snapshot_replace_is_atomic_and_rejects_duplicate_sessions() {
+        let (dir, store) = test_store();
+        let mut incoming = store.config_snapshot();
+        incoming.settings.theme = DEFAULT_LIGHT_THEME.to_string();
+        incoming.sessions.push(SessionProfile {
+            name: "prod".to_string(),
+            group: None,
+            params: kt_config::ConnectParams::new("one.example", "root"),
+        });
+        store.replace_config_snapshot(incoming.clone()).unwrap();
+        assert_eq!(store.settings().theme, DEFAULT_LIGHT_THEME);
+        assert_eq!(
+            Config::load_from(dir.path().join("config.toml"))
+                .unwrap()
+                .sessions
+                .len(),
+            1
+        );
+
+        incoming.sessions.push(SessionProfile {
+            name: "prod".to_string(),
+            group: None,
+            params: kt_config::ConnectParams::new("two.example", "root"),
+        });
+        assert!(store.replace_config_snapshot(incoming).is_err());
+        assert_eq!(store.saved_sessions().len(), 1);
     }
 
     #[test]

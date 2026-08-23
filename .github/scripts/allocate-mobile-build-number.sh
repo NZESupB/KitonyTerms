@@ -2,106 +2,101 @@
 
 set -Eeuo pipefail
 
-readonly COUNTER_REF="ci/mobile-build-number"
-readonly COUNTER_FULL_REF="refs/${COUNTER_REF}"
+# 旧实现把计数器写入 Git ref；上级策略可使 Actions integration token 保持只读，
+# 即使 workflow 声明 contents:write 仍会收到 403。因此分配器不再写 GitHub API，
+# Alpha 与 Release 通过同一个 workflow concurrency group 串行执行这段临界区。
+readonly CUTOVER_FLOOR=1787238032
 readonly MAX_BUILD_NUMBER=2100000000
-readonly MAX_ATTEMPTS=12
+readonly MAX_WAIT_SECONDS=30
+readonly MAX_CLOCK_VALUE=9223372036854775807
 
 fail() {
   echo "::error::$*" >&2
   exit 1
 }
 
-for command in gh jq date; do
-  command -v "$command" >/dev/null 2>&1 || fail "缺少命令: ${command}"
-done
+clock_now() {
+  date -u +%s
+}
 
-for name in \
-  GH_TOKEN \
-  GITHUB_REPOSITORY \
-  GITHUB_SHA \
-  GITHUB_RUN_ID \
-  GITHUB_RUN_ATTEMPT \
-  GITHUB_OUTPUT; do
-  [[ -n "${!name:-}" ]] || fail "缺少环境变量: ${name}"
-done
+sleep_seconds() {
+  sleep "$1"
+}
 
-for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-  ref_exists=false
-  ref_error="$(mktemp)"
-  if ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${COUNTER_REF}" 2>"$ref_error")"; then
-    ref_exists=true
-    parent_sha="$(jq -er '.object.sha' <<<"$ref_json")" \
-      || fail "移动构建号引用缺少 object.sha"
-    parent_commit="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${parent_sha}")"
-    parent_message="$(jq -er '.message' <<<"$parent_commit")" \
-      || fail "无法读取移动构建号提交消息"
-    tree_sha="$(jq -er '.tree.sha' <<<"$parent_commit")" \
-      || fail "无法读取移动构建号提交 tree"
-    parent_first_line="${parent_message%%$'\n'*}"
-    if [[ "$parent_first_line" =~ ^mobile-build-number:\ ([1-9][0-9]*)$ ]]; then
-      last_build_number="${BASH_REMATCH[1]}"
-    else
-      fail "移动构建号提交消息格式错误: ${parent_first_line}"
-    fi
+require_timestamp() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "无法生成有效的 UTC Unix 秒构建号: ${value:-空值}"
+  if ((${#value} > ${#MAX_CLOCK_VALUE})) ||
+    { ((${#value} == ${#MAX_CLOCK_VALUE})) && [[ "$value" > "$MAX_CLOCK_VALUE" ]]; }; then
+    fail "UTC Unix 秒时钟值超出 Bash 可计算范围: $value"
+  fi
+}
+
+require_build_number_limit() {
+  local value="$1"
+  require_timestamp "$value"
+  if ((${#value} > ${#MAX_BUILD_NUMBER})) ||
+    { ((${#value} == ${#MAX_BUILD_NUMBER})) && [[ "$value" > "$MAX_BUILD_NUMBER" ]]; }; then
+    fail "UTC Unix 秒构建号 $value 超出 Android versionCode 上限 $MAX_BUILD_NUMBER"
+  fi
+}
+
+calculate_candidate() {
+  local now="$1"
+
+  if ((now <= CUTOVER_FLOOR)); then
+    printf '%s\n' "$((CUTOVER_FLOOR + 1))"
   else
-    if ! grep -q 'HTTP 404' "$ref_error"; then
-      cat "$ref_error" >&2
-      fail "读取移动构建号引用失败"
+    printf '%s\n' "$now"
+  fi
+}
+
+wait_for_slot() {
+  local candidate="$1"
+  local previous_now="$2"
+  local waited=0
+  local now
+
+  while :; do
+    now="$(clock_now)"
+    require_timestamp "$now"
+    if ((now < previous_now)); then
+      fail "系统 UTC 时钟发生回拨，拒绝分配移动构建号"
     fi
-    # Contents commits endpoint 会把 annotated tag 等 ref 剥离为实际 commit。
-    base_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}")"
-    parent_sha="$(jq -er '.sha' <<<"$base_commit")" \
-      || fail "无法解析当前 ref 对应的 commit SHA"
-    tree_sha="$(jq -er '.commit.tree.sha' <<<"$base_commit")" \
-      || fail "无法读取当前提交 tree"
-    last_build_number=0
-  fi
-  rm -f "$ref_error"
-
-  now="$(date -u +%s)"
-  [[ "$now" =~ ^[1-9][0-9]*$ ]] || fail "无法生成 UTC Unix 秒构建号"
-  candidate="$now"
-  if ((candidate <= last_build_number)); then
-    candidate=$((last_build_number + 1))
-  fi
-  ((candidate <= MAX_BUILD_NUMBER)) \
-    || fail "移动构建号 ${candidate} 超出 Android versionCode 上限 ${MAX_BUILD_NUMBER}"
-
-  commit_message="$(printf \
-    'mobile-build-number: %s\nallocator: %s.%s.%s' \
-    "$candidate" \
-    "$GITHUB_RUN_ID" \
-    "$GITHUB_RUN_ATTEMPT" \
-    "$attempt")"
-  new_commit="$(gh api --method POST \
-    "repos/${GITHUB_REPOSITORY}/git/commits" \
-    -f message="$commit_message" \
-    -f tree="$tree_sha" \
-    -f "parents[]=${parent_sha}")"
-  new_commit_sha="$(jq -er '.sha' <<<"$new_commit")" \
-    || fail "GitHub 未返回新的移动构建号提交 SHA"
-
-  if [[ "$ref_exists" == true ]]; then
-    if gh api --method PATCH \
-      "repos/${GITHUB_REPOSITORY}/git/refs/${COUNTER_REF}" \
-      -f sha="$new_commit_sha" \
-      -F force=false >/dev/null 2>&1; then
-      printf 'build_number=%s\n' "$candidate" >>"$GITHUB_OUTPUT"
-      echo "已分配移动构建号: ${candidate}"
-      exit 0
+    previous_now="$now"
+    if ((now > candidate)); then
+      return 0
     fi
-  elif gh api --method POST \
-    "repos/${GITHUB_REPOSITORY}/git/refs" \
-    -f ref="$COUNTER_FULL_REF" \
-    -f sha="$new_commit_sha" >/dev/null 2>&1; then
-    printf 'build_number=%s\n' "$candidate" >>"$GITHUB_OUTPUT"
-    echo "已初始化并分配移动构建号: ${candidate}"
-    exit 0
-  fi
+    if ((waited >= MAX_WAIT_SECONDS)); then
+      fail "等待移动构建号时间槽超时（时钟未越过 ${candidate}）"
+    fi
+    sleep_seconds 1
+    waited=$((waited + 1))
+  done
+}
 
-  echo "移动构建号发生并发竞争，第 ${attempt}/${MAX_ATTEMPTS} 次重试"
-  sleep "$attempt"
-done
+main() {
+  local channel="${1:-}"
+  local now candidate
 
-fail "移动构建号并发分配重试耗尽"
+  [[ "$#" -eq 1 ]] || fail "用法: $0 <alpha|release>"
+  [[ -n "${GITHUB_OUTPUT:-}" ]] || fail "缺少环境变量: GITHUB_OUTPUT"
+  [[ "$channel" == alpha || "$channel" == release ]] \
+    || fail "未知移动构建通道: ${channel}（必须是 alpha 或 release）"
+
+  now="$(clock_now)"
+  require_build_number_limit "$now"
+  candidate="$(calculate_candidate "$now")"
+  require_build_number_limit "$candidate"
+
+  # 保持共享 workflow concurrency 锁直到候选秒结束，使下一次分配进入更晚时间槽。
+  wait_for_slot "$candidate" "$now"
+
+  printf 'build_number=%s\n' "$candidate" >>"$GITHUB_OUTPUT" \
+    || fail "无法写入 GitHub Actions 输出文件"
+  echo "已分配移动构建号: ${candidate}（${channel}）"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

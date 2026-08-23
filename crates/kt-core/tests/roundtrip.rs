@@ -15,6 +15,7 @@ use russh::{Channel, ChannelId};
 
 use kt_config::{AuthMethod, ConnectParams};
 use kt_core::session::{AuthProviderFactory, SessionId};
+use kt_core::shell_integration::{BOOTSTRAP_COMMAND, BOOTSTRAP_DONE_MARKER};
 use kt_core::ssh::{AcceptAllVerifier, AuthProvider, HostKeyVerifier};
 use kt_core::{FromCore, PtySize, SessionManager, ToCore};
 
@@ -30,11 +31,15 @@ struct EchoServer;
 impl server::Server for EchoServer {
     type Handler = EchoHandler;
     fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> EchoHandler {
-        EchoHandler
+        EchoHandler {
+            defer_banner_until_bootstrap: false,
+        }
     }
 }
 
-struct EchoHandler;
+struct EchoHandler {
+    defer_banner_until_bootstrap: bool,
+}
 
 impl server::Handler for EchoHandler {
     type Error = russh::Error;
@@ -76,8 +81,10 @@ impl server::Handler for EchoHandler {
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        // 横幅后发 DSR 光标位置查询，验证终端生成的 PtyWrite 会写回远端 shell。
-        session.data(channel, bytes::Bytes::from_static(b"READY> \x1b[6n"))?;
+        if !self.defer_banner_until_bootstrap {
+            // 横幅后发 DSR 光标位置查询，验证终端生成的 PtyWrite 会写回远端 shell。
+            session.data(channel, bytes::Bytes::from_static(b"READY> \x1b[6n"))?;
+        }
         Ok(())
     }
 
@@ -87,7 +94,16 @@ impl server::Handler for EchoHandler {
         data: &[u8],
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
-        if data.starts_with(b"\x1b[") && data.ends_with(b"R") {
+        if self.defer_banner_until_bootstrap && data == BOOTSTRAP_COMMAND.as_bytes() {
+            // 模拟最容易触发旧竞态的时序：登录横幅尚在 channel 排队时，客户端已
+            // 写入 bootstrap；服务器把 MOTD、prompt、命令回显和完成标记放进同一包。
+            let mut output = b"Welcome to Test Linux\r\nLast login: today\r\nrace$ ".to_vec();
+            output.extend_from_slice(data);
+            output.extend_from_slice(b"\x1b]7;file:///home/tester\x07");
+            output.extend_from_slice(BOOTSTRAP_DONE_MARKER);
+            output.extend_from_slice(b"race$ ");
+            session.data(channel, bytes::Bytes::from(output))?;
+        } else if data.starts_with(b"\x1b[") && data.ends_with(b"R") {
             session.data(channel, bytes::Bytes::from_static(b"DSR_OK "))?;
         } else {
             // Echo back upper-cased.
@@ -125,7 +141,7 @@ impl AuthProviderFactory for FixedPasswordFactory {
 }
 
 /// Start the echo server on an ephemeral loopback port; returns the bound port.
-async fn start_server() -> u16 {
+async fn start_server(defer_banner_until_bootstrap: bool) -> u16 {
     let key = russh::keys::PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519)
         .expect("generate host key");
     let config = Arc::new(server::Config {
@@ -141,7 +157,9 @@ async fn start_server() -> u16 {
     tokio::spawn(async move {
         // Accept exactly one connection and run it.
         if let Ok((stream, _addr)) = listener.accept().await {
-            let handler = EchoHandler;
+            let handler = EchoHandler {
+                defer_banner_until_bootstrap,
+            };
             let _ = server::run_stream(config, stream, handler).await;
             // Keep the task alive while the session runs.
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -156,7 +174,7 @@ fn full_roundtrip_through_term_engine() {
     // The SessionManager owns its own runtime; we need a separate one to host
     // the test server. Use a dedicated current-thread runtime on a thread.
     let server_rt = tokio::runtime::Runtime::new().unwrap();
-    let port = server_rt.block_on(start_server());
+    let port = server_rt.block_on(start_server(false));
     // Keep the server runtime alive for the duration of the test.
     let _server_guard = server_rt;
 
@@ -249,6 +267,68 @@ fn full_roundtrip_through_term_engine() {
         }
     }
     assert!(closed, "never received Closed after Disconnect");
+}
+
+#[test]
+fn shell_integration_keeps_login_banner_when_setup_wins_the_race() {
+    let server_rt = tokio::runtime::Runtime::new().unwrap();
+    let port = server_rt.block_on(start_server(true));
+    let _server_guard = server_rt;
+
+    let verifier: Arc<dyn HostKeyVerifier> = Arc::new(AcceptAllVerifier);
+    let factory: Arc<dyn AuthProviderFactory> = Arc::new(FixedPasswordFactory);
+    let mut mgr = SessionManager::spawn(verifier, factory).expect("spawn core");
+    let id = SessionId(2);
+    mgr.send(ToCore::Connect {
+        id,
+        params: Box::new(ConnectParams {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            auth: vec![AuthMethod::Password],
+            vault_id: None,
+            proxy_jump: None,
+            proxy: kt_config::ProxyConfig::Direct,
+            forward_agent: false,
+        }),
+        pty: PtySize {
+            cols: 100,
+            rows: 24,
+        },
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut setup_sent = false;
+    let mut saw_banner = false;
+    let mut saw_cwd = false;
+    while std::time::Instant::now() < deadline && !(saw_banner && saw_cwd) {
+        match recv_timeout(&mut mgr, Duration::from_secs(3)) {
+            Some(FromCore::Connected { .. }) => {
+                mgr.send(ToCore::SetupShellIntegration { id });
+                setup_sent = true;
+            }
+            Some(FromCore::Render { snapshot, .. }) => {
+                let text = snapshot.to_plain_text();
+                if text.contains("Welcome to Test Linux") && text.contains("Last login: today") {
+                    assert!(text.contains("race$"), "最终 prompt 应可见: {text:?}");
+                    assert!(!text.contains("__kt_cwd"), "bootstrap 不得可见: {text:?}");
+                    saw_banner = true;
+                }
+            }
+            Some(FromCore::Cwd { path, .. }) if path == "/home/tester" => saw_cwd = true,
+            Some(FromCore::Closed { error, .. }) => {
+                panic!("session closed early: {error:?}");
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+
+    assert!(setup_sent, "never received Connected");
+    assert!(saw_banner, "login banner was lost during bootstrap setup");
+    assert!(saw_cwd, "bootstrap OSC 7 cwd was not reported");
+
+    mgr.send(ToCore::Disconnect { id });
 }
 
 /// Block for the next event with an overall timeout, polling `try_recv`.

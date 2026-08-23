@@ -143,6 +143,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     show_timestamps: settings().show_timestamps,
                                     language,
                                     split_mode,
+                                    allow_split: true,
                                 }
                             }
                             if split_mode().is_some() {
@@ -157,6 +158,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         show_timestamps: settings().show_timestamps,
                                         language,
                                         split_mode,
+                                        allow_split: true,
                                     }
                                 }
                             }
