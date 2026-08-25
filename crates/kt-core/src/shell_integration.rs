@@ -8,12 +8,14 @@
 
 use std::time::{Duration, Instant};
 
-/// 注入后等待远端首次回包的时间。要覆盖一次网络往返与 shell 执行。
-const QUIET_INITIAL: Duration = Duration::from_millis(1200);
-/// 每收到一批被吞掉的数据后延长的空闲时间；连续这么久没有新数据即认为回显结束。
-const QUIET_IDLE: Duration = Duration::from_millis(300);
-/// 静默窗口的硬上限，防止 shell 持续输出时终端长时间空白。
-const QUIET_HARD_LIMIT: Duration = Duration::from_secs(3);
+/// bootstrap 执行完成时写入 PTY 的不可见 OSC 标记。
+pub const BOOTSTRAP_DONE_MARKER: &[u8] = b"\x1b]1337;KitonyTermsShellIntegration=done\x07";
+/// 最长只等待这么久；标记缺失时恢复原样输出，不能永久吞掉远端信息。
+const FILTER_HARD_LIMIT: Duration = Duration::from_secs(3);
+/// 异常 shell 持续输出时的内存上限；超过后立即结束过滤并显示已缓存内容。
+const FILTER_MAX_PENDING: usize = 64 * 1024;
+/// 去掉旧 prompt 所在行，随后让 shell 正常输出的新 prompt 接管当前行。
+const CLEAR_CURRENT_LINE: &[u8] = b"\r\x1b[2K";
 
 /// 一次性注入的 shell 集成命令。
 ///
@@ -36,7 +38,7 @@ pub const BOOTSTRAP_COMMAND: &str = concat!(
     r#"*) PROMPT_COMMAND="__kt_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}";; "#,
     r#"esac; "#,
     r#"HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace"; "#,
-    r#"fi; __kt_cwd"#,
+    r#"fi; __kt_cwd; printf '\033]1337;KitonyTermsShellIntegration=done\a'"#,
     "\n"
 );
 
@@ -65,45 +67,157 @@ pub fn change_directory_command(path: &str) -> Option<String> {
     ))
 }
 
-/// 注入期间吞掉远端回包的窗口，使命令回显与随之重绘的 prompt 不进入终端快照。
-///
-/// 收敛条件是「连续 [`QUIET_IDLE`] 没有新数据」或触达 [`QUIET_HARD_LIMIT`]，
-/// 判定发生在数据到达时，因此不需要额外的定时器分支；没有数据也就没有显示。
+/// 只过滤 bootstrap 自身回显与执行过程，保留在它之前到达的 MOTD、Last login 等
+/// 登录输出。远端 shell 只有进入可读命令的 prompt 后才会回显并执行 bootstrap，
+/// 因此完成标记为过滤边界，比按时间吞掉整个 PTY 数据流可靠。
 #[derive(Default)]
-pub struct QuietWindow {
-    idle_until: Option<Instant>,
+pub struct BootstrapOutputFilter {
+    pending: Vec<u8>,
     hard_deadline: Option<Instant>,
+    echo_seen: bool,
 }
 
-impl QuietWindow {
-    /// 开启静默窗口。
+impl BootstrapOutputFilter {
+    /// 开始等待本次 bootstrap 的命令回显与完成标记。
     pub fn start(&mut self, now: Instant) {
-        self.idle_until = Some(now + QUIET_INITIAL);
-        self.hard_deadline = Some(now + QUIET_HARD_LIMIT);
+        self.pending.clear();
+        self.hard_deadline = Some(now + FILTER_HARD_LIMIT);
+        self.echo_seen = false;
     }
 
-    /// 立即结束静默窗口，用于用户按键等必须马上恢复回显的场合。
-    pub fn end(&mut self) {
-        self.idle_until = None;
+    /// 立即结束过滤并返回尚未交给终端的普通输出。
+    pub fn finish(&mut self) -> Vec<u8> {
+        let pending = std::mem::take(&mut self.pending);
         self.hard_deadline = None;
+        self.echo_seen = false;
+        pending
     }
 
     pub fn is_active(&self) -> bool {
-        self.idle_until.is_some()
+        self.hard_deadline.is_some()
     }
 
-    /// 判断这批远端数据是否应被吞掉；返回 `true` 表示不要喂给终端引擎。
-    pub fn absorb(&mut self, now: Instant) -> bool {
-        let (Some(idle_until), Some(hard_deadline)) = (self.idle_until, self.hard_deadline) else {
-            return false;
+    /// 过滤一批 stdout 数据，返回应该交给终端引擎的字节。
+    pub fn filter(&mut self, data: &[u8], now: Instant) -> Vec<u8> {
+        let Some(hard_deadline) = self.hard_deadline else {
+            return data.to_vec();
         };
-        if now >= idle_until || now >= hard_deadline {
-            self.end();
-            return false;
+        if now >= hard_deadline {
+            let mut visible = self.finish();
+            visible.extend_from_slice(data);
+            return visible;
         }
-        self.idle_until = Some((now + QUIET_IDLE).min(hard_deadline));
-        true
+
+        self.pending.extend_from_slice(data);
+        if self.echo_seen {
+            return self.finish_after_marker_or_limit();
+        }
+
+        let echo = BOOTSTRAP_COMMAND.trim_end_matches('\n').as_bytes();
+        if let Some((echo_start, echo_end)) = find_echo(&self.pending, echo) {
+            let mut visible = self.pending[..echo_start].to_vec();
+            visible.extend_from_slice(CLEAR_CURRENT_LINE);
+            self.pending.drain(..echo_end);
+            self.echo_seen = true;
+            visible.extend(self.finish_after_marker_or_limit());
+            return visible;
+        }
+
+        // ECHO 被远端关闭时不会出现命令文本，但完成标记仍能给出精确边界。
+        if let Some(marker_start) = find_subslice(&self.pending, BOOTSTRAP_DONE_MARKER) {
+            let mut visible = self.pending[..marker_start].to_vec();
+            visible.extend_from_slice(CLEAR_CURRENT_LINE);
+            visible.extend_from_slice(&self.pending[marker_start + BOOTSTRAP_DONE_MARKER.len()..]);
+            self.finish();
+            return visible;
+        }
+
+        if self.pending.len() > FILTER_MAX_PENDING {
+            return self.finish();
+        }
+
+        // 只保留可能与下一数据块拼成“命令回显/完成标记”的末尾，其他登录输出
+        // 立即显示，避免为了等待注入完成而让 MOTD 延迟数秒。
+        let keep = suffix_prefix_len(&self.pending, echo, true).max(suffix_prefix_len(
+            &self.pending,
+            BOOTSTRAP_DONE_MARKER,
+            false,
+        ));
+        let visible_len = self.pending.len() - keep;
+        self.pending.drain(..visible_len).collect()
     }
+
+    fn finish_after_marker_or_limit(&mut self) -> Vec<u8> {
+        if let Some(marker_start) = find_subslice(&self.pending, BOOTSTRAP_DONE_MARKER) {
+            let visible = self.pending[marker_start + BOOTSTRAP_DONE_MARKER.len()..].to_vec();
+            self.finish();
+            return visible;
+        }
+        if self.pending.len() > FILTER_MAX_PENDING {
+            return self.finish();
+        }
+        Vec::new()
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (!needle.is_empty())
+        .then(|| {
+            haystack
+                .windows(needle.len())
+                .position(|window| window == needle)
+        })
+        .flatten()
+}
+
+/// 查找 PTY 行回显中的 bootstrap 命令。终端达到右边界时可能在回显中插入
+/// `CR/LF`，这些换行不是命令本身的一部分，应在匹配时忽略。
+fn find_echo(haystack: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    for start in 0..haystack.len() {
+        if haystack[start] != needle[0] {
+            continue;
+        }
+        let mut cursor = start;
+        let mut matched = 0;
+        while cursor < haystack.len() && matched < needle.len() {
+            match haystack[cursor] {
+                b'\r' | b'\n' => cursor += 1,
+                byte if byte == needle[matched] => {
+                    cursor += 1;
+                    matched += 1;
+                }
+                _ => break,
+            }
+        }
+        if matched == needle.len() {
+            return Some((start, cursor));
+        }
+    }
+    None
+}
+
+fn suffix_prefix_len(data: &[u8], needle: &[u8], ignore_line_breaks: bool) -> usize {
+    for start in 0..data.len() {
+        let mut matched = 0;
+        let mut valid = true;
+        for &byte in &data[start..] {
+            if ignore_line_breaks && matches!(byte, b'\r' | b'\n') {
+                continue;
+            }
+            if needle.get(matched).copied() != Some(byte) {
+                valid = false;
+                break;
+            }
+            matched += 1;
+        }
+        if valid && matched > 0 && matched < needle.len() {
+            return data.len() - start;
+        }
+    }
+    0
 }
 
 #[cfg(test)]
@@ -114,6 +228,9 @@ mod tests {
     fn bootstrap_reports_cwd_as_printf_argument() {
         // `$PWD` 必须作为参数传入，否则路径里的 `%` 会被当成格式说明符。
         assert!(BOOTSTRAP_COMMAND.contains(r#"printf '\033]7;file://%s\a' "$PWD""#));
+        assert!(
+            BOOTSTRAP_COMMAND.contains(r#"printf '\033]1337;KitonyTermsShellIntegration=done\a'"#)
+        );
         assert!(BOOTSTRAP_COMMAND.ends_with('\n'));
     }
 
@@ -171,50 +288,119 @@ mod tests {
     }
 
     #[test]
-    fn quiet_window_absorbs_until_output_goes_idle() {
+    fn bootstrap_filter_preserves_login_output_and_hides_chunked_echo() {
         let start = Instant::now();
-        let mut window = QuietWindow::default();
-        assert!(!window.absorb(start), "未开启时不得吞数据");
+        let mut filter = BootstrapOutputFilter::default();
+        filter.start(start);
 
-        window.start(start);
-        // 初始窗口内的回显被吞掉，并把空闲期限向后推。
-        assert!(window.absorb(start + Duration::from_millis(400)));
-        assert!(window.absorb(start + Duration::from_millis(600)));
-        // 连续 QUIET_IDLE 无数据后，下一批数据正常显示。
-        assert!(!window.absorb(start + Duration::from_millis(1000)));
-        assert!(!window.is_active());
+        let mut visible = filter.filter(
+            b"Welcome to Ubuntu\r\nLast login: today\r\nuser@host:~$ ",
+            start + Duration::from_millis(10),
+        );
+        let echo = BOOTSTRAP_COMMAND.trim_end_matches('\n').as_bytes();
+        let echo_split = echo.len() / 2;
+        visible.extend(filter.filter(&echo[..echo_split], start + Duration::from_millis(20)));
+
+        let marker_split = BOOTSTRAP_DONE_MARKER.len() / 2;
+        let mut execution = echo[echo_split..].to_vec();
+        execution.extend_from_slice(b"\r\n\x1b]7;file:///home/demo\x07");
+        execution.extend_from_slice(&BOOTSTRAP_DONE_MARKER[..marker_split]);
+        visible.extend(filter.filter(&execution, start + Duration::from_millis(30)));
+
+        let mut completion = BOOTSTRAP_DONE_MARKER[marker_split..].to_vec();
+        completion.extend_from_slice(b"user@host:~$ ");
+        visible.extend(filter.filter(&completion, start + Duration::from_millis(40)));
+
+        let mut term = crate::term::TermEngine::new(120, 8, 20);
+        term.advance(&visible);
+        let text = term.snapshot().to_plain_text();
+        assert!(text.contains("Welcome to Ubuntu"), "实际: {text:?}");
+        assert!(text.contains("Last login: today"), "实际: {text:?}");
+        assert!(text.contains("user@host:~$"), "实际: {text:?}");
+        assert!(!text.contains("__kt_cwd"), "注入命令不得可见: {text:?}");
+        assert!(!filter.is_active());
     }
 
     #[test]
-    fn quiet_window_stops_at_hard_limit_even_with_continuous_output() {
+    fn bootstrap_filter_uses_done_marker_when_remote_echo_is_disabled() {
         let start = Instant::now();
-        let mut window = QuietWindow::default();
-        window.start(start);
+        let mut filter = BootstrapOutputFilter::default();
+        filter.start(start);
 
-        let mut now = start;
-        // 持续输出时空闲期限被不断延长，但不能越过硬上限。
-        for _ in 0..40 {
-            now += Duration::from_millis(100);
-            if !window.absorb(now) {
-                break;
-            }
+        let mut data = b"System maintenance tonight\r\nquiet$ \x1b]7;file:///srv\x07".to_vec();
+        data.extend_from_slice(BOOTSTRAP_DONE_MARKER);
+        data.extend_from_slice(b"quiet$ ");
+        let visible = filter.filter(&data, start + Duration::from_millis(20));
+
+        let mut term = crate::term::TermEngine::new(100, 6, 20);
+        term.advance(&visible);
+        let text = term.snapshot().to_plain_text();
+        assert!(
+            text.contains("System maintenance tonight"),
+            "实际: {text:?}"
+        );
+        assert!(text.contains("quiet$"), "实际: {text:?}");
+        assert!(!filter.is_active());
+    }
+
+    #[test]
+    fn bootstrap_filter_matches_terminal_wrapped_echo() {
+        let start = Instant::now();
+        let mut filter = BootstrapOutputFilter::default();
+        filter.start(start);
+
+        let echo = BOOTSTRAP_COMMAND.trim_end_matches('\n').as_bytes();
+        let mut wrapped = b"Wrapped host notice\r\nwrap$ ".to_vec();
+        for chunk in echo.chunks(37) {
+            wrapped.extend_from_slice(chunk);
+            wrapped.extend_from_slice(b"\r\n");
         }
-        assert!(!window.is_active(), "硬上限必须结束静默窗口");
-        assert!(now <= start + QUIET_HARD_LIMIT + Duration::from_millis(100));
+        wrapped.extend_from_slice(b"\x1b]7;file:///tmp\x07");
+        wrapped.extend_from_slice(BOOTSTRAP_DONE_MARKER);
+        wrapped.extend_from_slice(b"wrap$ ");
+
+        let visible = filter.filter(&wrapped, start + Duration::from_millis(20));
+        let mut term = crate::term::TermEngine::new(100, 6, 20);
+        term.advance(&visible);
+        let text = term.snapshot().to_plain_text();
+        assert!(text.contains("Wrapped host notice"), "实际: {text:?}");
+        assert!(text.contains("wrap$"), "实际: {text:?}");
+        assert!(!text.contains("__kt_cwd"), "换行回显不得可见: {text:?}");
+        assert!(!filter.is_active());
     }
 
     #[test]
-    fn quiet_window_ends_immediately_on_demand() {
+    fn bootstrap_filter_timeout_flushes_unconfirmed_output() {
         let start = Instant::now();
-        let mut window = QuietWindow::default();
-        window.start(start);
-        window.end();
-        assert!(!window.is_active());
-        assert!(!window.absorb(start + Duration::from_millis(10)));
+        let mut filter = BootstrapOutputFilter::default();
+        filter.start(start);
+
+        let mut visible = filter.filter(b"notice __kt", start + Duration::from_millis(10));
+        visible.extend(filter.filter(b" still visible", start + FILTER_HARD_LIMIT));
+
+        assert_eq!(visible, b"notice __kt still visible");
+        assert!(!filter.is_active());
+    }
+
+    #[test]
+    fn bootstrap_filter_finish_flushes_partial_normal_output() {
+        let start = Instant::now();
+        let mut filter = BootstrapOutputFilter::default();
+        filter.start(start);
+
+        let echo = BOOTSTRAP_COMMAND.trim_end_matches('\n').as_bytes();
+        let split = echo.len() / 2;
+        let visible = filter.filter(&echo[..split], start + Duration::from_millis(10));
+        assert!(visible.is_empty());
+        let mut visible = visible;
+        visible.extend(filter.finish());
+
+        assert_eq!(visible, echo[..split]);
+        assert!(!filter.is_active());
     }
 
     /// 注入命令由远端 shell 整行解析，任何一处语法错误都会让整条命令失效，而且
-    /// 错误输出会被静默窗口吞掉、运行时几乎无从发现。所以这里直接用本机 shell
+    /// 错误输出可能出现在过滤边界内、运行时不便诊断。所以这里直接用本机 shell
     /// 做语法检查（`-n` 只解析不执行，不会改动本机环境）。
     #[cfg(unix)]
     #[test]

@@ -70,9 +70,9 @@ kt-core ──▶ kt-config        (kt-core 无 UI 依赖,可 headless 跑/测)
 
 SSH 协议既读不到也改不了一个已在运行的交互 shell 的工作目录。要让「终端里切目录 → 文件管理跟随」实时可靠,唯一可行的做法是让远端 shell 自己在每次 prompt 前发 OSC 7,而 Debian/Ubuntu/RHEL 的默认 bash 与 Linux 上的 zsh 都不发。
 
-- `BOOTSTRAP_COMMAND` 是每个连接注入一次的常量命令:定义 `__kt_cwd` 用 `printf '%s'` **传参**上报 `$PWD`(路径里的 `%` 不会被当成格式说明符),bash 侧按标量/数组两种形态前置追加到 `PROMPT_COMMAND`,zsh 侧追加 `precmd_functions`,并给 `HISTCONTROL`/`hist_ignore_space` 追加 ignorespace。**一律追加,不得覆盖用户配置**;zsh 专用的 `+=(...)`、`setopt` 必须留在 `eval` 里,否则 dash 之类会整行解析失败。改动这段命令后必须跑 `shell_integration` 的 shell 执行测试(用本机 `sh/bash/zsh/dash/ksh` 做真实语法与行为校验)。
+- `BOOTSTRAP_COMMAND` 是每个连接注入一次的常量命令:定义 `__kt_cwd` 用 `printf '%s'` **传参**上报 `$PWD`(路径里的 `%` 不会被当成格式说明符),bash 侧按标量/数组两种形态前置追加到 `PROMPT_COMMAND`,zsh 侧追加 `precmd_functions`,并给 `HISTCONTROL`/`hist_ignore_space` 追加 ignorespace；命令结束时必须发送 `BOOTSTRAP_DONE_MARKER`，供输出过滤器确定边界。**一律追加,不得覆盖用户配置**;zsh 专用的 `+=(...)`、`setopt` 必须留在 `eval` 里,否则 dash 之类会整行解析失败。改动这段命令后必须跑 `shell_integration` 的 shell 执行测试(用本机 `sh/bash/zsh/dash/ksh` 做真实语法与行为校验)。
 - `change_directory_command` 构造文件管理→终端方向的 `cd`:前置 `\x15`(Ctrl+U)清掉用户可能输入到一半的命令行,前导空格配合 ignorespace 不进 history,`printf '\033[A\r\033[J'` 擦除本行回显且**必须排在 `cd` 之前**,这样 `cd` 失败的报错落在被清除的位置上仍然可见。路径按 `'\''` 收敛单引号。
-- `QuietWindow` 是注入期间的静默窗口:`SessionTask` 在这段时间里把远端回包**只喂 OSC 7 扫描器、不喂 `TermEngine`**,注入命令的回显与随之重绘的 prompt 因此完全不进入终端快照。收敛条件是「连续 300ms 无数据」或硬上限 3 秒,判定发生在数据到达时(没有数据也就没有显示,不需要额外定时器分支);用户按键立即结束窗口,不能吞掉用户自己敲的内容。
+- `BootstrapOutputFilter` 只隐藏本次 bootstrap 已识别的命令回显、执行输出和完成标记，不能按时间丢弃整个 PTY 流。命令回显前到达的 MOTD、Last login、shell banner 必须立即进入 `TermEngine`；`ExtendedData`/stderr 始终可见。过滤器有 3 秒硬期限与 64 KiB 上限，标记缺失、输出异常或用户开始输入时必须原样冲刷未确认缓存，数据保留优先于注入不可见。
 - 注入是**尽力而为的增强**:shell 不支持、被 `sudo -i`/`su`/`docker exec` 换掉进程、语法在受限 shell 下失败,都只会让这条路径失效并静默退回 UI 侧的输入推断,不产生用户可见错误。
 
 

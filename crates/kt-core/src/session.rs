@@ -780,10 +780,10 @@ impl SessionTask {
         // Whether the monitor subtask has been started (lazy on first request).
         let mut monitor_started = false;
 
-        // Shell 集成 hook 每个连接只注入一次;注入期间用静默窗口吞掉命令回显与
-        // 随之重绘的 prompt,使这次注入在终端上完全不可见。
+        // Shell 集成 hook 每个连接只注入一次；过滤器只隐藏本次命令回显，不能吞掉
+        // 同时到达的 MOTD、Last login 等正常登录输出。
         let mut shell_integration_sent = false;
-        let mut quiet = shell_integration::QuietWindow::default();
+        let mut bootstrap_filter = shell_integration::BootstrapOutputFilter::default();
 
         let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<SessionInternal>();
 
@@ -805,10 +805,24 @@ impl SessionTask {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(SessionCmd::Input(data)) => {
-                            // 用户开始输入时必须马上恢复回显，不能让注入的静默窗口
-                            // 把用户自己敲的内容也吞掉。
-                            if !data.is_empty() {
-                                quiet.end();
+                            // 用户开始输入时必须马上恢复回显，并先冲刷过滤器里尚未
+                            // 确认属于 bootstrap 的数据，避免用户输入前的输出丢失。
+                            if !data.is_empty() && bootstrap_filter.is_active() {
+                                let pending = bootstrap_filter.finish();
+                                if !pending.is_empty() {
+                                    term.advance(&pending);
+                                    let writes = handle_term_events(
+                                        self.id,
+                                        self.out.clone(),
+                                        term.take_events(),
+                                    )
+                                    .await;
+                                    if let Err(error) = write_pty_responses(&shell, writes).await {
+                                        close_error = Some(error.to_string());
+                                        break;
+                                    }
+                                    self.emit_render(&term);
+                                }
                             }
                             // 用户在查看历史输出时开始输入，应立即回到当前命令行；
                             // 空输入不改变视口，也避免实时视图下每次按键产生额外渲染。
@@ -973,7 +987,7 @@ impl SessionTask {
                                 tracing::debug!("shell 集成已注入，跳过重复请求: {:?}", id);
                             } else {
                                 shell_integration_sent = true;
-                                quiet.start(Instant::now());
+                                bootstrap_filter.start(Instant::now());
                                 if let Err(e) = shell
                                     .write(shell_integration::BOOTSTRAP_COMMAND.as_bytes())
                                     .await
@@ -1001,9 +1015,8 @@ impl SessionTask {
                                     let _ = self.out.send(FromCore::Cwd { id, path }).await;
                                 }
                             }
-                            // 静默期内的数据只用于解析目录，不进入终端引擎，注入命令的
-                            // 回显与重绘的 prompt 因此不会出现在终端里。
-                            if quiet.absorb(Instant::now()) {
+                            let data = bootstrap_filter.filter(&data, Instant::now());
+                            if data.is_empty() {
                                 continue;
                             }
                             term.advance(&data);
@@ -1019,10 +1032,7 @@ impl SessionTask {
                             self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
-                            // stderr — feed it to the terminal too.
-                            if quiet.absorb(Instant::now()) {
-                                continue;
-                            }
+                            // stderr 不参与 bootstrap 过滤，登录脚本的诊断信息也必须可见。
                             term.advance(&data);
                             let writes = handle_term_events(
                                 self.id,
