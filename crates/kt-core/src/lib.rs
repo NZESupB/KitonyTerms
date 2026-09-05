@@ -12,15 +12,20 @@
 //! * [`shell_integration`] — remote shell CWD reporting hook + directory commands
 
 pub mod monitor;
+pub mod remote_ops;
 pub mod session;
 pub mod sftp;
 pub mod shell_integration;
 pub mod ssh;
 pub mod term;
 
-pub use monitor::{DiskUsage, MonitorStats, ProcInfo};
+pub use monitor::{CpuCoreUsage, DiskUsage, MonitorStats, NetInterfaceStats, SystemInfo};
+pub use remote_ops::{
+    DockerContainer, NetworkConnection, OperationId, OperationsDomain, OperationsError,
+    OperationsErrorKind, OperationsRequest, OperationsResult, ProcessSummary, ServiceSummary,
+};
 pub use session::{
-    AuthChallenge, AuthPrompt, AuthProviderFactory, AuthResponse, FromCore, SessionId,
+    AuthChallenge, AuthPrompt, AuthProviderFactory, AuthResponse, ExecId, FromCore, SessionId,
     SessionManager, SftpEntry, SftpOp, SftpRequest, SftpRequestId, ToCore,
 };
 pub use ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};

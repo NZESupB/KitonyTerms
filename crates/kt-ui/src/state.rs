@@ -1,6 +1,9 @@
 //! 全局应用状态
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    time::Instant,
+};
 
 use kt_config::ConnectParams;
 use kt_core::monitor::MonitorStats;
@@ -8,7 +11,8 @@ use kt_core::shell_integration;
 use kt_core::term::GridSnapshot;
 use kt_core::PtySize;
 use kt_core::{
-    AuthChallenge, FromCore, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest,
+    AuthChallenge, ExecId, FromCore, OperationId, OperationsDomain, OperationsError,
+    OperationsRequest, OperationsResult, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest,
     SftpRequestId, ToCore,
 };
 
@@ -38,6 +42,44 @@ pub struct SftpProgressState {
     pub total: u64,
 }
 
+/// 单一运维领域的会话内快照。仅保留最后一次成功结果，查询失败时不清空旧数据。
+#[derive(Clone, PartialEq)]
+pub struct OperationsViewState {
+    pub request_id: Option<OperationId>,
+    pub loading: bool,
+    pub error: Option<OperationsError>,
+    pub result: Option<OperationsResult>,
+    /// 当前请求开始时间；请求结束后清空，仅用于描述 pending 状态。
+    pub requested_at: Option<Instant>,
+    /// 最近一次成功快照的接收时间，用于刷新间隔和 UI 展示数据新鲜度。
+    pub updated_at: Option<Instant>,
+}
+
+/// 独立 Docker 容器终端的会话级瞬态状态。
+#[derive(Clone)]
+pub struct ContainerTerminalState {
+    pub exec_id: ExecId,
+    pub container_id: String,
+    pub snapshot: Option<GridSnapshot>,
+    pub loading: bool,
+    pub started: bool,
+    pub closed: bool,
+    pub error: Option<String>,
+}
+
+impl PartialEq for ContainerTerminalState {
+    fn eq(&self, other: &Self) -> bool {
+        self.exec_id == other.exec_id
+            && self.container_id == other.container_id
+            && self.loading == other.loading
+            && self.started == other.started
+            && self.closed == other.closed
+            && self.error == other.error
+            && self.snapshot.as_ref().map(|snapshot| snapshot.revision)
+                == other.snapshot.as_ref().map(|snapshot| snapshot.revision)
+    }
+}
+
 /// 单个会话的 UI 状态
 #[derive(Clone)]
 pub struct SessionState {
@@ -53,6 +95,8 @@ pub struct SessionState {
     pub host_key_pending: bool,
     /// 当前等待用户输入的认证挑战。
     pub auth_challenge: Option<AuthChallenge>,
+    /// 认证挑战所属的连接代次，防止旧弹窗答案进入重连后的会话。
+    pub auth_challenge_generation: Option<u64>,
 
     // SFTP 状态
     pub sftp_path: String,
@@ -64,6 +108,8 @@ pub struct SessionState {
     /// 有界保存近期请求结果，供外部编辑等异步状态机按 request ID 精确消费。
     pub sftp_completions: VecDeque<SftpCompletion>,
     pub sftp_failures: VecDeque<SftpFailure>,
+    /// 已投递但尚未收到终态的 SFTP 请求；迟到的进度事件不得覆盖新请求。
+    pub sftp_pending_requests: HashSet<SftpRequestId>,
     pub sftp_progress: Option<SftpProgressState>,
     /// 远端 shell 通过 OSC 7 上报或根据简单 `cd` 保守推断的当前工作目录。
     pub terminal_cwd: Option<String>,
@@ -96,6 +142,10 @@ pub struct SessionState {
     pub monitor_loading: bool,
     /// 最近一次资源监控错误。
     pub monitor_error: Option<String>,
+    /// 运维中心的数据完全是会话级运行时状态，不会写入配置或同步载荷。
+    pub operations: HashMap<OperationsDomain, OperationsViewState>,
+    /// 当前独立容器 PTY；断开/重连时必须清除。
+    pub container_terminal: Option<ContainerTerminalState>,
 }
 
 /// 全局应用状态（跨组件共享）
@@ -104,6 +154,8 @@ pub struct AppState {
     pub sessions: HashMap<SessionId, SessionState>,
     pub next_id: u64,
     next_sftp_request_id: u64,
+    next_operation_id: u64,
+    next_exec_id: u64,
 }
 
 impl AppState {
@@ -113,6 +165,8 @@ impl AppState {
             sessions: HashMap::new(),
             next_id: 1,
             next_sftp_request_id: 1,
+            next_operation_id: 1,
+            next_exec_id: 1,
         }
     }
 
@@ -143,10 +197,221 @@ impl AppState {
             request_id,
             req,
         }) {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                session.sftp_pending_requests.insert(request_id);
+            }
             Ok(request_id)
         } else {
             Err("SFTP 请求无法投递，核心命令队列不可用".to_string())
         }
+    }
+
+    /// 投递固定 allowlist 的只读运维刷新。失败会同步收敛 loading，旧快照保持可见。
+    pub fn refresh_operations(
+        &mut self,
+        session_id: SessionId,
+        domain: OperationsDomain,
+    ) -> Result<OperationId, String> {
+        if !self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| session.connected)
+        {
+            return Err("会话已断开，无法刷新运维数据".to_string());
+        }
+        let operation_id = OperationId(self.next_operation_id);
+        self.next_operation_id = self.next_operation_id.saturating_add(1);
+        let state = self
+            .sessions
+            .get_mut(&session_id)
+            .expect("连接状态已在上方检查");
+        let view = state
+            .operations
+            .entry(domain)
+            .or_insert(OperationsViewState {
+                request_id: None,
+                loading: false,
+                error: None,
+                result: None,
+                requested_at: None,
+                updated_at: None,
+            });
+        view.request_id = Some(operation_id);
+        view.loading = true;
+        view.error = None;
+        view.requested_at = Some(Instant::now());
+        if self.manager.send(ToCore::Operations {
+            id: session_id,
+            operation_id,
+            request: OperationsRequest::Refresh(domain),
+        }) {
+            Ok(operation_id)
+        } else {
+            view.loading = false;
+            view.requested_at = None;
+            view.error = Some(OperationsError::new(
+                kt_core::OperationsErrorKind::Busy,
+                "运维请求无法投递，核心命令队列不可用",
+            ));
+            Err("运维请求无法投递，核心命令队列不可用".to_string())
+        }
+    }
+
+    /// 打开一个独立 Docker 容器终端。请求只携带容器标识和 PTY 尺寸，不接受 shell 文本。
+    pub fn open_container_terminal(
+        &mut self,
+        session_id: SessionId,
+        container_id: String,
+        pty: PtySize,
+    ) -> Result<ExecId, String> {
+        if !self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| session.connected)
+        {
+            return Err("会话已断开，无法打开容器终端".to_string());
+        }
+        if container_id.is_empty() {
+            return Err("容器标识不能为空".to_string());
+        }
+        if let Some(previous) = self
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.container_terminal.as_ref())
+            .map(|terminal| terminal.exec_id)
+        {
+            let _ = self.manager.send(ToCore::CloseContainerTerminal {
+                id: session_id,
+                exec_id: previous,
+            });
+        }
+        let exec_id = ExecId(self.next_exec_id);
+        self.next_exec_id = self.next_exec_id.saturating_add(1);
+        let state = self
+            .sessions
+            .get_mut(&session_id)
+            .expect("连接状态已在上方检查");
+        state.container_terminal = Some(ContainerTerminalState {
+            exec_id,
+            container_id: container_id.clone(),
+            snapshot: None,
+            loading: true,
+            started: false,
+            closed: false,
+            error: None,
+        });
+        if self.manager.send(ToCore::OpenContainerTerminal {
+            id: session_id,
+            exec_id,
+            container_id,
+            pty,
+        }) {
+            Ok(exec_id)
+        } else {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                session.container_terminal = None;
+            }
+            Err("容器终端请求无法投递，核心命令队列不可用".to_string())
+        }
+    }
+
+    pub fn send_container_terminal_input(
+        &mut self,
+        session_id: SessionId,
+        exec_id: ExecId,
+        data: Vec<u8>,
+    ) -> bool {
+        let active = self.sessions.get(&session_id).and_then(|session| {
+            session
+                .container_terminal
+                .as_ref()
+                .filter(|terminal| terminal.exec_id == exec_id && !terminal.closed)
+        });
+        if active.is_none() {
+            return false;
+        }
+        self.manager.send(ToCore::ContainerInput {
+            id: session_id,
+            exec_id,
+            data,
+        })
+    }
+
+    pub fn resize_container_terminal(
+        &mut self,
+        session_id: SessionId,
+        exec_id: ExecId,
+        cols: u16,
+        rows: u16,
+    ) -> bool {
+        let active = self.sessions.get(&session_id).and_then(|session| {
+            session
+                .container_terminal
+                .as_ref()
+                .filter(|terminal| terminal.exec_id == exec_id && !terminal.closed)
+        });
+        if active.is_none() {
+            return false;
+        }
+        self.manager.send(ToCore::ContainerResize {
+            id: session_id,
+            exec_id,
+            cols,
+            rows,
+        })
+    }
+
+    pub fn scroll_container_terminal(
+        &mut self,
+        session_id: SessionId,
+        exec_id: ExecId,
+        delta: i32,
+    ) -> bool {
+        let active = self.sessions.get(&session_id).and_then(|session| {
+            session
+                .container_terminal
+                .as_ref()
+                .filter(|terminal| terminal.exec_id == exec_id && !terminal.closed)
+        });
+        if active.is_none() {
+            return false;
+        }
+        self.manager.send(ToCore::ContainerScroll {
+            id: session_id,
+            exec_id,
+            delta,
+        })
+    }
+
+    pub fn close_container_terminal(&mut self, session_id: SessionId, exec_id: ExecId) -> bool {
+        let active = self
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.container_terminal.as_ref())
+            .is_some_and(|terminal| terminal.exec_id == exec_id);
+        if !active {
+            return false;
+        }
+
+        // Do not mark the local terminal closed before the command is accepted by
+        // the bounded core queue. A full/closed queue must leave the UI retryable
+        // instead of claiming a close that the core never received.
+        let sent = self.manager.send(ToCore::CloseContainerTerminal {
+            id: session_id,
+            exec_id,
+        });
+        if sent {
+            if let Some(terminal) = self
+                .sessions
+                .get_mut(&session_id)
+                .and_then(|session| session.container_terminal.as_mut())
+                .filter(|terminal| terminal.exec_id == exec_id)
+            {
+                terminal.closed = true;
+                terminal.loading = false;
+            }
+        }
+        sent
     }
 
     /// 重置易失会话状态并开始（或重新开始）连接，保留标签页与连接配置。
@@ -241,7 +506,7 @@ impl AppState {
         let mut event_count = 0;
         while let Some(ev) = self.manager.try_recv() {
             event_count += 1;
-            tracing::debug!("收到事件: {:?}", ev);
+            tracing::debug!(kind = core_event_kind(&ev), "收到 core 事件");
             self.handle_event(ev);
         }
         if event_count > 0 {
@@ -259,6 +524,7 @@ impl AppState {
                         sess.connection_error = None;
                         sess.host_key_pending = false;
                         sess.auth_challenge = None;
+                        sess.auth_challenge_generation = None;
                         sess.monitor_loading = true;
                         sess.monitor_error = None;
                         if should_auto_load_sftp(sess) {
@@ -303,18 +569,14 @@ impl AppState {
                 }
             }
             FromCore::Title { id, title } => {
-                tracing::debug!("忽略远端终端标题更新，会话 {:?}: {:?}", id, title);
+                let _ = title;
+                tracing::debug!("忽略远端终端标题更新，会话 {:?}", id);
             }
             FromCore::Cwd { id, path } => {
                 let should_follow = if let Some(sess) = self.sessions.get_mut(&id) {
                     if let Some(expected_path) = sess.terminal_cwd_inference_target.as_deref() {
                         if expected_path != path {
-                            tracing::debug!(
-                                "忽略简单 cd 后迟到的旧终端目录事件，会话 {:?}: {}（等待 {}）",
-                                id,
-                                path,
-                                expected_path
-                            );
+                            tracing::debug!("忽略简单 cd 后迟到的旧终端目录事件，会话 {:?}", id);
                             return;
                         }
                         sess.terminal_cwd_inference_target = None;
@@ -324,11 +586,7 @@ impl AppState {
                     let is_stale_previous_cwd =
                         waiting_for_file_manager_target && sess.sftp_path != path;
                     if is_stale_previous_cwd {
-                        tracing::debug!(
-                            "忽略文件管理目录切换后迟到的终端目录事件，会话 {:?}: {}",
-                            id,
-                            path
-                        );
+                        tracing::debug!("忽略文件管理目录切换后迟到的终端目录事件，会话 {:?}", id);
                         false
                     } else {
                         sess.set_terminal_cwd(path.clone());
@@ -364,6 +622,7 @@ impl AppState {
                         );
                     }
                     sess.auth_challenge = None;
+                    sess.auth_challenge_generation = None;
                     sess.snapshot = None;
                     sess.terminal_cwd = None;
                     sess.terminal_cwd_inference_target = None;
@@ -376,12 +635,17 @@ impl AppState {
                     sess.monitor_loading = false;
                     sess.monitor_error = None;
                     sess.monitor = None;
+                    sess.operations.clear();
+                    sess.container_terminal = None;
                     sess.sftp_loading = false;
                     sess.sftp_list_request_id = None;
+                    sess.sftp_completions.clear();
+                    sess.sftp_failures.clear();
+                    sess.sftp_pending_requests.clear();
                     sess.sftp_progress = None;
                     sess.sftp_entries.clear();
-                    if let Some(err) = error {
-                        tracing::warn!("Session {} closed with error: {}", id.0, err);
+                    if error.is_some() {
+                        tracing::warn!("Session {} closed with error", id.0);
                     }
                 }
             }
@@ -391,12 +655,7 @@ impl AppState {
                 path,
                 entries,
             } => {
-                tracing::info!(
-                    "收到 SFTP 列表，会话 {:?}，路径 {}，{} 项",
-                    id,
-                    path,
-                    entries.len()
-                );
+                tracing::info!("收到 SFTP 列表，会话 {:?}，{} 项", id, entries.len());
                 let (sync_terminal_path, should_follow_latest) = if let Some(sess) =
                     self.sessions.get_mut(&id)
                 {
@@ -408,6 +667,7 @@ impl AppState {
                         );
                         return;
                     }
+                    sess.sftp_pending_requests.remove(&request_id);
                     let terminal_sync = sess
                         .sftp_terminal_sync_request
                         .take()
@@ -455,8 +715,17 @@ impl AppState {
                 request_id,
                 message,
             } => {
-                tracing::error!("SFTP 错误，会话 {:?}: {}", id, message);
+                tracing::error!("SFTP 错误，会话 {:?}", id);
                 let should_follow_latest = if let Some(sess) = self.sessions.get_mut(&id) {
+                    if !sess.sftp_pending_requests.contains(&request_id) {
+                        tracing::debug!(
+                            "忽略迟到的 SFTP 错误，会话 {:?}，request={:?}",
+                            id,
+                            request_id
+                        );
+                        return;
+                    }
+                    sess.sftp_pending_requests.remove(&request_id);
                     push_bounded(
                         &mut sess.sftp_failures,
                         SftpFailure {
@@ -495,6 +764,7 @@ impl AppState {
                         sess.sftp_list_request_id = None;
                         sess.sftp_progress = None;
                         sess.sftp_terminal_sync_request = None;
+                        sess.sftp_pending_requests.clear();
                     } else {
                         tracing::debug!("忽略已重连会话的迟到 SFTP 停止事件: {:?}", id);
                     }
@@ -508,6 +778,14 @@ impl AppState {
                 total,
             } => {
                 if let Some(sess) = self.sessions.get_mut(&id) {
+                    if !sess.sftp_pending_requests.contains(&request_id) {
+                        tracing::debug!(
+                            "忽略迟到的 SFTP 进度，会话 {:?}，request={:?}",
+                            id,
+                            request_id
+                        );
+                        return;
+                    }
                     sess.sftp_progress = Some(SftpProgressState {
                         request_id,
                         name,
@@ -522,8 +800,17 @@ impl AppState {
                 op,
                 path,
             } => {
-                tracing::info!("SFTP 操作完成，会话 {:?}: {:?} {}", id, op, path);
+                tracing::info!("SFTP 操作完成，会话 {:?}: {:?}", id, op);
                 if let Some(sess) = self.sessions.get_mut(&id) {
+                    if !sess.sftp_pending_requests.contains(&request_id) {
+                        tracing::debug!(
+                            "忽略迟到的 SFTP 完成，会话 {:?}，request={:?}",
+                            id,
+                            request_id
+                        );
+                        return;
+                    }
+                    sess.sftp_pending_requests.remove(&request_id);
                     push_bounded(
                         &mut sess.sftp_completions,
                         SftpCompletion {
@@ -574,15 +861,103 @@ impl AppState {
                 }
             }
             FromCore::MonitorError { id, message } => {
-                tracing::error!("资源监控错误，会话 {:?}: {}", id, message);
+                tracing::error!("资源监控错误，会话 {:?}", id);
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.monitor_loading = false;
                     sess.monitor_error = Some(message);
                 }
             }
-            FromCore::AuthChallenge { id, challenge } => {
+            FromCore::OperationResult {
+                id,
+                operation_id,
+                domain,
+                result,
+            } => {
+                if let Some(view) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|session| session.operations.get_mut(&domain))
+                {
+                    if view.request_id == Some(operation_id) {
+                        view.loading = false;
+                        view.error = None;
+                        view.requested_at = None;
+                        view.result = Some(result);
+                        view.updated_at = Some(Instant::now());
+                    }
+                }
+            }
+            FromCore::OperationFailed {
+                id,
+                operation_id,
+                domain,
+                error,
+            } => {
+                if let Some(view) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|session| session.operations.get_mut(&domain))
+                {
+                    if view.request_id == Some(operation_id) {
+                        view.loading = false;
+                        view.requested_at = None;
+                        view.error = Some(error);
+                    }
+                }
+            }
+            FromCore::ExecStarted {
+                id,
+                exec_id,
+                container_id,
+            } => {
+                if let Some(terminal) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|session| session.container_terminal.as_mut())
+                    .filter(|terminal| terminal.exec_id == exec_id)
+                {
+                    terminal.container_id = container_id;
+                    terminal.started = true;
+                    terminal.loading = false;
+                    terminal.closed = false;
+                    terminal.error = None;
+                }
+            }
+            FromCore::ExecRender {
+                id,
+                exec_id,
+                snapshot,
+            } => {
+                if let Some(terminal) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|session| session.container_terminal.as_mut())
+                    .filter(|terminal| terminal.exec_id == exec_id && !terminal.closed)
+                {
+                    terminal.snapshot = Some(*snapshot);
+                    terminal.loading = false;
+                }
+            }
+            FromCore::ExecClosed { id, exec_id, error } => {
+                if let Some(terminal) = self
+                    .sessions
+                    .get_mut(&id)
+                    .and_then(|session| session.container_terminal.as_mut())
+                    .filter(|terminal| terminal.exec_id == exec_id)
+                {
+                    terminal.loading = false;
+                    terminal.closed = true;
+                    terminal.error = error;
+                }
+            }
+            FromCore::AuthChallenge {
+                id,
+                generation,
+                challenge,
+            } => {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.auth_challenge = Some(challenge);
+                    sess.auth_challenge_generation = Some(generation);
                     sess.connection_error = None;
                     sess.host_key_pending = false;
                 }
@@ -592,6 +967,7 @@ impl AppState {
                     sess.connected = false;
                     sess.connection_error = None;
                     sess.auth_challenge = None;
+                    sess.auth_challenge_generation = None;
                     sess.host_key_pending = true;
                     sess.monitor_loading = false;
                     sess.monitor_error = None;
@@ -688,17 +1064,13 @@ impl AppState {
             // 自动同步是后台行为：用户在全屏程序里浏览文件管理时静默跳过，
             // 不打断他，也不把这件事写成错误提示。
             Err(TerminalCdBlocked::AltScreen) => {
-                tracing::debug!(
-                    "终端正在运行全屏程序，跳过自动目录同步，会话 {:?}: {}",
-                    id,
-                    path
-                );
+                tracing::debug!("终端正在运行全屏程序，跳过自动目录同步，会话 {:?}", id);
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.sftp_terminal_sync_request = None;
                 }
             }
-            Err(error) => {
-                tracing::warn!("终端目录同步失败，会话 {:?}: {:?}", id, error);
+            Err(_error) => {
+                tracing::warn!("终端目录同步失败，会话 {:?}", id);
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.sftp_terminal_sync_request = None;
                 }
@@ -1074,6 +1446,7 @@ fn reset_connection_state(session: &mut SessionState) {
     session.connection_error = None;
     session.host_key_pending = false;
     session.auth_challenge = None;
+    session.auth_challenge_generation = None;
     session.sftp_path = ".".to_string();
     session.sftp_entries.clear();
     session.sftp_loading = false;
@@ -1081,6 +1454,7 @@ fn reset_connection_state(session: &mut SessionState) {
     session.sftp_list_request_id = None;
     session.sftp_completions.clear();
     session.sftp_failures.clear();
+    session.sftp_pending_requests.clear();
     session.sftp_progress = None;
     session.terminal_cwd = None;
     session.terminal_cwd_inference_target = None;
@@ -1095,6 +1469,35 @@ fn reset_connection_state(session: &mut SessionState) {
     session.monitor = None;
     session.monitor_loading = false;
     session.monitor_error = None;
+    session.operations.clear();
+    session.container_terminal = None;
+}
+
+/// 事件日志只记录类别，避免把终端内容、日志或资源详情意外写入调试输出。
+fn core_event_kind(event: &FromCore) -> &'static str {
+    match event {
+        FromCore::Connected { .. } => "connected",
+        FromCore::Render { .. } => "render",
+        FromCore::Title { .. } => "title",
+        FromCore::Cwd { .. } => "cwd",
+        FromCore::Bell { .. } => "bell",
+        FromCore::SftpListing { .. } => "sftp_listing",
+        FromCore::SftpProgress { .. } => "sftp_progress",
+        FromCore::SftpDone { .. } => "sftp_done",
+        FromCore::SftpError { .. } => "sftp_error",
+        FromCore::SftpStopped { .. } => "sftp_stopped",
+        FromCore::Monitor { .. } => "monitor",
+        FromCore::MonitorStopped { .. } => "monitor_stopped",
+        FromCore::MonitorError { .. } => "monitor_error",
+        FromCore::OperationResult { .. } => "operation_result",
+        FromCore::OperationFailed { .. } => "operation_failed",
+        FromCore::ExecStarted { .. } => "exec_started",
+        FromCore::ExecRender { .. } => "exec_render",
+        FromCore::ExecClosed { .. } => "exec_closed",
+        FromCore::AuthChallenge { .. } => "auth_challenge",
+        FromCore::HostKeyPending { .. } => "host_key_pending",
+        FromCore::Closed { .. } => "closed",
+    }
 }
 
 /// 全局状态包装器（用于 Dioxus Signal）
@@ -1243,6 +1646,7 @@ mod tests {
             connection_error: None,
             host_key_pending: false,
             auth_challenge: None,
+            auth_challenge_generation: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: false,
@@ -1250,6 +1654,7 @@ mod tests {
             sftp_list_request_id: None,
             sftp_completions: VecDeque::new(),
             sftp_failures: VecDeque::new(),
+            sftp_pending_requests: HashSet::new(),
             sftp_progress: None,
             terminal_cwd: None,
             terminal_cwd_inference_target: None,
@@ -1265,6 +1670,8 @@ mod tests {
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
+            operations: HashMap::new(),
+            container_terminal: None,
         }
     }
 
@@ -1277,6 +1684,63 @@ mod tests {
         session.connection_error = Some("旧错误".to_string());
         session.monitor_loading = true;
         session
+    }
+
+    #[test]
+    fn operations_result_is_identity_checked_and_failure_keeps_old_snapshot() {
+        let mut app_state = app_state();
+        let session = session_state(true);
+        let id = session.id;
+        app_state.sessions.insert(id, session);
+        let domain = OperationsDomain::Services;
+        app_state.sessions.get_mut(&id).unwrap().operations.insert(
+            domain,
+            OperationsViewState {
+                request_id: Some(OperationId(2)),
+                loading: true,
+                error: None,
+                result: Some(OperationsResult::Services(
+                    vec![kt_core::ServiceSummary {
+                        name: "old.service".to_string(),
+                        load_state: "loaded".to_string(),
+                        active_state: "active".to_string(),
+                        sub_state: "running".to_string(),
+                        description: "old".to_string(),
+                    }]
+                    .into(),
+                )),
+                requested_at: Some(Instant::now()),
+                updated_at: None,
+            },
+        );
+
+        app_state.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: OperationId(1),
+            domain,
+            result: OperationsResult::Services([].into()),
+        });
+        let view = &app_state.sessions[&id].operations[&domain];
+        assert!(view.loading);
+        assert_eq!(
+            view.result.as_ref().map(|result| match result {
+                OperationsResult::Services(rows) => rows[0].name.as_str(),
+                _ => "wrong",
+            }),
+            Some("old.service")
+        );
+
+        app_state.handle_event(FromCore::OperationFailed {
+            id,
+            operation_id: OperationId(2),
+            domain,
+            error: OperationsError::new(kt_core::OperationsErrorKind::Timeout, "超时"),
+        });
+        let view = &app_state.sessions[&id].operations[&domain];
+        assert!(!view.loading);
+        assert!(view.error.is_some());
+        assert!(view.requested_at.is_none());
+        assert!(view.result.is_some(), "失败不能清除已有成功快照");
     }
 
     #[test]
@@ -2144,6 +2608,7 @@ mod tests {
 
         app_state.handle_event(FromCore::AuthChallenge {
             id,
+            generation: 1,
             challenge: AuthChallenge::Password {
                 user: "root".to_string(),
                 host: "example.com".to_string(),
@@ -2244,5 +2709,96 @@ mod tests {
         assert_eq!(sess.sftp_path, "/new");
         assert!(!sess.sftp_loading);
         assert!(sess.sftp_list_request_id.is_none());
+    }
+
+    #[test]
+    fn stale_sftp_progress_does_not_replace_current_request_progress() {
+        let mut app_state = app_state();
+        let mut sess = session_state(true);
+        sess.sftp_pending_requests.insert(SftpRequestId(2));
+        sess.sftp_progress = Some(SftpProgressState {
+            request_id: SftpRequestId(2),
+            name: "current.bin".to_string(),
+            transferred: 20,
+            total: 40,
+        });
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::SftpProgress {
+            id,
+            request_id: SftpRequestId(1),
+            name: "stale.bin".to_string(),
+            transferred: 1,
+            total: 2,
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        let progress = sess.sftp_progress.as_ref().unwrap();
+        assert_eq!(progress.request_id, SftpRequestId(2));
+        assert_eq!(progress.name, "current.bin");
+        assert_eq!(progress.transferred, 20);
+
+        app_state.handle_event(FromCore::SftpProgress {
+            id,
+            request_id: SftpRequestId(2),
+            name: "current.bin".to_string(),
+            transferred: 30,
+            total: 40,
+        });
+        let progress = app_state.sessions[&id].sftp_progress.as_ref().unwrap();
+        assert_eq!(progress.transferred, 30);
+    }
+
+    #[test]
+    fn stale_sftp_done_and_error_are_ignored_without_pending_request() {
+        let mut app_state = app_state();
+        let mut sess = session_state(true);
+        sess.sftp_path = "/current".to_string();
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::SftpDone {
+            id,
+            request_id: SftpRequestId(1),
+            op: SftpOp::Mkdir,
+            path: "/stale".to_string(),
+        });
+        app_state.handle_event(FromCore::SftpError {
+            id,
+            request_id: SftpRequestId(1),
+            message: "stale error".to_string(),
+        });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert!(sess.sftp_completions.is_empty());
+        assert!(sess.sftp_failures.is_empty());
+        assert!(sess.sftp_error.is_none());
+        assert!(!sess.sftp_loading);
+    }
+
+    #[test]
+    fn close_clears_sftp_outcomes_and_pending_requests() {
+        let mut app_state = app_state();
+        let mut sess = session_state(true);
+        sess.sftp_pending_requests.insert(SftpRequestId(1));
+        sess.sftp_completions.push_back(SftpCompletion {
+            request_id: SftpRequestId(1),
+            op: SftpOp::Upload,
+            path: "/tmp/demo".to_string(),
+        });
+        sess.sftp_failures.push_back(SftpFailure {
+            request_id: SftpRequestId(2),
+            message: "old".to_string(),
+        });
+        let id = sess.id;
+        app_state.sessions.insert(id, sess);
+
+        app_state.handle_event(FromCore::Closed { id, error: None });
+
+        let sess = app_state.sessions.get(&id).unwrap();
+        assert!(sess.sftp_completions.is_empty());
+        assert!(sess.sftp_failures.is_empty());
+        assert!(sess.sftp_pending_requests.is_empty());
     }
 }

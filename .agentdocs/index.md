@@ -15,6 +15,8 @@
 
 ## 已归档完成任务摘要
 
+- Linux 远端运维中心与独立容器终端（`260904-remote-operations-center`）：完成 Linux/WSL 只读 Services/Processes/Network/Docker 查询、独立 exec 通道和请求状态机；Docker 容器终端使用独立 SSH PTY、`TermEngine`、`ExecId`，支持输入/resize/滚动/关闭并在宿主断线时收敛。跨任务事件携带连接代次，认证挑战/答案也绑定代次，SFTP pending 与完成/失败队列在关闭、超时、重连时清理，core 只转发当前代次并在 `Closed` 后清理句柄。Operations rail/drawer、手机 Monitor 入口、中英文 i18n、隐私脱敏测试和 loopback exec/PTY 集成测试均已完成。当前未实现查询主动取消、独立能力探测和真机 GBoard/IME 专项，详见 `.agentdocs/workflow/done/260904-remote-operations-center.md`。
+
 - SSH 登录信息与编辑器诊断修复（`260825-fix-ssh-login-banner`）：shell integration 不再用时间窗口吞整个 PTY 流，改为完成 OSC 标记 + 精确回显过滤，MOTD/Last login 与 stderr 始终可见，异常/用户输入时原样冲刷缓存；新增竞态 roundtrip。附件中的 8 条 `scanner.rs` 警告确认是 rust-analyzer 旧快照，真实 workspace check/test/clippy 均通过。
 - 局域网 v2 配对与扫码修复（`260824-fix-lan-pairing-and-scanner`）：旧 v1/32 位 hex/8 位短码全部废弃，只接受 26 位 Crockford Base32 高熵秘密；删除全局认证失败销毁分享，ACK/TTL 完成后 UI 自动回收；扫码改为 8 FPS Base64 灰度帧并显式释放摄像头，移动产物校验 CAMERA/NSCameraUsageDescription。
 - 终端与文件管理目录双向同步重构(`260818-shell-cwd-sync`)：终端→文件管理改为「每连接一次的 shell 集成注入 + 输入推断兜底」，注入输出由完成标记过滤且不得丢登录信息；文件管理→终端收敛到唯一写入点并加 Ctrl+U 清行、回显自擦除、备用屏拒绝；开关持久化到 `AppSettings.sftp_auto_sync`。

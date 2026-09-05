@@ -6,6 +6,9 @@ use kt_core::monitor::MonitorStats;
 use kt_core::SessionId;
 
 use crate::components::icons::Icon;
+use crate::components::metrics_format::{
+    clamp_percent, format_bytes, format_rate, format_uptime, percent,
+};
 use crate::i18n::texts;
 
 #[component]
@@ -50,11 +53,11 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage, compact: bool)
                 }
             }
 
-            if let Some(error) = error_message() {
+            if error_message().is_some() {
                 div {
                     class: "monitor-state-message error",
                     Icon { name: "monitor" }
-                    "{t.error_prefix}: {error}"
+                    "{t.error_prefix}: {t.unavailable}"
                 }
             } else if let Some(ref s) = stats() {
                 div {
@@ -75,9 +78,9 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage, compact: bool)
                         icon: "memory",
                         tone: "amber",
                         label: t.memory.to_string(),
-                        value: format_metric_percent(memory_percent(s.mem_used, s.mem_total)),
+                        value: format_metric_percent(percent(s.mem_used, s.mem_total)),
                         subvalue: format!("{} / {}", format_bytes(s.mem_used), format_bytes(s.mem_total)),
-                        percent: memory_percent(s.mem_used, s.mem_total),
+                        percent: percent(s.mem_used, s.mem_total),
                         state_class: "",
                         stacked_values: false,
                         trend: t.trend,
@@ -218,21 +221,13 @@ fn MetricCard(
     }
 }
 
-fn memory_percent(used: u64, total: u64) -> f32 {
-    if total == 0 {
-        0.0
-    } else {
-        clamp_percent((used as f32 / total as f32) * 100.0)
-    }
-}
-
 fn root_disk(disks: &[kt_core::monitor::DiskUsage]) -> Option<&kt_core::monitor::DiskUsage> {
     disks.iter().find(|disk| disk.mount == "/")
 }
 
 fn root_disk_percent(disks: &[kt_core::monitor::DiskUsage]) -> f32 {
     root_disk(disks)
-        .map(|disk| memory_percent(disk.used, disk.total))
+        .map(|disk| percent(disk.used, disk.total))
         .unwrap_or(0.0)
 }
 
@@ -288,14 +283,6 @@ fn interpolate_activity(value: u64, start: u64, end: u64, base: f32, span: f32) 
     }
     let ratio = (value.saturating_sub(start)) as f32 / (end - start) as f32;
     clamp_percent(base + ratio * span)
-}
-
-fn clamp_percent(value: f32) -> f32 {
-    if value.is_finite() {
-        value.clamp(0.0, 100.0)
-    } else {
-        0.0
-    }
 }
 
 fn metric_fill_style(percent: f32) -> String {
@@ -358,56 +345,24 @@ fn format_network_subvalue(tx_rate: u64) -> String {
     format!("↑ {}", format_rate(tx_rate))
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-fn format_rate(bps: u64) -> String {
-    format!("{}/s", format_bytes(bps))
-}
-
-fn format_uptime(seconds: u64) -> String {
-    let hours = seconds / 3600;
-    if hours >= 24 {
-        format!("{}d {}h", hours / 24, hours % 24)
-    } else {
-        format!("{}h", hours)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn format_uptime_uses_days_after_24_hours() {
+    fn monitor_formatters_use_shared_compact_format() {
         assert_eq!(format_uptime(3600), "1h");
         assert_eq!(format_uptime(25 * 3600), "1d 1h");
-    }
-
-    #[test]
-    fn format_bytes_keeps_kilobyte_unit_below_one_megabyte() {
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MB");
+        assert_eq!(format_rate(2 * 1024), "2.0 KB/s");
     }
 
     #[test]
     fn monitor_percentages_are_clamped() {
-        assert_eq!(memory_percent(50, 100), 50.0);
-        assert_eq!(memory_percent(150, 100), 100.0);
-        assert_eq!(memory_percent(1, 0), 0.0);
+        assert_eq!(percent(50, 100), 50.0);
+        assert_eq!(percent(150, 100), 100.0);
+        assert_eq!(percent(1, 0), 0.0);
         assert_eq!(load_percent(0.5, 1), 50.0);
         assert_eq!(load_percent(3.0, 1), 100.0);
     }

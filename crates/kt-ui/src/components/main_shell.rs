@@ -28,6 +28,7 @@ use crate::components::app_logic::{
 };
 use crate::components::dialog::first_public_key_path;
 use crate::components::icons::Icon;
+use crate::components::operations::OperationsPanel;
 use crate::components::sidebar::{ContextMenuState, SftpEntryContext};
 use crate::i18n::{texts, AppText};
 use crate::state::AppState;
@@ -419,12 +420,20 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
                 state,
                 settings,
                 language,
-                active_terminal,
+                active_terminal: active_terminal.clone(),
                 session_tabs,
                 dialog_signals,
                 active_session_id,
                 split_mode,
             })}
+
+            OperationsPanel {
+                session_id: active_terminal.as_ref().map(|session| session.id),
+                connected: active_terminal.as_ref().is_some_and(|session| session.connected),
+                language,
+                mobile: false,
+                settings,
+            }
         }
 
         {render_status_bar(StatusBarArgs {

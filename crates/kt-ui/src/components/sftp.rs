@@ -418,6 +418,7 @@ fn expire_directory_request(
     sess.sftp_loading = false;
     sess.sftp_error = Some(message);
     sess.sftp_list_request_id = None;
+    sess.sftp_pending_requests.remove(&request_id);
     true
 }
 
@@ -550,6 +551,7 @@ mod tests {
             connection_error: None,
             host_key_pending: false,
             auth_challenge: None,
+            auth_challenge_generation: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: true,
@@ -557,6 +559,7 @@ mod tests {
             sftp_list_request_id: Some(kt_core::SftpRequestId(1)),
             sftp_completions: std::collections::VecDeque::new(),
             sftp_failures: std::collections::VecDeque::new(),
+            sftp_pending_requests: std::collections::HashSet::new(),
             sftp_progress: None,
             terminal_cwd: None,
             terminal_cwd_inference_target: None,
@@ -572,6 +575,8 @@ mod tests {
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
+            operations: std::collections::HashMap::new(),
+            container_terminal: None,
         };
 
         assert!(should_skip_duplicate_request(&sess, "/root"));
@@ -596,6 +601,7 @@ mod tests {
             connection_error: None,
             host_key_pending: false,
             auth_challenge: None,
+            auth_challenge_generation: None,
             sftp_path: "/root".to_string(),
             sftp_entries: Vec::new(),
             sftp_loading: true,
@@ -603,6 +609,7 @@ mod tests {
             sftp_list_request_id: Some(kt_core::SftpRequestId(2)),
             sftp_completions: std::collections::VecDeque::new(),
             sftp_failures: std::collections::VecDeque::new(),
+            sftp_pending_requests: std::collections::HashSet::new(),
             sftp_progress: None,
             terminal_cwd: None,
             terminal_cwd_inference_target: None,
@@ -618,6 +625,8 @@ mod tests {
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
+            operations: std::collections::HashMap::new(),
+            container_terminal: None,
         };
 
         assert!(!expire_directory_request(

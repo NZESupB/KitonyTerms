@@ -143,6 +143,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     show_timestamps: settings().show_timestamps,
                                     language,
                                     split_mode,
+                                    exec_id: None,
                                     allow_split: true,
                                 }
                             }
@@ -158,6 +159,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         show_timestamps: settings().show_timestamps,
                                         language,
                                         split_mode,
+                                        exec_id: None,
                                         allow_split: true,
                                     }
                                 }

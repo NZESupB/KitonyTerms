@@ -955,7 +955,9 @@ pub fn App() -> Element {
                 }
             }
 
-            if let Some((session_id, session_title, challenge)) = active_auth_challenge.clone() {
+            if let Some((session_id, session_title, generation, challenge)) =
+                active_auth_challenge.clone()
+            {
                 AuthChallengeDialog {
                     session_title,
                     challenge: challenge.clone(),
@@ -979,12 +981,14 @@ pub fn App() -> Element {
                             if let Ok(mut app_state) = state.lock() {
                                 if !app_state.manager.send(ToCore::AuthResponse {
                                     id: session_id,
+                                    generation,
                                     response: AuthResponse::Answers(answers),
                                 }) {
                                     tracing::warn!("认证响应投递失败: {:?}", session_id);
                                 }
                                 if let Some(sess) = app_state.sessions.get_mut(&session_id) {
                                     sess.auth_challenge = None;
+                                    sess.auth_challenge_generation = None;
                                 }
                             }
                         }
@@ -995,12 +999,14 @@ pub fn App() -> Element {
                             if let Ok(mut app_state) = state.lock() {
                                 if !app_state.manager.send(ToCore::AuthResponse {
                                     id: session_id,
+                                    generation,
                                     response: AuthResponse::Cancel,
                                 }) {
                                     tracing::warn!("认证取消响应投递失败: {:?}", session_id);
                                 }
                                 if let Some(sess) = app_state.sessions.get_mut(&session_id) {
                                     sess.auth_challenge = None;
+                                    sess.auth_challenge_generation = None;
                                 }
                             }
                         }

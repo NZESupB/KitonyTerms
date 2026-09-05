@@ -17,13 +17,18 @@ use std::future::Future;
 use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+use tokio::task::JoinHandle;
 
 use kt_config::ConnectParams;
 
 use crate::monitor::MonitorStats;
+use crate::remote_ops::{
+    self, OperationId, OperationsDomain, OperationsError, OperationsErrorKind, OperationsRequest,
+    OperationsResult,
+};
 use crate::shell_integration;
-use crate::ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};
+use crate::ssh::{AuthProvider, ChannelCloseGuard, HostKeyVerifier, PtySize, SshError, SshShell};
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
 const AUTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -31,6 +36,8 @@ const SFTP_REUSE_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SFTP_STANDALONE_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 const MONITOR_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const SSH_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+const CONTAINER_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const EXEC_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 const TO_CORE_CAPACITY: usize = 2_048;
 const FROM_CORE_CAPACITY: usize = 2_048;
 const OSC7_MAX_SEQUENCE_LEN: usize = 4 * 1024;
@@ -42,6 +49,10 @@ pub struct SessionId(pub u64);
 /// 一次 SFTP 请求的稳定标识，由调用方生成并随请求级事件原样返回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SftpRequestId(pub u64);
+
+/// 独立容器 PTY 的稳定标识。与宿主会话和运维查询 ID 相互隔离。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ExecId(pub u64);
 
 /// 远端目录条目(core 内中立类型,不向 UI 暴露 russh-sftp 的类型)。
 /// A remote directory entry (a neutral type; russh-sftp types stay in the core).
@@ -168,12 +179,48 @@ pub enum ToCore {
     /// 启动该会话的资源监控(首次惰性开启,之后持续到断开)。
     /// Start resource monitoring (lazy on first use, runs until disconnect).
     StartMonitor { id: SessionId },
+    /// 通过独立无 PTY exec 通道执行类型化的只读运维查询。
+    Operations {
+        id: SessionId,
+        operation_id: OperationId,
+        request: OperationsRequest,
+    },
+    /// 打开独立的 Docker 容器 PTY。
+    OpenContainerTerminal {
+        id: SessionId,
+        exec_id: ExecId,
+        container_id: String,
+        pty: PtySize,
+    },
+    /// 向独立容器 PTY 写入输入。
+    ContainerInput {
+        id: SessionId,
+        exec_id: ExecId,
+        data: Vec<u8>,
+    },
+    /// 调整独立容器 PTY 尺寸。
+    ContainerResize {
+        id: SessionId,
+        exec_id: ExecId,
+        cols: u16,
+        rows: u16,
+    },
+    /// 滚动独立容器终端视口。
+    ContainerScroll {
+        id: SessionId,
+        exec_id: ExecId,
+        delta: i32,
+    },
+    /// 关闭独立容器 PTY。
+    CloseContainerTerminal { id: SessionId, exec_id: ExecId },
     /// 向远端交互 shell 注入一次工作目录上报 hook(每个连接只生效一次)。
     /// Inject the CWD-reporting hook into the remote interactive shell (once per connection).
     SetupShellIntegration { id: SessionId },
     /// Answer or cancel an authentication challenge.
     AuthResponse {
         id: SessionId,
+        /// 认证挑战所属的连接代次；旧弹窗的答案不得进入新连接。
+        generation: u64,
         response: AuthResponse,
     },
     /// Close / disconnect a session.
@@ -221,13 +268,69 @@ impl fmt::Debug for ToCore {
                 .field("req", req)
                 .finish(),
             ToCore::StartMonitor { id } => f.debug_struct("StartMonitor").field("id", id).finish(),
+            ToCore::Operations {
+                id,
+                operation_id,
+                request,
+            } => f
+                .debug_struct("Operations")
+                .field("id", id)
+                .field("operation_id", operation_id)
+                .field("request", request)
+                .finish(),
+            ToCore::OpenContainerTerminal {
+                id,
+                exec_id,
+                container_id,
+                pty,
+            } => f
+                .debug_struct("OpenContainerTerminal")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("container_id", container_id)
+                .field("pty", pty)
+                .finish(),
+            ToCore::ContainerInput { id, exec_id, data } => f
+                .debug_struct("ContainerInput")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("bytes", &data.len())
+                .finish(),
+            ToCore::ContainerResize {
+                id,
+                exec_id,
+                cols,
+                rows,
+            } => f
+                .debug_struct("ContainerResize")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("cols", cols)
+                .field("rows", rows)
+                .finish(),
+            ToCore::ContainerScroll { id, exec_id, delta } => f
+                .debug_struct("ContainerScroll")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("delta", delta)
+                .finish(),
+            ToCore::CloseContainerTerminal { id, exec_id } => f
+                .debug_struct("CloseContainerTerminal")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .finish(),
             ToCore::SetupShellIntegration { id } => f
                 .debug_struct("SetupShellIntegration")
                 .field("id", id)
                 .finish(),
-            ToCore::AuthResponse { id, response } => f
+            ToCore::AuthResponse {
+                id,
+                generation,
+                response,
+            } => f
                 .debug_struct("AuthResponse")
                 .field("id", id)
+                .field("generation", generation)
                 .field("response", response)
                 .finish(),
             ToCore::Disconnect { id } => f.debug_struct("Disconnect").field("id", id).finish(),
@@ -236,7 +339,6 @@ impl fmt::Debug for ToCore {
 }
 
 /// Events emitted from the core out to the UI.
-#[derive(Debug)]
 pub enum FromCore {
     /// Connection + auth + shell are up.
     Connected { id: SessionId },
@@ -291,9 +393,43 @@ pub enum FromCore {
     MonitorStopped { id: SessionId },
     /// 资源监控启动或采样失败。Resource monitoring failed to start or sample.
     MonitorError { id: SessionId, message: String },
+    /// 类型化运维查询成功。原始 stdout 不会作为事件载荷传播。
+    OperationResult {
+        id: SessionId,
+        operation_id: OperationId,
+        domain: OperationsDomain,
+        result: OperationsResult,
+    },
+    /// 类型化运维查询失败。错误正文不包含远端日志、inspect 或 argv。
+    OperationFailed {
+        id: SessionId,
+        operation_id: OperationId,
+        domain: OperationsDomain,
+        error: OperationsError,
+    },
+    /// 独立容器 PTY 已成功启动。
+    ExecStarted {
+        id: SessionId,
+        exec_id: ExecId,
+        container_id: String,
+    },
+    /// 独立容器 PTY 的渲染快照。
+    ExecRender {
+        id: SessionId,
+        exec_id: ExecId,
+        snapshot: Box<GridSnapshot>,
+    },
+    /// 独立容器 PTY 已关闭；错误正文不包含远端输出。
+    ExecClosed {
+        id: SessionId,
+        exec_id: ExecId,
+        error: Option<String>,
+    },
     /// 需要 UI 提供认证输入。Authentication input is required from the UI.
     AuthChallenge {
         id: SessionId,
+        /// 产生挑战的连接代次。
+        generation: u64,
         challenge: AuthChallenge,
     },
     /// 主机密钥需要用户确认；本次握手会随后的 Closed 事件结束。
@@ -304,6 +440,155 @@ pub enum FromCore {
         id: SessionId,
         error: Option<String>,
     },
+}
+
+/// 事件调试输出只保留类别、标识和尺寸，禁止递归格式化终端/运维/SFTP payload。
+impl fmt::Debug for FromCore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FromCore::Connected { id } => f.debug_struct("Connected").field("id", id).finish(),
+            FromCore::Render { id, snapshot } => f
+                .debug_struct("Render")
+                .field("id", id)
+                .field("revision", &snapshot.revision)
+                .field("rows", &snapshot.rows)
+                .field("cols", &snapshot.cols)
+                .finish(),
+            FromCore::Title { id, .. } => f.debug_struct("Title").field("id", id).finish(),
+            FromCore::Cwd { id, .. } => f.debug_struct("Cwd").field("id", id).finish(),
+            FromCore::Bell { id } => f.debug_struct("Bell").field("id", id).finish(),
+            FromCore::SftpListing {
+                id,
+                request_id,
+                entries,
+                ..
+            } => f
+                .debug_struct("SftpListing")
+                .field("id", id)
+                .field("request_id", request_id)
+                .field("count", &entries.len())
+                .finish(),
+            FromCore::SftpProgress {
+                id,
+                request_id,
+                transferred,
+                total,
+                ..
+            } => f
+                .debug_struct("SftpProgress")
+                .field("id", id)
+                .field("request_id", request_id)
+                .field("transferred", transferred)
+                .field("total", total)
+                .finish(),
+            FromCore::SftpDone {
+                id, request_id, op, ..
+            } => f
+                .debug_struct("SftpDone")
+                .field("id", id)
+                .field("request_id", request_id)
+                .field("op", op)
+                .finish(),
+            FromCore::SftpError { id, request_id, .. } => f
+                .debug_struct("SftpError")
+                .field("id", id)
+                .field("request_id", request_id)
+                .finish(),
+            FromCore::SftpStopped { id } => f.debug_struct("SftpStopped").field("id", id).finish(),
+            FromCore::Monitor { id, stats } => f
+                .debug_struct("Monitor")
+                .field("id", id)
+                .field("uptime_secs", &stats.uptime_secs)
+                .finish(),
+            FromCore::MonitorStopped { id } => {
+                f.debug_struct("MonitorStopped").field("id", id).finish()
+            }
+            FromCore::MonitorError { id, .. } => {
+                f.debug_struct("MonitorError").field("id", id).finish()
+            }
+            FromCore::OperationResult {
+                id,
+                operation_id,
+                domain,
+                ..
+            } => f
+                .debug_struct("OperationResult")
+                .field("id", id)
+                .field("operation_id", operation_id)
+                .field("domain", domain)
+                .finish(),
+            FromCore::OperationFailed {
+                id,
+                operation_id,
+                domain,
+                error,
+            } => f
+                .debug_struct("OperationFailed")
+                .field("id", id)
+                .field("operation_id", operation_id)
+                .field("domain", domain)
+                .field("kind", &error.kind)
+                .finish(),
+            FromCore::ExecStarted {
+                id,
+                exec_id,
+                container_id,
+            } => f
+                .debug_struct("ExecStarted")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("container_id", container_id)
+                .finish(),
+            FromCore::ExecRender {
+                id,
+                exec_id,
+                snapshot,
+            } => f
+                .debug_struct("ExecRender")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("revision", &snapshot.revision)
+                .field("rows", &snapshot.rows)
+                .field("cols", &snapshot.cols)
+                .finish(),
+            FromCore::ExecClosed { id, exec_id, error } => f
+                .debug_struct("ExecClosed")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .field("has_error", &error.is_some())
+                .finish(),
+            FromCore::AuthChallenge {
+                id,
+                generation,
+                challenge,
+            } => {
+                let (kind, prompt_count) = match challenge {
+                    AuthChallenge::Password { .. } => ("password", None),
+                    AuthChallenge::KeyPassphrase { .. } => ("key_passphrase", None),
+                    AuthChallenge::KeyboardInteractive { prompts, .. } => {
+                        ("keyboard_interactive", Some(prompts.len()))
+                    }
+                };
+                let mut debug = f.debug_struct("AuthChallenge");
+                debug
+                    .field("id", id)
+                    .field("generation", generation)
+                    .field("kind", &kind);
+                if let Some(prompt_count) = prompt_count {
+                    debug.field("prompt_count", &prompt_count);
+                }
+                debug.finish()
+            }
+            FromCore::HostKeyPending { id } => {
+                f.debug_struct("HostKeyPending").field("id", id).finish()
+            }
+            FromCore::Closed { id, error } => f
+                .debug_struct("Closed")
+                .field("id", id)
+                .field("has_error", &error.is_some())
+                .finish(),
+        }
+    }
 }
 
 /// Factory that produces a fresh [`AuthProvider`] per connection.
@@ -323,6 +608,52 @@ pub struct SessionManager {
     _runtime: tokio::runtime::Runtime,
 }
 
+/// Core 内部的会话事件信封。公共 `FromCore` 保持稳定，但事件在跨任务边界时
+/// 必须携带连接代次，避免旧连接在同一 `SessionId` 重连后污染新状态。
+#[derive(Debug)]
+pub(crate) struct SessionEvent {
+    pub(crate) id: SessionId,
+    pub(crate) generation: u64,
+    pub(crate) event: FromCore,
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionEventSender {
+    id: SessionId,
+    generation: u64,
+    tx: mpsc::Sender<SessionEvent>,
+}
+
+impl SessionEventSender {
+    pub(crate) fn new(id: SessionId, generation: u64, tx: mpsc::Sender<SessionEvent>) -> Self {
+        Self { id, generation, tx }
+    }
+
+    pub(crate) async fn send(
+        &self,
+        event: FromCore,
+    ) -> Result<(), mpsc::error::SendError<SessionEvent>> {
+        self.tx
+            .send(SessionEvent {
+                id: self.id,
+                generation: self.generation,
+                event,
+            })
+            .await
+    }
+
+    pub(crate) fn try_send(
+        &self,
+        event: FromCore,
+    ) -> Result<(), mpsc::error::TrySendError<SessionEvent>> {
+        self.tx.try_send(SessionEvent {
+            id: self.id,
+            generation: self.generation,
+            event,
+        })
+    }
+}
+
 impl SessionManager {
     /// Spawn the core on a dedicated multi-threaded runtime.
     pub fn spawn(
@@ -337,8 +668,17 @@ impl SessionManager {
 
         let (to_core_tx, to_core_rx) = mpsc::channel::<ToCore>(TO_CORE_CAPACITY);
         let (from_core_tx, from_core_rx) = mpsc::channel::<FromCore>(FROM_CORE_CAPACITY);
+        let (session_event_tx, session_event_rx) =
+            mpsc::channel::<SessionEvent>(FROM_CORE_CAPACITY);
 
-        runtime.spawn(core_loop(to_core_rx, from_core_tx, verifier, auth_factory));
+        runtime.spawn(core_loop(
+            to_core_rx,
+            from_core_tx,
+            session_event_tx,
+            session_event_rx,
+            verifier,
+            auth_factory,
+        ));
 
         Ok(Self {
             to_core_tx,
@@ -351,14 +691,15 @@ impl SessionManager {
 
     /// Send a command into the core.
     pub fn send(&self, msg: ToCore) -> bool {
+        let kind = to_core_kind(&msg);
         match self.to_core_tx.try_send(msg) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(msg)) => {
-                tracing::warn!("core 命令队列已满，丢弃命令: {msg:?}");
+            Err(mpsc::error::TrySendError::Full(_msg)) => {
+                tracing::warn!(command = kind, "core 命令队列已满，丢弃命令");
                 false
             }
-            Err(mpsc::error::TrySendError::Closed(msg)) => {
-                tracing::warn!("core 命令队列已关闭，丢弃命令: {msg:?}");
+            Err(mpsc::error::TrySendError::Closed(_msg)) => {
+                tracing::warn!(command = kind, "core 命令队列已关闭，丢弃命令");
                 false
             }
         }
@@ -412,24 +753,49 @@ impl SessionManager {
     }
 }
 
+fn to_core_kind(command: &ToCore) -> &'static str {
+    match command {
+        ToCore::Connect { .. } => "connect",
+        ToCore::Input { .. } => "input",
+        ToCore::Resize { .. } => "resize",
+        ToCore::Scroll { .. } => "scroll",
+        ToCore::Sftp { .. } => "sftp",
+        ToCore::StartMonitor { .. } => "start_monitor",
+        ToCore::Operations { .. } => "operations",
+        ToCore::OpenContainerTerminal { .. } => "open_container_terminal",
+        ToCore::ContainerInput { .. } => "container_input",
+        ToCore::ContainerResize { .. } => "container_resize",
+        ToCore::ContainerScroll { .. } => "container_scroll",
+        ToCore::CloseContainerTerminal { .. } => "close_container_terminal",
+        ToCore::SetupShellIntegration { .. } => "setup_shell_integration",
+        ToCore::AuthResponse { .. } => "auth_response",
+        ToCore::Disconnect { .. } => "disconnect",
+    }
+}
+
 /// Top-level core dispatch loop: routes [`ToCore`] commands to per-session tasks.
 async fn core_loop(
     mut rx: mpsc::Receiver<ToCore>,
     tx: mpsc::Sender<FromCore>,
+    session_event_tx: mpsc::Sender<SessionEvent>,
+    mut session_event_rx: mpsc::Receiver<SessionEvent>,
     verifier: Arc<dyn HostKeyVerifier>,
     auth_factory: Arc<dyn AuthProviderFactory>,
 ) {
     // Per-session input/control senders.
     let mut sessions: HashMap<SessionId, SessionHandles> = HashMap::new();
-    // 同一会话 ID 的旧任务结束时，不能清理已经重建的新任务句柄。
+    // 同一会话 ID 重连时，旧任务发出的事件不能污染新任务句柄。
     let mut next_generation: HashMap<SessionId, u64> = HashMap::new();
-    let (task_ended_tx, mut task_ended_rx) = mpsc::unbounded_channel::<(SessionId, u64)>();
 
     loop {
         let cmd = tokio::select! {
-            Some((id, generation)) = task_ended_rx.recv() => {
-                if session_generation_is_current(&sessions, id, generation) {
-                    sessions.remove(&id);
+            Some(event) = session_event_rx.recv() => {
+                if session_generation_is_current(&sessions, event.id, event.generation) {
+                    let closed = matches!(&event.event, FromCore::Closed { .. });
+                    let _ = tx.send(event.event).await;
+                    if closed {
+                        sessions.remove(&event.id);
+                    }
                 }
                 continue;
             }
@@ -461,7 +827,7 @@ async fn core_loop(
                 let provider = Box::new(InteractiveAuthProvider {
                     id,
                     inner: provider,
-                    out: tx.clone(),
+                    out: SessionEventSender::new(id, generation, session_event_tx.clone()),
                     responses: auth_response_rx,
                 });
                 let task = SessionTask {
@@ -470,13 +836,11 @@ async fn core_loop(
                     pty,
                     verifier: verifier.clone(),
                     provider,
-                    out: tx.clone(),
+                    out: SessionEventSender::new(id, generation, session_event_tx.clone()),
                     cmd_rx: input_rx,
                 };
-                let task_ended_tx = task_ended_tx.clone();
                 tokio::spawn(async move {
                     task.run().await;
-                    let _ = task_ended_tx.send((id, generation));
                 });
             }
             ToCore::Input { id, data } => {
@@ -500,14 +864,19 @@ async fn core_loop(
                 req,
             } => {
                 if let Some(h) = sessions.get(&id) {
+                    let generation = h.generation;
                     if h.cmd_tx.send(SessionCmd::Sftp { request_id, req }).is_err() {
-                        let _ = tx
-                            .send(FromCore::SftpError {
+                        send_session_event(
+                            &session_event_tx,
+                            id,
+                            generation,
+                            FromCore::SftpError {
                                 id,
                                 request_id,
                                 message: "SFTP 请求无法投递，会话任务已结束".to_string(),
-                            })
-                            .await;
+                            },
+                        )
+                        .await;
                     }
                 } else {
                     let _ = tx
@@ -521,13 +890,18 @@ async fn core_loop(
             }
             ToCore::StartMonitor { id } => {
                 if let Some(h) = sessions.get(&id) {
+                    let generation = h.generation;
                     if h.cmd_tx.send(SessionCmd::StartMonitor).is_err() {
-                        let _ = tx
-                            .send(FromCore::MonitorError {
+                        send_session_event(
+                            &session_event_tx,
+                            id,
+                            generation,
+                            FromCore::MonitorError {
                                 id,
                                 message: "资源监控请求无法投递，会话任务已结束".to_string(),
-                            })
-                            .await;
+                            },
+                        )
+                        .await;
                     }
                 } else {
                     let _ = tx
@@ -536,6 +910,122 @@ async fn core_loop(
                             message: "资源监控启动失败：会话不存在或已关闭".to_string(),
                         })
                         .await;
+                }
+            }
+            ToCore::Operations {
+                id,
+                operation_id,
+                request,
+            } => {
+                let OperationsRequest::Refresh(domain) = request;
+                if let Some(h) = sessions.get(&id) {
+                    let generation = h.generation;
+                    if h.cmd_tx
+                        .send(SessionCmd::Operations {
+                            operation_id,
+                            request,
+                        })
+                        .is_err()
+                    {
+                        send_session_event(
+                            &session_event_tx,
+                            id,
+                            generation,
+                            FromCore::OperationFailed {
+                                id,
+                                operation_id,
+                                domain,
+                                error: OperationsError::new(
+                                    OperationsErrorKind::Disconnected,
+                                    "运维请求无法投递，会话任务已结束",
+                                ),
+                            },
+                        )
+                        .await;
+                    }
+                } else {
+                    let _ = tx
+                        .send(FromCore::OperationFailed {
+                            id,
+                            operation_id,
+                            domain,
+                            error: OperationsError::new(
+                                OperationsErrorKind::Disconnected,
+                                "运维请求失败：会话不存在或已关闭",
+                            ),
+                        })
+                        .await;
+                }
+            }
+            ToCore::OpenContainerTerminal {
+                id,
+                exec_id,
+                container_id,
+                pty,
+            } => {
+                if let Some(h) = sessions.get(&id) {
+                    let generation = h.generation;
+                    if h.cmd_tx
+                        .send(SessionCmd::OpenContainerTerminal {
+                            exec_id,
+                            container_id,
+                            pty,
+                        })
+                        .is_err()
+                    {
+                        send_session_event(
+                            &session_event_tx,
+                            id,
+                            generation,
+                            FromCore::ExecClosed {
+                                id,
+                                exec_id,
+                                error: Some("容器终端请求无法投递，会话任务已结束".to_string()),
+                            },
+                        )
+                        .await;
+                    }
+                } else {
+                    let _ = tx
+                        .send(FromCore::ExecClosed {
+                            id,
+                            exec_id,
+                            error: Some("容器终端请求失败：会话不存在或已关闭".to_string()),
+                        })
+                        .await;
+                }
+            }
+            ToCore::ContainerInput { id, exec_id, data } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h.cmd_tx.send(SessionCmd::ContainerInput { exec_id, data });
+                }
+            }
+            ToCore::ContainerResize {
+                id,
+                exec_id,
+                cols,
+                rows,
+            } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h.cmd_tx.send(SessionCmd::ContainerResize {
+                        exec_id,
+                        cols,
+                        rows,
+                    });
+                }
+            }
+            ToCore::ContainerScroll { id, exec_id, delta } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h
+                        .cmd_tx
+                        .send(SessionCmd::ContainerScroll { exec_id, delta });
+                }
+            }
+            ToCore::CloseContainerTerminal { id, exec_id } => {
+                if let Some(h) = sessions.get(&id) {
+                    let _ = h
+                        .cmd_tx
+                        .send(SessionCmd::CloseContainerTerminal { exec_id });
                 }
             }
             // Shell 集成是尽力而为的增强：UI 侧本就有输入推断兜底，注入失败既不
@@ -549,13 +1039,23 @@ async fn core_loop(
                     tracing::debug!("忽略已关闭会话的 shell 集成注入请求: {:?}", id);
                 }
             }
-            ToCore::AuthResponse { id, response } => {
-                if let Some(h) = sessions.get(&id) {
-                    let _ = h.auth_response_tx.send(response);
+            ToCore::AuthResponse {
+                id,
+                generation,
+                response,
+            } => {
+                if !route_auth_response(&sessions, id, generation, response) {
+                    tracing::debug!(
+                        "忽略旧连接的认证响应，会话 {:?}，generation={}",
+                        id,
+                        generation
+                    );
                 }
             }
             ToCore::Disconnect { id } => {
-                if let Some(h) = sessions.remove(&id) {
+                // 保留句柄直到任务发出 `Closed`；此处提前移除会与终态事件竞态，
+                // 导致正常断开对 UI 不可见。
+                if let Some(h) = sessions.get(&id) {
                     let _ = h.cmd_tx.send(SessionCmd::Disconnect);
                 }
             }
@@ -573,6 +1073,33 @@ fn session_generation_is_current(
         .is_some_and(|session| session.generation == generation)
 }
 
+fn route_auth_response(
+    sessions: &HashMap<SessionId, SessionHandles>,
+    id: SessionId,
+    generation: u64,
+    response: AuthResponse,
+) -> bool {
+    sessions
+        .get(&id)
+        .filter(|session| session.generation == generation)
+        .is_some_and(|session| session.auth_response_tx.send(response).is_ok())
+}
+
+async fn send_session_event(
+    tx: &mpsc::Sender<SessionEvent>,
+    id: SessionId,
+    generation: u64,
+    event: FromCore,
+) {
+    let _ = tx
+        .send(SessionEvent {
+            id,
+            generation,
+            event,
+        })
+        .await;
+}
+
 /// Control messages routed to a single session task.
 enum SessionCmd {
     Input(Vec<u8>),
@@ -586,12 +1113,41 @@ enum SessionCmd {
         req: SftpRequest,
     },
     StartMonitor,
+    Operations {
+        operation_id: OperationId,
+        request: OperationsRequest,
+    },
+    OpenContainerTerminal {
+        exec_id: ExecId,
+        container_id: String,
+        pty: PtySize,
+    },
+    ContainerInput {
+        exec_id: ExecId,
+        data: Vec<u8>,
+    },
+    ContainerResize {
+        exec_id: ExecId,
+        cols: u16,
+        rows: u16,
+    },
+    ContainerScroll {
+        exec_id: ExecId,
+        delta: i32,
+    },
+    CloseContainerTerminal {
+        exec_id: ExecId,
+    },
     SetupShellIntegration,
     Disconnect,
 }
 
 enum SessionInternal {
     MonitorExited(crate::monitor::MonitorExit),
+    ContainerExecExited {
+        exec_id: ExecId,
+        error: Option<String>,
+    },
 }
 
 struct SessionHandles {
@@ -603,7 +1159,7 @@ struct SessionHandles {
 struct InteractiveAuthProvider {
     id: SessionId,
     inner: Box<dyn AuthProvider>,
-    out: mpsc::Sender<FromCore>,
+    out: SessionEventSender,
     responses: std_mpsc::Receiver<AuthResponse>,
 }
 
@@ -613,6 +1169,7 @@ impl InteractiveAuthProvider {
             .out
             .try_send(FromCore::AuthChallenge {
                 id: self.id,
+                generation: self.out.generation,
                 challenge,
             })
             .is_err()
@@ -713,8 +1270,38 @@ struct SessionTask {
     pty: PtySize,
     verifier: Arc<dyn HostKeyVerifier>,
     provider: Box<dyn AuthProvider>,
-    out: mpsc::Sender<FromCore>,
+    out: SessionEventSender,
     cmd_rx: mpsc::UnboundedReceiver<SessionCmd>,
+}
+
+struct ContainerExecHandle {
+    exec_id: ExecId,
+    cmd_tx: mpsc::UnboundedSender<ContainerExecCmd>,
+    cancel_tx: Option<oneshot::Sender<Option<String>>>,
+    task: JoinHandle<()>,
+    closed: Arc<AsyncMutex<bool>>,
+}
+
+struct SftpTaskHandle {
+    tx: mpsc::UnboundedSender<(SftpRequestId, SftpRequest)>,
+    task: JoinHandle<()>,
+}
+
+struct MonitorTaskHandle {
+    cancel_tx: Option<oneshot::Sender<()>>,
+    task: JoinHandle<crate::monitor::MonitorExit>,
+}
+
+struct OperationTaskHandle {
+    cancel_tx: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+enum ContainerExecCmd {
+    Input(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Scroll(i32),
+    Close(Option<String>),
 }
 
 impl SessionTask {
@@ -774,11 +1361,19 @@ impl SessionTask {
 
         // SFTP 子任务的命令发送端,首次收到 SFTP 请求时惰性建立。
         // Command sender to the SFTP subtask, created lazily on first request.
-        let mut sftp_tx: Option<mpsc::UnboundedSender<(SftpRequestId, SftpRequest)>> = None;
+        let mut sftp_handle: Option<SftpTaskHandle> = None;
 
         // 资源监控子任务是否已启动(惰性,首次请求时开启)。
         // Whether the monitor subtask has been started (lazy on first request).
         let mut monitor_started = false;
+        let mut monitor_handle: Option<MonitorTaskHandle> = None;
+
+        // 运维查询任务必须挂在宿主会话上，断开时统一取消，避免迟到结果继续占用
+        // SSH channel 或在重连后污染新会话。
+        let mut operation_tasks: Vec<OperationTaskHandle> = Vec::new();
+
+        // 同一宿主会话最多显示一个容器 PTY；它拥有独立 channel、TermEngine 和命令队列。
+        let mut container_exec: Option<ContainerExecHandle> = None;
 
         // Shell 集成 hook 每个连接只注入一次；过滤器只隐藏本次命令回显，不能吞掉
         // 同时到达的 MOTD、Last login 等正常登录输出。
@@ -793,10 +1388,41 @@ impl SessionTask {
                     match internal {
                         Some(SessionInternal::MonitorExited(exit)) => {
                             monitor_started = false;
-                            if matches!(exit, crate::monitor::MonitorExit::Stopped) {
-                                let _ = self.out.send(FromCore::MonitorStopped { id }).await;
+                            monitor_handle = None;
+                            if matches!(
+                                exit,
+                                crate::monitor::MonitorExit::Stopped
+                                    | crate::monitor::MonitorExit::ReceiverDropped
+                            ) {
+                                let _ = send_exec_event(
+                                    &self.out,
+                                    FromCore::MonitorStopped { id },
+                                )
+                                .await;
                             }
                         }
+                        Some(SessionInternal::ContainerExecExited { exec_id, error })
+                            if container_exec
+                                .as_ref()
+                                .is_some_and(|handle| handle.exec_id == exec_id) =>
+                        {
+                            // 任务退出时再给终态事件一次发送机会，覆盖首次发送遇到
+                            // 短暂事件队列背压的情况；`closed` 保证成功后不会重复发送。
+                            if let Some(closed) =
+                                container_exec.as_ref().map(|handle| handle.closed.clone())
+                            {
+                                send_exec_closed_once(
+                                    id,
+                                    exec_id,
+                                    error,
+                                    &self.out,
+                                    &closed,
+                                )
+                                .await;
+                            }
+                            container_exec = None;
+                        }
+                        Some(SessionInternal::ContainerExecExited { .. }) => {}
                         None => {}
                     }
                 }
@@ -846,7 +1472,7 @@ impl SessionTask {
                         Some(SessionCmd::Sftp { request_id, req }) => {
                             // 首次使用时在同一会话上开 SFTP 子系统,并 move 进独立子任务。
                             // Open the SFTP subsystem lazily and move it into a subtask.
-                            if sftp_tx.is_none() {
+                            if sftp_handle.is_none() {
                                 let primary_error = match tokio::time::timeout(
                                     SFTP_REUSE_OPEN_TIMEOUT,
                                     shell.open_sftp(),
@@ -855,14 +1481,14 @@ impl SessionTask {
                                 {
                                     Ok(Ok(session)) => {
                                         let (tx, rx) = mpsc::unbounded_channel();
-                                        tokio::spawn(crate::sftp::sftp_task(
+                                        let task = tokio::spawn(crate::sftp::sftp_task(
                                             id,
                                             session,
                                             None,
                                             rx,
                                             self.out.clone(),
                                         ));
-                                        sftp_tx = Some(tx);
+                                        sftp_handle = Some(SftpTaskHandle { tx, task });
                                         None
                                     }
                                     Ok(Err(e)) => Some(format!("复用当前 SSH 会话失败：{e}")),
@@ -872,7 +1498,7 @@ impl SessionTask {
                                     )),
                                 };
 
-                                if sftp_tx.is_none() {
+                                if sftp_handle.is_none() {
                                     match tokio::time::timeout(
                                         SFTP_STANDALONE_OPEN_TIMEOUT,
                                         SshShell::open_standalone_sftp(
@@ -885,14 +1511,14 @@ impl SessionTask {
                                     {
                                         Ok(Ok((session, guard))) => {
                                             let (tx, rx) = mpsc::unbounded_channel();
-                                            tokio::spawn(crate::sftp::sftp_task(
+                                            let task = tokio::spawn(crate::sftp::sftp_task(
                                                 id,
                                                 session,
                                                 Some(guard),
                                                 rx,
                                                 self.out.clone(),
                                             ));
-                                            sftp_tx = Some(tx);
+                                            sftp_handle = Some(SftpTaskHandle { tx, task });
                                         }
                                         Ok(Err(e)) => {
                                             let prefix = primary_error
@@ -922,15 +1548,18 @@ impl SessionTask {
                                     }
                                 }
                             }
-                            if let Some(tx) = &sftp_tx {
-                                if tx.send((request_id, req)).is_err() {
-                                    sftp_tx = None;
-                                    let _ = self.out.send(FromCore::SftpError {
-                                        id,
-                                        request_id,
-                                        message: "SFTP 子任务已退出，请刷新后重试".to_string(),
-                                    }).await;
+                            let send_failed = sftp_handle
+                                .as_ref()
+                                .is_some_and(|handle| handle.tx.send((request_id, req)).is_err());
+                            if send_failed {
+                                if let Some(handle) = sftp_handle.take() {
+                                    shutdown_sftp_task(handle).await;
                                 }
+                                let _ = self.out.send(FromCore::SftpError {
+                                    id,
+                                    request_id,
+                                    message: "SFTP 子任务已退出，请刷新后重试".to_string(),
+                                }).await;
                             }
                         }
                         Some(SessionCmd::StartMonitor) => {
@@ -946,25 +1575,33 @@ impl SessionTask {
                                     Ok(Ok(session)) => {
                                         let out = self.out.clone();
                                         let internal_tx = internal_tx.clone();
+                                        let (cancel_tx, cancel_rx) = oneshot::channel();
                                         let latency_target =
                                             crate::monitor::LatencyProbeTarget::new(
                                                 self.params.host.clone(),
                                                 self.params.port,
                                             );
-                                        tokio::spawn(async move {
+                                        let task = tokio::spawn(async move {
                                             let exit = crate::monitor::monitor_task(
                                                 id,
                                                 session,
                                                 latency_target,
                                                 out,
+                                                cancel_rx,
                                             )
                                             .await;
                                             let _ = internal_tx.send(SessionInternal::MonitorExited(exit));
+                                            exit
+                                        });
+                                        monitor_handle = Some(MonitorTaskHandle {
+                                            cancel_tx: Some(cancel_tx),
+                                            task,
                                         });
                                         monitor_started = true;
                                     }
                                     Ok(Err(e)) => {
-                                        tracing::warn!("failed to start monitor: {e}");
+                                        let _ = e;
+                                        tracing::warn!("failed to start monitor");
                                         let _ = self.out.send(FromCore::MonitorError {
                                             id,
                                             message: format!("资源监控启动失败：{e}"),
@@ -979,6 +1616,156 @@ impl SessionTask {
                                             ),
                                         }).await;
                                     }
+                                }
+                            }
+                        }
+                        Some(SessionCmd::Operations { operation_id, request }) => {
+                            let OperationsRequest::Refresh(domain) = request;
+                            let command = remote_ops::read_command_for_request(&request);
+                            operation_tasks.retain(|task| !task.task.is_finished());
+                            match tokio::time::timeout(
+                                MONITOR_OPEN_TIMEOUT,
+                                shell.open_exec_channel(command),
+                            ).await {
+                                Ok(Ok(channel)) => {
+                                    let out = self.out.clone();
+                                    let (cancel_tx, cancel_rx) = oneshot::channel();
+                                    let task = tokio::spawn(async move {
+                                        remote_ops::execute_readonly_with_cancel(
+                                            id,
+                                            operation_id,
+                                            domain,
+                                            channel,
+                                            out,
+                                            Some(cancel_rx),
+                                        )
+                                        .await;
+                                    });
+                                    operation_tasks.push(OperationTaskHandle {
+                                        cancel_tx: Some(cancel_tx),
+                                        task,
+                                    });
+                                }
+                                Ok(Err(error)) => {
+                                    let _ = self.out.send(FromCore::OperationFailed {
+                                        id,
+                                        operation_id,
+                                        domain,
+                                        error: OperationsError::new(
+                                            OperationsErrorKind::Disconnected,
+                                            format!("打开运维查询通道失败：{error}"),
+                                        ),
+                                    }).await;
+                                }
+                                Err(_) => {
+                                    let _ = self.out.send(FromCore::OperationFailed {
+                                        id,
+                                        operation_id,
+                                        domain,
+                                        error: OperationsError::new(
+                                            OperationsErrorKind::Timeout,
+                                            "打开运维查询通道超时（8 秒）",
+                                        ),
+                                    }).await;
+                                }
+                            }
+                        }
+                        Some(SessionCmd::OpenContainerTerminal {
+                            exec_id,
+                            container_id,
+                            pty,
+                        }) => {
+                            if let Some(previous) = container_exec.take() {
+                                close_container_exec(
+                                    id,
+                                    previous,
+                                    Some("容器终端已被新的终端替换".to_string()),
+                                    &self.out,
+                                )
+                                .await;
+                            }
+                            match tokio::time::timeout(
+                                MONITOR_OPEN_TIMEOUT,
+                                shell.open_pty_exec_channel(&container_id, pty),
+                            )
+                            .await
+                            {
+                                Ok(Ok(channel)) => {
+                                    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+                                    let (cancel_tx, cancel_rx) = oneshot::channel();
+                                    let out = self.out.clone();
+                                    let internal_tx = internal_tx.clone();
+                                    let closed = Arc::new(AsyncMutex::new(false));
+                                    let task_closed = closed.clone();
+                                    let task = tokio::spawn(async move {
+                                        let error = run_container_exec(
+                                            id,
+                                            exec_id,
+                                            container_id,
+                                            pty,
+                                            channel,
+                                            cmd_rx,
+                                            cancel_rx,
+                                            out,
+                                            task_closed,
+                                        )
+                                        .await;
+                                        let _ = internal_tx.send(
+                                            SessionInternal::ContainerExecExited { exec_id, error },
+                                        );
+                                    });
+                                    container_exec = Some(ContainerExecHandle {
+                                        exec_id,
+                                        cmd_tx,
+                                        cancel_tx: Some(cancel_tx),
+                                        task,
+                                        closed,
+                                    });
+                                }
+                                Ok(Err(error)) => {
+                                    let _ = self.out.send(FromCore::ExecClosed {
+                                        id,
+                                        exec_id,
+                                        error: Some(container_error_message(error)),
+                                    }).await;
+                                }
+                                Err(_) => {
+                                    let _ = self.out.send(FromCore::ExecClosed {
+                                        id,
+                                        exec_id,
+                                        error: Some(format!(
+                                            "打开容器终端通道超时（{} 秒）",
+                                            MONITOR_OPEN_TIMEOUT.as_secs()
+                                        )),
+                                    }).await;
+                                }
+                            }
+                        }
+                        Some(SessionCmd::ContainerInput { exec_id, data }) => {
+                            if let Some(handle) = container_exec.as_ref() {
+                                if handle.exec_id == exec_id {
+                                    let _ = handle.cmd_tx.send(ContainerExecCmd::Input(data));
+                                }
+                            }
+                        }
+                        Some(SessionCmd::ContainerResize { exec_id, cols, rows }) => {
+                            if let Some(handle) = container_exec.as_ref() {
+                                if handle.exec_id == exec_id {
+                                    let _ = handle.cmd_tx.send(ContainerExecCmd::Resize { cols, rows });
+                                }
+                            }
+                        }
+                        Some(SessionCmd::ContainerScroll { exec_id, delta }) => {
+                            if let Some(handle) = container_exec.as_ref() {
+                                if handle.exec_id == exec_id {
+                                    let _ = handle.cmd_tx.send(ContainerExecCmd::Scroll(delta));
+                                }
+                            }
+                        }
+                        Some(SessionCmd::CloseContainerTerminal { exec_id }) => {
+                            if let Some(handle) = container_exec.as_ref() {
+                                if handle.exec_id == exec_id {
+                                    let _ = handle.cmd_tx.send(ContainerExecCmd::Close(None));
                                 }
                             }
                         }
@@ -998,6 +1785,16 @@ impl SessionTask {
                             }
                         }
                         Some(SessionCmd::Disconnect) | None => {
+                            if let Some(previous) = container_exec.take() {
+                                close_container_exec(
+                                    id,
+                                    previous,
+                                    None,
+                                    &self.out,
+                                )
+                                .await;
+                            }
+                            cancel_operation_tasks(&mut operation_tasks).await;
                             let _ = shell.disconnect().await;
                             break;
                         }
@@ -1059,6 +1856,17 @@ impl SessionTask {
                     }
                 }
             }
+        }
+
+        if let Some(previous) = container_exec.take() {
+            close_container_exec(id, previous, close_error.clone(), &self.out).await;
+        }
+        cancel_operation_tasks(&mut operation_tasks).await;
+        if let Some(handle) = monitor_handle.take() {
+            shutdown_monitor_task(handle).await;
+        }
+        if let Some(handle) = sftp_handle.take() {
+            shutdown_sftp_task(handle).await;
         }
 
         let _ = self
@@ -1208,7 +2016,7 @@ fn percent_decode(input: &str) -> String {
 /// 向 UI 转发终端事件，并返回必须写回远端 PTY 的响应字节。
 async fn handle_term_events(
     id: SessionId,
-    out: mpsc::Sender<FromCore>,
+    out: SessionEventSender,
     events: Vec<TermEvent>,
 ) -> Vec<Vec<u8>> {
     let mut writes = Vec::new();
@@ -1232,6 +2040,404 @@ async fn write_pty_responses(shell: &SshShell, responses: Vec<Vec<u8>>) -> Resul
         shell.write(&data).await?;
     }
     Ok(())
+}
+
+fn container_error_message(error: SshError) -> String {
+    match error {
+        SshError::Channel(_) => "容器终端通道不可用".to_string(),
+        SshError::Russh(_) => "容器终端连接失败".to_string(),
+        _ => "容器终端无法启动".to_string(),
+    }
+}
+
+async fn cancel_operation_tasks(tasks: &mut Vec<OperationTaskHandle>) {
+    for mut handle in tasks.drain(..) {
+        if let Some(cancel_tx) = handle.cancel_tx.take() {
+            let _ = cancel_tx.send(());
+        }
+        if tokio::time::timeout(Duration::from_secs(1), &mut handle.task)
+            .await
+            .is_err()
+        {
+            handle.task.abort();
+            let _ = handle.task.await;
+        }
+    }
+}
+
+async fn shutdown_join_handle<T>(mut task: JoinHandle<T>) {
+    if tokio::time::timeout(Duration::from_secs(1), &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn shutdown_sftp_task(handle: SftpTaskHandle) {
+    drop(handle.tx);
+    shutdown_join_handle(handle.task).await;
+}
+
+async fn shutdown_monitor_task(mut handle: MonitorTaskHandle) {
+    if let Some(cancel_tx) = handle.cancel_tx.take() {
+        let _ = cancel_tx.send(());
+    }
+    shutdown_join_handle(handle.task).await;
+}
+
+async fn close_container_exec(
+    id: SessionId,
+    mut handle: ContainerExecHandle,
+    error: Option<String>,
+    out: &SessionEventSender,
+) {
+    if let Some(cancel_tx) = handle.cancel_tx.take() {
+        let _ = cancel_tx.send(error.clone());
+    }
+    let _ = handle.cmd_tx.send(ContainerExecCmd::Close(error.clone()));
+    if tokio::time::timeout(Duration::from_secs(1), &mut handle.task)
+        .await
+        .is_err()
+    {
+        handle.task.abort();
+        let _ = handle.task.await;
+    }
+    send_exec_closed_once(id, handle.exec_id, error, out, &handle.closed).await;
+}
+
+enum ContainerStartup {
+    Started,
+    Failed(Option<String>),
+    Cancelled(Option<String>),
+}
+
+enum ContainerIoResult {
+    Sent,
+    Cancelled(Option<String>),
+    Failed(String),
+}
+
+async fn send_exec_event(out: &SessionEventSender, event: FromCore) -> bool {
+    match tokio::time::timeout(EXEC_EVENT_TIMEOUT, out.send(event)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
+async fn send_exec_closed_once(
+    id: SessionId,
+    exec_id: ExecId,
+    error: Option<String>,
+    out: &SessionEventSender,
+    closed: &AsyncMutex<bool>,
+) {
+    let mut sent = closed.lock().await;
+    if *sent {
+        return;
+    }
+    if !send_exec_event(out, FromCore::ExecClosed { id, exec_id, error }).await {
+        // Keep the state retryable. The session cleanup helper may get another
+        // chance after a transiently full event queue or an aborted task.
+        return;
+    }
+    *sent = true;
+}
+
+async fn container_data_with_cancel(
+    channel: &ChannelCloseGuard,
+    cancel_rx: &mut oneshot::Receiver<Option<String>>,
+    data: Vec<u8>,
+) -> ContainerIoResult {
+    tokio::select! {
+        cancellation = cancel_rx => ContainerIoResult::Cancelled(cancellation.unwrap_or(None)),
+        result = tokio::time::timeout(CONTAINER_IO_TIMEOUT, channel.data_bytes(data)) => {
+            match result {
+                Ok(Ok(())) => ContainerIoResult::Sent,
+                Ok(Err(error)) => ContainerIoResult::Failed(container_error_message(SshError::from(error))),
+                Err(_) => ContainerIoResult::Failed("容器终端写入超时".to_string()),
+            }
+        }
+    }
+}
+
+async fn container_window_change_with_cancel(
+    channel: &ChannelCloseGuard,
+    cancel_rx: &mut oneshot::Receiver<Option<String>>,
+    cols: u16,
+    rows: u16,
+) -> ContainerIoResult {
+    tokio::select! {
+        cancellation = cancel_rx => ContainerIoResult::Cancelled(cancellation.unwrap_or(None)),
+        result = tokio::time::timeout(
+            CONTAINER_IO_TIMEOUT,
+            channel.window_change(cols as u32, rows as u32, 0, 0),
+        ) => {
+            match result {
+                Ok(Ok(())) => ContainerIoResult::Sent,
+                Ok(Err(error)) => ContainerIoResult::Failed(container_error_message(SshError::from(error))),
+                Err(_) => ContainerIoResult::Failed("容器终端调整大小超时".to_string()),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_container_exec(
+    id: SessionId,
+    exec_id: ExecId,
+    _container_id: String,
+    pty: PtySize,
+    channel: russh::Channel<russh::client::Msg>,
+    mut cmd_rx: mpsc::UnboundedReceiver<ContainerExecCmd>,
+    mut cancel_rx: oneshot::Receiver<Option<String>>,
+    out: SessionEventSender,
+    closed: Arc<AsyncMutex<bool>>,
+) -> Option<String> {
+    const SCROLLBACK: usize = 10_000;
+    let mut term = TermEngine::new(pty.cols as usize, pty.rows as usize, SCROLLBACK);
+    let mut close_error: Option<String> = None;
+    let mut channel = ChannelCloseGuard::new(channel);
+    let mut pending_commands = VecDeque::new();
+
+    // request_pty 与 exec 都要求远端确认；同一通道上的前两个 Success 分别对应
+    // PTY 和 exec。只有收到 exec 的确认后才对 UI 宣布 started，避免把被拒绝的
+    // 容器请求误报为已启动。
+    let mut request_successes = 0_u8;
+    let startup = tokio::time::timeout(MONITOR_OPEN_TIMEOUT, async {
+        loop {
+            let message = tokio::select! {
+                cancellation = &mut cancel_rx => return ContainerStartup::Cancelled(cancellation.unwrap_or(None)),
+                command = cmd_rx.recv() => match command {
+                    Some(ContainerExecCmd::Close(error)) => {
+                        return ContainerStartup::Cancelled(error)
+                    }
+                    None => return ContainerStartup::Cancelled(None),
+                    Some(command) => {
+                        pending_commands.push_back(command);
+                        continue;
+                    }
+                },
+                message = channel.wait() => message,
+            };
+            match message {
+                Some(russh::ChannelMsg::Success) => {
+                    request_successes = request_successes.saturating_add(1);
+                    if request_successes >= 2 {
+                        let started = send_exec_event(
+                            &out,
+                            FromCore::ExecStarted {
+                                id,
+                                exec_id,
+                                container_id: _container_id.clone(),
+                            },
+                        )
+                        .await;
+                        return if started {
+                            ContainerStartup::Started
+                        } else {
+                            ContainerStartup::Failed(None)
+                        };
+                    }
+                }
+                Some(russh::ChannelMsg::Failure) => {
+                    return ContainerStartup::Failed(Some("容器终端请求被远端拒绝".to_string()))
+                }
+                Some(russh::ChannelMsg::Data { data })
+                | Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                    term.advance(&data);
+                    let writes = match tokio::time::timeout(
+                        EXEC_EVENT_TIMEOUT,
+                        handle_term_events(id, out.clone(), term.take_events()),
+                    )
+                    .await
+                    {
+                        Ok(writes) => writes,
+                        Err(_) => return ContainerStartup::Failed(None),
+                    };
+                    for data in writes {
+                        match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
+                            ContainerIoResult::Sent => {}
+                            ContainerIoResult::Cancelled(error) => {
+                                return ContainerStartup::Cancelled(error)
+                            }
+                            ContainerIoResult::Failed(error) => {
+                                return ContainerStartup::Failed(Some(error))
+                            }
+                        }
+                    }
+                }
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
+                    return ContainerStartup::Failed(Some("容器终端已被远端关闭".to_string()))
+                }
+                None => return ContainerStartup::Failed(Some("容器终端通道已断开".to_string())),
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
+    match startup {
+        Ok(ContainerStartup::Started) => {}
+        Ok(ContainerStartup::Failed(error)) | Ok(ContainerStartup::Cancelled(error)) => {
+            channel.close().await;
+            send_exec_closed_once(id, exec_id, error.clone(), &out, &closed).await;
+            return error;
+        }
+        Err(_) => {
+            let error = Some(format!(
+                "容器终端启动超时（{} 秒）",
+                MONITOR_OPEN_TIMEOUT.as_secs()
+            ));
+            channel.close().await;
+            send_exec_closed_once(id, exec_id, error.clone(), &out, &closed).await;
+            return error;
+        }
+    }
+    if !send_exec_render(id, exec_id, &term, &out).await {
+        let error = Some("容器终端初始渲染失败".to_string());
+        channel.close().await;
+        send_exec_closed_once(id, exec_id, error.clone(), &out, &closed).await;
+        return error;
+    }
+
+    'run: loop {
+        tokio::select! {
+            cancellation = &mut cancel_rx => {
+                close_error = cancellation.unwrap_or(None);
+                break 'run;
+            }
+            command = async {
+                if let Some(command) = pending_commands.pop_front() {
+                    Some(command)
+                } else {
+                    cmd_rx.recv().await
+                }
+            } => {
+                match command {
+                    Some(ContainerExecCmd::Input(data)) => {
+                        if data.is_empty() {
+                            continue;
+                        }
+                        if term.scroll_to_bottom() && !send_exec_render(id, exec_id, &term, &out).await {
+                            break 'run;
+                        }
+                        match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
+                            ContainerIoResult::Sent => {}
+                            ContainerIoResult::Cancelled(error) => {
+                                close_error = error;
+                                break 'run;
+                            }
+                            ContainerIoResult::Failed(error) => {
+                                close_error = Some(error);
+                                break 'run;
+                            }
+                        }
+                    }
+                    Some(ContainerExecCmd::Resize { cols, rows }) => {
+                        term.resize(cols as usize, rows as usize, SCROLLBACK);
+                        match container_window_change_with_cancel(&channel, &mut cancel_rx, cols, rows).await {
+                            ContainerIoResult::Sent => {}
+                            ContainerIoResult::Cancelled(error) => {
+                                close_error = error;
+                                break 'run;
+                            }
+                            ContainerIoResult::Failed(error) => {
+                                close_error = Some(error);
+                                break 'run;
+                            }
+                        }
+                        if !send_exec_render(id, exec_id, &term, &out).await {
+                            break 'run;
+                        }
+                    }
+                    Some(ContainerExecCmd::Scroll(delta)) => {
+                        term.scroll(delta);
+                        if !send_exec_render(id, exec_id, &term, &out).await {
+                            break 'run;
+                        }
+                    }
+                    Some(ContainerExecCmd::Close(error)) => {
+                        close_error = error;
+                        break 'run;
+                    }
+                    None => {
+                        break 'run;
+                    }
+                }
+            }
+            message = channel.wait() => {
+                match message {
+                    Some(russh::ChannelMsg::Data { data })
+                    | Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                        term.advance(&data);
+                        let writes = match tokio::time::timeout(
+                            EXEC_EVENT_TIMEOUT,
+                            handle_term_events(id, out.clone(), term.take_events()),
+                        )
+                        .await
+                        {
+                            Ok(writes) => writes,
+                            Err(_) => break 'run,
+                        };
+                        for data in writes {
+                            match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
+                                ContainerIoResult::Sent => {}
+                                ContainerIoResult::Cancelled(error) => {
+                                    close_error = error;
+                                    break 'run;
+                                }
+                                ContainerIoResult::Failed(error) => {
+                                    close_error = Some(error);
+                                    break 'run;
+                                }
+                            }
+                        }
+                        if close_error.is_some() || !send_exec_render(id, exec_id, &term, &out).await {
+                            break 'run;
+                        }
+                    }
+                    Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
+                        if exit_status != 0 {
+                            close_error = Some("容器终端进程已退出".to_string());
+                        }
+                    }
+                    // 与只读 exec 一样，exit-status 可能在 EOF 之后到达；继续
+                    // drain 到 Close，确保非零退出不会被静默吞掉。
+                    Some(russh::ChannelMsg::Eof) => continue,
+                    Some(russh::ChannelMsg::Failure) => {
+                        close_error = Some("容器终端请求被远端拒绝".to_string());
+                        break 'run;
+                    }
+                    Some(russh::ChannelMsg::Close) | None => break 'run,
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+
+    // 普通 Channel 被 drop 时不会自动发送 CHANNEL_CLOSE；运行阶段任何退出原因
+    // （包括 UI 输出通道关闭、PTY 写入失败和远端主动关闭）都在这里统一收敛。
+    channel.close().await;
+    send_exec_closed_once(id, exec_id, close_error.clone(), &out, &closed).await;
+    close_error
+}
+
+async fn send_exec_render(
+    id: SessionId,
+    exec_id: ExecId,
+    term: &TermEngine,
+    out: &SessionEventSender,
+) -> bool {
+    send_exec_event(
+        out,
+        FromCore::ExecRender {
+            id,
+            exec_id,
+            snapshot: Box::new(term.snapshot()),
+        },
+    )
+    .await
 }
 
 #[derive(Debug)]
@@ -1429,7 +2635,7 @@ mod tests {
         let mut provider = InteractiveAuthProvider {
             id: SessionId(7),
             inner: Box::new(PasswordAuth("secret")),
-            out: out_tx,
+            out: SessionEventSender::new(SessionId(7), 0, out_tx),
             responses: response_rx,
         };
 
@@ -1447,7 +2653,7 @@ mod tests {
         let mut provider = InteractiveAuthProvider {
             id: SessionId(7),
             inner: Box::new(NoopAuth),
-            out: out_tx,
+            out: SessionEventSender::new(SessionId(7), 0, out_tx),
             responses: response_rx,
         };
 
@@ -1460,7 +2666,11 @@ mod tests {
         });
 
         match out_rx.blocking_recv() {
-            Some(FromCore::AuthChallenge { id, challenge }) => {
+            Some(SessionEvent {
+                id,
+                event: FromCore::AuthChallenge { challenge, .. },
+                ..
+            }) => {
                 assert_eq!(id, SessionId(7));
                 assert_eq!(
                     challenge,
@@ -1490,7 +2700,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let (out_tx, mut out_rx) = mpsc::channel::<SessionEvent>(4);
         let (route_tx, mut route_rx) = mpsc::channel::<(SessionId, AuthResponse)>(4);
         let (response_1_tx, response_1_rx) = std_mpsc::channel();
         let (response_2_tx, response_2_rx) = std_mpsc::channel();
@@ -1516,7 +2726,7 @@ mod tests {
                 let mut provider = InteractiveAuthProvider {
                     id,
                     inner: Box::new(NoopAuth),
-                    out,
+                    out: SessionEventSender::new(id, 0, out),
                     responses,
                 };
                 let answer = provider.password("root", "example.com", 22);
@@ -1529,7 +2739,11 @@ mod tests {
         let mut challenged = Vec::new();
         for _ in 0..2 {
             match out_rx.blocking_recv() {
-                Some(FromCore::AuthChallenge { id, .. }) => challenged.push(id),
+                Some(SessionEvent {
+                    id,
+                    event: FromCore::AuthChallenge { .. },
+                    ..
+                }) => challenged.push(id),
                 other => panic!("期望认证挑战，实际收到 {other:?}"),
             }
         }
@@ -1564,7 +2778,7 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(4);
         let writes = handle_term_events(
             SessionId(9),
-            out_tx,
+            SessionEventSender::new(SessionId(9), 0, out_tx),
             vec![TermEvent::Bell, TermEvent::PtyWrite(b"\x1b[1;1R".to_vec())],
         )
         .await;
@@ -1572,8 +2786,58 @@ mod tests {
         assert_eq!(writes, vec![b"\x1b[1;1R".to_vec()]);
         assert!(matches!(
             out_rx.recv().await,
-            Some(FromCore::Bell { id }) if id == SessionId(9)
+            Some(SessionEvent { id, event: FromCore::Bell { .. }, .. }) if id == SessionId(9)
         ));
+    }
+
+    #[tokio::test]
+    async fn exec_closed_event_is_emitted_once() {
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        let out = SessionEventSender::new(SessionId(9), 0, out_tx);
+        let closed = Arc::new(AsyncMutex::new(false));
+
+        send_exec_closed_once(
+            SessionId(9),
+            ExecId(3),
+            Some("closed".to_string()),
+            &out,
+            &closed,
+        )
+        .await;
+        send_exec_closed_once(
+            SessionId(9),
+            ExecId(3),
+            Some("duplicate".to_string()),
+            &out,
+            &closed,
+        )
+        .await;
+
+        assert!(matches!(
+            out_rx.recv().await,
+            Some(SessionEvent {
+                event: FromCore::ExecClosed {
+                    id: SessionId(9),
+                    exec_id: ExecId(3),
+                    error: Some(error),
+                },
+                ..
+            }) if error == "closed"
+        ));
+        assert!(out_rx.try_recv().is_err());
+        assert!(*closed.lock().await);
+    }
+
+    #[tokio::test]
+    async fn exec_closed_event_remains_retryable_when_receiver_is_closed() {
+        let (out_tx, out_rx) = mpsc::channel(1);
+        drop(out_rx);
+        let out = SessionEventSender::new(SessionId(9), 0, out_tx);
+        let closed = Arc::new(AsyncMutex::new(false));
+
+        send_exec_closed_once(SessionId(9), ExecId(3), None, &out, &closed).await;
+
+        assert!(!*closed.lock().await);
     }
 
     #[test]
@@ -1592,6 +2856,7 @@ mod tests {
             "{:?}",
             ToCore::AuthResponse {
                 id: SessionId(1),
+                generation: 1,
                 response: AuthResponse::Answers(vec!["secret-password".to_string()]),
             }
         );
@@ -1600,9 +2865,87 @@ mod tests {
     }
 
     #[test]
-    fn ended_task_only_matches_its_own_connection_generation() {
+    fn protocol_debug_does_not_include_remote_payloads() {
+        let command_debug = format!(
+            "{:?}",
+            ToCore::Operations {
+                id: SessionId(1),
+                operation_id: OperationId(2),
+                request: OperationsRequest::Refresh(OperationsDomain::Processes),
+            }
+        );
+        assert!(!command_debug.contains("secret-command"));
+
+        let snapshot = test_snapshot(7);
+        let events = [
+            FromCore::Render {
+                id: SessionId(1),
+                snapshot: snapshot.clone(),
+            },
+            FromCore::SftpListing {
+                id: SessionId(1),
+                request_id: SftpRequestId(3),
+                path: "/private/remote/path".to_string(),
+                entries: Vec::new(),
+            },
+            FromCore::SftpError {
+                id: SessionId(1),
+                request_id: SftpRequestId(3),
+                message: "private sftp failure".to_string(),
+            },
+            FromCore::OperationResult {
+                id: SessionId(1),
+                operation_id: OperationId(2),
+                domain: OperationsDomain::Processes,
+                result: OperationsResult::Processes(
+                    vec![crate::remote_ops::ProcessSummary {
+                        pid: 7,
+                        ppid: 1,
+                        uid: 1000,
+                        state: "S".to_string(),
+                        cpu_percent: 1.0,
+                        memory_percent: 2.0,
+                        rss_kib: 3,
+                        vsz_kib: 4,
+                        elapsed: "00:01".to_string(),
+                        command: "private process command".to_string(),
+                    }]
+                    .into(),
+                ),
+            },
+            FromCore::ExecRender {
+                id: SessionId(1),
+                exec_id: ExecId(5),
+                snapshot,
+            },
+            FromCore::ExecClosed {
+                id: SessionId(1),
+                exec_id: ExecId(5),
+                error: Some("private close error".to_string()),
+            },
+            FromCore::AuthChallenge {
+                id: SessionId(1),
+                generation: 1,
+                challenge: AuthChallenge::KeyboardInteractive {
+                    name: "private auth name".to_string(),
+                    instructions: "private auth instructions".to_string(),
+                    prompts: vec![AuthPrompt {
+                        text: "private prompt".to_string(),
+                        echo: false,
+                    }],
+                },
+            },
+        ];
+        for event in events {
+            let debug = format!("{event:?}");
+            assert!(!debug.contains("private"), "debug leaked payload: {debug}");
+        }
+    }
+
+    #[test]
+    fn connection_generation_only_matches_current_session() {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-        let (auth_response_tx, _auth_response_rx) = std_mpsc::channel();
+        let (auth_response_tx, auth_response_rx) = std_mpsc::channel();
         let mut sessions = HashMap::new();
         sessions.insert(
             SessionId(7),
@@ -1616,6 +2959,24 @@ mod tests {
         assert!(!session_generation_is_current(&sessions, SessionId(7), 1));
         assert!(session_generation_is_current(&sessions, SessionId(7), 2));
         assert!(!session_generation_is_current(&sessions, SessionId(8), 2));
+
+        assert!(!route_auth_response(
+            &sessions,
+            SessionId(7),
+            1,
+            AuthResponse::Cancel,
+        ));
+        assert!(auth_response_rx.try_recv().is_err());
+        assert!(route_auth_response(
+            &sessions,
+            SessionId(7),
+            2,
+            AuthResponse::Answers(vec!["current".to_string()]),
+        ));
+        assert!(matches!(
+            auth_response_rx.try_recv(),
+            Ok(AuthResponse::Answers(answers)) if answers == vec!["current"]
+        ));
     }
 
     #[test]

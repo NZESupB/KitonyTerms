@@ -4,7 +4,9 @@
 //! session loop can drive it. Higher-level orchestration (per-session tasks,
 //! the UI message protocol) lives in [`crate::session`].
 
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client::{self, Handle};
 use russh::keys::{load_secret_key, HashAlg, PrivateKey, PrivateKeyWithHashAlg};
@@ -62,6 +64,90 @@ pub enum SshError {
 
 type Result<T> = std::result::Result<T, SshError>;
 
+const CHANNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Owns a channel while an async open/worker future is in flight.
+///
+/// `russh::Channel` itself does not send `CHANNEL_CLOSE` when dropped. The
+/// guard therefore schedules a best-effort close from `Drop`, while normal
+/// paths can await the close explicitly and then take ownership back.
+pub(crate) struct ChannelCloseGuard {
+    channel: Option<russh::Channel<client::Msg>>,
+    close_requested: bool,
+}
+
+impl ChannelCloseGuard {
+    pub(crate) fn new(channel: russh::Channel<client::Msg>) -> Self {
+        Self {
+            channel: Some(channel),
+            close_requested: false,
+        }
+    }
+
+    /// Request a close without allowing a stuck sender to hold the worker
+    /// forever. If the timeout fires, `Drop` will retry asynchronously.
+    pub(crate) async fn close(&mut self) {
+        if self.close_requested {
+            return;
+        }
+        let Some(channel) = self.channel.as_ref() else {
+            self.close_requested = true;
+            return;
+        };
+        match tokio::time::timeout(Duration::from_secs(1), channel.close()).await {
+            Ok(Ok(())) => self.close_requested = true,
+            Ok(Err(error)) => {
+                tracing::debug!("关闭 SSH channel 失败，将在 guard drop 时重试: {error}");
+            }
+            Err(_) => {
+                tracing::debug!("关闭 SSH channel 超时，将在 guard drop 时重试");
+            }
+        }
+    }
+
+    /// Disarm the drop close and return the channel to its caller.
+    pub(crate) fn take(&mut self) -> Option<russh::Channel<client::Msg>> {
+        self.close_requested = true;
+        self.channel.take()
+    }
+}
+
+impl Deref for ChannelCloseGuard {
+    type Target = russh::Channel<client::Msg>;
+
+    fn deref(&self) -> &Self::Target {
+        match self.channel.as_ref() {
+            Some(channel) => channel,
+            None => unreachable!("channel guard was disarmed before use"),
+        }
+    }
+}
+
+impl DerefMut for ChannelCloseGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self.channel.as_mut() {
+            Some(channel) => channel,
+            None => unreachable!("channel guard was disarmed before use"),
+        }
+    }
+}
+
+impl Drop for ChannelCloseGuard {
+    fn drop(&mut self) {
+        if self.close_requested {
+            return;
+        }
+        let Some(channel) = self.channel.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
+            });
+        }
+    }
+}
+
 /// Supplies secrets/answers on demand during authentication.
 ///
 /// Implementations may read the vault, prompt the user on a terminal, or pop a
@@ -109,6 +195,33 @@ pub struct SshConnectionGuard {
     _proxy_handle: Option<Handle<ClientHandler>>,
 }
 
+/// `want_reply=true` 的 channel 请求必须等远端确认后才能把会话报告为已连接。
+/// 否则被拒绝的 PTY/shell 会继续被 UI 当作可用会话，后续写入只会静默失败。
+async fn await_request_success(
+    channel: &mut russh::Channel<client::Msg>,
+    request: &str,
+) -> Result<()> {
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Success) => return Ok(()),
+            Some(ChannelMsg::Failure) => {
+                let _ = channel.close().await;
+                return Err(SshError::Channel(format!("{request} 被远端拒绝")));
+            }
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                let _ = channel.close().await;
+                return Err(SshError::Channel(format!("{request} 通道已关闭")));
+            }
+            // 只有 shell 请求被接受后才能收到 shell 数据。
+            Some(ChannelMsg::Data { .. }) | Some(ChannelMsg::ExtendedData { .. }) => {
+                let _ = channel.close().await;
+                return Err(SshError::Channel(format!("{request} 确认前收到远端输出")));
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 struct AuthenticatedHandle {
     handle: Handle<ClientHandler>,
     proxy_handle: Option<Handle<ClientHandler>>,
@@ -137,16 +250,18 @@ impl SshShell {
             .channel_open_session()
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
 
         if forward_agent {
-            channel
-                .agent_forward(true)
-                .await
-                .map_err(|e| SshError::Channel(format!("agent_forward: {e}")))?;
+            if let Err(error) = guard.agent_forward(true).await {
+                guard.close().await;
+                return Err(SshError::Channel(format!("agent_forward: {error}")));
+            }
+            await_request_success(&mut guard, "agent forwarding").await?;
         }
 
         let modes = &[];
-        channel
+        if let Err(error) = guard
             .request_pty(
                 true,
                 "xterm-256color",
@@ -157,12 +272,21 @@ impl SshShell {
                 modes,
             )
             .await
-            .map_err(|e| SshError::Channel(format!("request_pty: {e}")))?;
+        {
+            guard.close().await;
+            return Err(SshError::Channel(format!("request_pty: {error}")));
+        }
+        await_request_success(&mut guard, "PTY request").await?;
 
-        channel
-            .request_shell(true)
-            .await
-            .map_err(|e| SshError::Channel(format!("request_shell: {e}")))?;
+        if let Err(error) = guard.request_shell(true).await {
+            guard.close().await;
+            return Err(SshError::Channel(format!("request_shell: {error}")));
+        }
+        await_request_success(&mut guard, "shell request").await?;
+
+        let Some(channel) = guard.take() else {
+            return Err(SshError::Channel("交互终端通道不可用".to_string()));
+        };
 
         Ok(Self {
             handle: authenticated.handle,
@@ -209,16 +333,110 @@ impl SshShell {
     /// reading commands from the channel stdin. The returned channel can be moved
     /// into a monitor task that periodically writes commands and reads output.
     pub async fn open_monitor_channel(&self) -> Result<russh::Channel<client::Msg>> {
-        let channel = self
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SshError::Channel(e.to_string()))?;
-        channel
-            .exec(true, "sh")
-            .await
-            .map_err(|e| SshError::Channel(format!("exec sh: {e}")))?;
-        Ok(channel)
+        let channel =
+            tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, self.handle.channel_open_session())
+                .await
+                .map_err(|_| SshError::Channel("打开监控通道超时(8 秒)".to_string()))?
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
+        match tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, guard.exec(true, "sh")).await {
+            Ok(Ok(())) => guard
+                .take()
+                .ok_or_else(|| SshError::Channel("监控通道不可用".to_string())),
+            Ok(Err(error)) => {
+                guard.close().await;
+                Err(SshError::Channel(format!("exec sh: {error}")))
+            }
+            Err(_) => {
+                guard.close().await;
+                Err(SshError::Channel("exec sh 超时(8 秒)".to_string()))
+            }
+        }
+    }
+
+    /// 在当前已认证 SSH 会话上执行一条固定的、无 PTY 查询命令。
+    ///
+    /// 运维模块只传入 core 内部的 allowlist 命令；该通道独立于交互终端、SFTP 与
+    /// Monitor，结果可以 move 到专用任务读取。
+    pub(crate) async fn open_exec_channel(
+        &self,
+        command: &str,
+    ) -> Result<russh::Channel<client::Msg>> {
+        let channel =
+            tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, self.handle.channel_open_session())
+                .await
+                .map_err(|_| SshError::Channel("打开运维查询通道超时(8 秒)".to_string()))?
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
+        match tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, guard.exec(true, command)).await {
+            Ok(Ok(())) => guard
+                .take()
+                .ok_or_else(|| SshError::Channel("运维查询通道不可用".to_string())),
+            Ok(Err(error)) => {
+                guard.close().await;
+                Err(SshError::Channel(format!("exec query: {error}")))
+            }
+            Err(_) => {
+                guard.close().await;
+                Err(SshError::Channel("exec query 超时(8 秒)".to_string()))
+            }
+        }
+    }
+
+    /// 在当前已认证 SSH 会话上打开一个独立的 Docker 容器 PTY。
+    ///
+    /// 容器标识只允许 Docker 名称/ID 的安全字符，命令固定为
+    /// `docker exec -it <container> /bin/sh`，不会把 UI 文本当作 shell 命令执行。
+    pub(crate) async fn open_pty_exec_channel(
+        &self,
+        container_id: &str,
+        pty: PtySize,
+    ) -> Result<russh::Channel<client::Msg>> {
+        validate_container_id(container_id)?;
+        let channel =
+            tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, self.handle.channel_open_session())
+                .await
+                .map_err(|_| SshError::Channel("打开容器终端通道超时(8 秒)".to_string()))?
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
+        let pty_request = tokio::time::timeout(
+            CHANNEL_REQUEST_TIMEOUT,
+            guard.request_pty(
+                true,
+                "xterm-256color",
+                pty.cols as u32,
+                pty.rows as u32,
+                0,
+                0,
+                &[],
+            ),
+        )
+        .await;
+        match pty_request {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                guard.close().await;
+                return Err(SshError::Channel(format!("request_pty: {error}")));
+            }
+            Err(_) => {
+                guard.close().await;
+                return Err(SshError::Channel("request_pty 超时(8 秒)".to_string()));
+            }
+        }
+        let command = format!("docker exec -it {container_id} /bin/sh");
+        match tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, guard.exec(true, command)).await {
+            Ok(Ok(())) => guard
+                .take()
+                .ok_or_else(|| SshError::Channel("容器终端通道不可用".to_string())),
+            Ok(Err(error)) => {
+                guard.close().await;
+                Err(SshError::Channel(format!("exec container: {error}")))
+            }
+            Err(_) => {
+                guard.close().await;
+                Err(SshError::Channel("exec container 超时(8 秒)".to_string()))
+            }
+        }
     }
 
     /// 在当前已认证会话上打开 SFTP 子系统,返回独立拥有通道流的 [`SftpSession`]。
@@ -229,15 +447,35 @@ impl SshShell {
     /// the interactive shell loop. The TCP session stays alive as long as this
     /// [`SshShell`] (which owns `handle`) lives.
     pub async fn open_sftp(&self) -> Result<russh_sftp::client::SftpSession> {
-        let channel = self
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SshError::Channel(e.to_string()))?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| SshError::Channel(format!("request_subsystem sftp: {e}")))?;
+        let channel =
+            tokio::time::timeout(CHANNEL_REQUEST_TIMEOUT, self.handle.channel_open_session())
+                .await
+                .map_err(|_| SshError::Channel("打开 SFTP 通道超时(8 秒)".to_string()))?
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
+        match tokio::time::timeout(
+            CHANNEL_REQUEST_TIMEOUT,
+            guard.request_subsystem(true, "sftp"),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                guard.close().await;
+                return Err(SshError::Channel(format!(
+                    "request_subsystem sftp: {error}"
+                )));
+            }
+            Err(_) => {
+                guard.close().await;
+                return Err(SshError::Channel(
+                    "request_subsystem sftp 超时(8 秒)".to_string(),
+                ));
+            }
+        }
+        let Some(channel) = guard.take() else {
+            return Err(SshError::Channel("SFTP 通道不可用".to_string()));
+        };
         russh_sftp::client::SftpSession::new(channel.into_stream())
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))
@@ -251,15 +489,37 @@ impl SshShell {
         auth: &mut dyn AuthProvider,
     ) -> Result<(russh_sftp::client::SftpSession, SshConnectionGuard)> {
         let authenticated = connect_authenticated(params, verifier, auth).await?;
-        let channel = authenticated
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SshError::Channel(e.to_string()))?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| SshError::Channel(format!("request_subsystem sftp: {e}")))?;
+        let channel = tokio::time::timeout(
+            CHANNEL_REQUEST_TIMEOUT,
+            authenticated.handle.channel_open_session(),
+        )
+        .await
+        .map_err(|_| SshError::Channel("打开独立 SFTP 通道超时(8 秒)".to_string()))?
+        .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut guard = ChannelCloseGuard::new(channel);
+        match tokio::time::timeout(
+            CHANNEL_REQUEST_TIMEOUT,
+            guard.request_subsystem(true, "sftp"),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                guard.close().await;
+                return Err(SshError::Channel(format!(
+                    "request_subsystem sftp: {error}"
+                )));
+            }
+            Err(_) => {
+                guard.close().await;
+                return Err(SshError::Channel(
+                    "request_subsystem sftp 超时(8 秒)".to_string(),
+                ));
+            }
+        }
+        let Some(channel) = guard.take() else {
+            return Err(SshError::Channel("独立 SFTP 通道不可用".to_string()));
+        };
         let session = russh_sftp::client::SftpSession::new(channel.into_stream())
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))?;
@@ -271,6 +531,22 @@ impl SshShell {
             },
         ))
     }
+}
+
+/// Docker 容器名称/ID 的保守校验，拒绝 shell 元字符、路径和空白。
+pub(crate) fn validate_container_id(value: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 128 {
+        return Err(SshError::Channel("容器标识格式无效".to_string()));
+    }
+    if !bytes[0].is_ascii_alphanumeric()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(SshError::Channel("容器标识格式无效".to_string()));
+    }
+    Ok(())
 }
 
 async fn connect_authenticated(

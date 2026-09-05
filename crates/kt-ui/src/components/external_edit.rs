@@ -706,6 +706,7 @@ mod tests {
             connection_error: None,
             host_key_pending: false,
             auth_challenge: None,
+            auth_challenge_generation: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::<SftpEntry>::new(),
             sftp_loading: false,
@@ -713,6 +714,7 @@ mod tests {
             sftp_list_request_id: None,
             sftp_completions: std::collections::VecDeque::new(),
             sftp_failures: std::collections::VecDeque::new(),
+            sftp_pending_requests: std::collections::HashSet::new(),
             sftp_progress: None,
             terminal_cwd: None,
             terminal_cwd_inference_target: None,
@@ -728,6 +730,8 @@ mod tests {
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
+            operations: std::collections::HashMap::new(),
+            container_terminal: None,
         }
     }
 

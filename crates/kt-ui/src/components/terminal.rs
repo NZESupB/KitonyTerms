@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
 use kt_core::term::{CursorShape, GridSnapshot, SnapshotCell};
-use kt_core::{SessionId, ToCore};
+use kt_core::{ExecId, SessionId, ToCore};
 
 use crate::components::icons::Icon;
 use crate::components::main_shell::SplitMode;
@@ -45,6 +45,8 @@ pub fn Terminal(
     show_timestamps: bool,
     language: AppLanguage,
     split_mode: Signal<Option<SplitMode>>,
+    /// `Some` 表示容器独立 PTY；`None` 表示宿主交互终端。
+    exec_id: Option<ExecId>,
     /// 是否在右键菜单里提供分屏入口。手机屏幕放不下两个终端，手机 Shell 传 `false`。
     allow_split: bool,
 ) -> Element {
@@ -59,7 +61,10 @@ pub fn Terminal(
     let state_for_scroll = state.clone();
     let state_for_paste = state.clone();
     let state_for_key_paste = state.clone();
-    let terminal_id = format!("terminal-{}-{}", session_id.0, pane_id);
+    let terminal_id = match exec_id {
+        Some(exec_id) => format!("terminal-{}-exec-{}-{}", session_id.0, exec_id.0, pane_id),
+        None => format!("terminal-{}-{}", session_id.0, pane_id),
+    };
     let terminal_id_for_key = terminal_id.clone();
     let terminal_id_for_horizontal_scroll = terminal_id.clone();
     let terminal_screen_id = terminal_screen_id(&terminal_id);
@@ -100,7 +105,7 @@ pub fn Terminal(
             let terminal_screen_id = terminal_screen_id.clone();
             let pane_id = pane_id.clone();
             spawn(async move {
-                if pane_id != "primary" {
+                if pane_id != "primary" && exec_id.is_none() {
                     return;
                 }
 
@@ -175,11 +180,20 @@ pub fn Terminal(
                     if (new_cols, new_rows) != last_size {
                         last_size = (new_cols, new_rows);
                         if let Ok(app_state) = value.lock() {
-                            app_state.manager.send(ToCore::Resize {
-                                id: session_id,
-                                cols: new_cols,
-                                rows: new_rows,
-                            });
+                            if let Some(exec_id) = exec_id {
+                                app_state.manager.send(ToCore::ContainerResize {
+                                    id: session_id,
+                                    exec_id,
+                                    cols: new_cols,
+                                    rows: new_rows,
+                                });
+                            } else {
+                                app_state.manager.send(ToCore::Resize {
+                                    id: session_id,
+                                    cols: new_cols,
+                                    rows: new_rows,
+                                });
+                            }
                             tracing::debug!("调整终端大小: {}x{}", new_cols, new_rows);
                         }
                     }
@@ -253,10 +267,18 @@ pub fn Terminal(
                 let delta_y = evt.delta().strip_units().y;
                 if let Some(scroll_lines) = terminal_scroll_delta_from_wheel(delta_y) {
                     if let Ok(app_state) = state_for_scroll.lock() {
-                        app_state.manager.send(ToCore::Scroll {
-                            id: session_id,
-                            delta: scroll_lines,
-                        });
+                        if let Some(exec_id) = exec_id {
+                            app_state.manager.send(ToCore::ContainerScroll {
+                                id: session_id,
+                                exec_id,
+                                delta: scroll_lines,
+                            });
+                        } else {
+                            app_state.manager.send(ToCore::Scroll {
+                                id: session_id,
+                                delta: scroll_lines,
+                            });
+                        }
                     }
                 }
             },
@@ -286,13 +308,21 @@ pub fn Terminal(
                     }
                     TerminalKeyAction::Paste => {
                         evt.prevent_default();
-                        paste_clipboard_to_terminal(state_for_key_paste.clone(), session_id);
+                        paste_clipboard_to_terminal_target(
+                            state_for_key_paste.clone(),
+                            session_id,
+                            exec_id,
+                        );
                     }
                     TerminalKeyAction::Input(data) => {
                         evt.prevent_default();
                         tracing::debug!("发送终端输入: {} bytes", data.len());
                         if let Ok(mut app_state) = state_for_input.lock() {
-                            app_state.send_terminal_input(session_id, data);
+                            if let Some(exec_id) = exec_id {
+                                app_state.send_container_terminal_input(session_id, exec_id, data);
+                            } else {
+                                app_state.send_terminal_input(session_id, data);
+                            }
                         }
                     }
                     TerminalKeyAction::Ignore => {}
@@ -394,7 +424,7 @@ pub fn Terminal(
                             let state = state_for_paste.clone();
                             move |_| {
                                 terminal_context_menu.set(None);
-                                paste_clipboard_to_terminal(state.clone(), session_id);
+                                paste_clipboard_to_terminal_target(state.clone(), session_id, exec_id);
                             }
                         },
                         Icon { name: "download" }
@@ -603,12 +633,20 @@ pub(crate) fn copy_selected_terminal_text(terminal_id: &str) {
 
 /// 读取系统剪贴板并写入终端。
 pub(crate) fn paste_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_id: SessionId) {
+    paste_clipboard_to_terminal_target(state, session_id, None);
+}
+
+fn paste_clipboard_to_terminal_target(
+    state: Arc<Mutex<AppState>>,
+    session_id: SessionId,
+    exec_id: Option<ExecId>,
+) {
     // 桌面端优先读原生剪贴板：WebView 的 `navigator.clipboard.readText()` 会额外
     // 要求系统粘贴确认（macOS 上需再点一次系统弹出的 Paste 按钮）。
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     match crate::clipboard::read_text() {
         Ok(Some(text)) => {
-            send_terminal_text(state, session_id, &text);
+            send_terminal_text(state, session_id, exec_id, &text);
             return;
         }
         // 剪贴板为空，无需回退。
@@ -618,11 +656,15 @@ pub(crate) fn paste_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_i
         }
     }
 
-    paste_webview_clipboard_to_terminal(state, session_id);
+    paste_webview_clipboard_to_terminal(state, session_id, exec_id);
 }
 
 /// 通过 WebView 剪贴板 API 粘贴：移动端唯一路径，桌面端仅在原生读取失败时回退。
-fn paste_webview_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_id: SessionId) {
+fn paste_webview_clipboard_to_terminal(
+    state: Arc<Mutex<AppState>>,
+    session_id: SessionId,
+    exec_id: Option<ExecId>,
+) {
     let mut eval = dioxus::document::eval(
         r#"
         (async () => {
@@ -641,20 +683,29 @@ fn paste_webview_clipboard_to_terminal(state: Arc<Mutex<AppState>>, session_id: 
 
     spawn(async move {
         match eval.recv::<String>().await {
-            Ok(text) => send_terminal_text(state, session_id, &text),
+            Ok(text) => send_terminal_text(state, session_id, exec_id, &text),
             Err(error) => tracing::warn!("终端粘贴读取失败: {}", error),
         }
     });
 }
 
-fn send_terminal_text(state: Arc<Mutex<AppState>>, session_id: SessionId, text: &str) {
+fn send_terminal_text(
+    state: Arc<Mutex<AppState>>,
+    session_id: SessionId,
+    exec_id: Option<ExecId>,
+    text: &str,
+) {
     let data = terminal_paste_input(text);
     if data.is_empty() {
         return;
     }
 
     if let Ok(mut app_state) = state.lock() {
-        app_state.send_terminal_input(session_id, data);
+        if let Some(exec_id) = exec_id {
+            app_state.send_container_terminal_input(session_id, exec_id, data);
+        } else {
+            app_state.send_terminal_input(session_id, data);
+        }
     }
 }
 

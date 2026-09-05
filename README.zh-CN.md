@@ -13,8 +13,8 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
   以及 Android / iOS 的 `aarch64` 移动产物。不构建 32 位产物。
 - **移动端界面：** Android 与 iOS 的 WebView 内容采用沉浸式布局，页面通过安全区适配
   避免被状态栏和导航栏遮挡。
-- **核心引擎：** `kt-core` 中实现纯 Rust SSH 客户端、终端网格、SFTP 任务和远端监控，
-  不依赖 UI。
+- **核心引擎：** `kt-core` 中实现纯 Rust SSH 客户端、终端网格、SFTP 任务、远端监控和
+  只读运维查询，不依赖 UI。
 - **界面：** 当前稳定版 Dioxus desktop/mobile，桌面系统窗口或移动 WebView、响应式连接/SFTP
   区域、终端工作区、监控横条、状态栏、弹窗与设置面板。
 - **验证：** workspace 每个 crate 都有单元测试或集成测试覆盖；clippy 以
@@ -35,6 +35,9 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
   以及通过本地编辑器编辑远端文件后回传。
 - 编辑器设置：默认编辑器选择和右键“打开方式”条目。
 - 远端 CPU、内存、磁盘、网络、负载、运行时长和延迟监控。
+- 只读远端运维中心（Linux/WSL Linux）：系统服务、进程、网络连接、Docker 容器和指标详情。
+  每次查询使用独立 SSH exec 通道，仅使用当前 SSH 用户权限。Docker 列表中的容器可打开
+  独立 SSH PTY，在容器内运行 `/bin/sh`，输入、尺寸、滚动和关闭状态与宿主终端隔离。
 - 浅色/深色主题与中文/英文界面语言设置。
 - 通过 WebDAV 或一次性局域网分享同步非机密配置；密码保险库、保险库密钥和
   `known_hosts.toml` 永不进入同步载荷。
@@ -52,6 +55,10 @@ KitonyTerms 是一个用 **Rust** 与 [Dioxus](https://dioxuslabs.com/)
 - 当前不上传 TestFlight 或 App Store；iOS 后续覆盖更新取决于用户自己的重签配置，
   项目 CI 不保证更新连续性。
 - headless 客户端仅作为 `kt-core` 示例用于调试核心管线，不是主要产品入口。
+- 运维中心的只读查询目前仅支持 Linux/WSL Linux，不执行 `sudo`，也不执行远端写操作。
+  Docker 容器终端是运维中心唯一的交互式远端写入例外，仍使用当前 SSH 用户权限，并且只允许
+  固定的 `docker exec -it <id> /bin/sh` 命令。当前 SSH 用户无权访问、命令缺失或 systemd
+  不可用时，会明确显示查询失败；只读查询暂未提供用户主动取消按钮。
 
 ## 快速开始
 
@@ -119,6 +126,12 @@ cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
 ```
 
+在桌面开发机上预览手机 Shell，可启用仅用于开发的特性，并把窗口短边缩到 600 CSS 像素以下：
+
+```bash
+cargo run -p kt-app --features phone-preview
+```
+
 在 UI 中，从侧栏创建连接，选择认证方式后连接；如需复用连接，可保存会话。
 保存的密码和私钥口令会进入加密保险库，不会写入 `config.toml`。
 
@@ -138,11 +151,13 @@ kt-app
 
 kt-ui
   Dioxus 组件、AppState/Store 桥接、终端工作区、SFTP 侧栏、
-  监控 UI、弹窗、设置、主机密钥/认证提示
+  监控 UI、Operations 工具轨/抽屉、容器终端面板、弹窗、设置、
+  主机密钥/认证提示
 
 kt-core
   SessionManager、russh 连接/认证、PTY shell、终端引擎、
-  SFTP worker、远端监控、UI <-> core 消息协议
+  SFTP worker、远端监控、allowlist 运维查询、独立容器 PTY runner、
+  UI <-> core 消息协议
 
 kt-config
   配置路径、TOML 模型、会话、应用设置、known_hosts、ssh_config 合并
@@ -192,8 +207,10 @@ UI 状态流转及纯 UI 逻辑。测试数会随覆盖持续增长，因此 REA
 
 核心集成测试
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
-会在回环地址启动真实的进程内 `russh` 服务端，验证完整路径：
-连接、密码认证、PTY、shell 数据、`TermEngine` 和 `GridSnapshot`。
+会在回环地址启动真实的进程内 `russh` 服务端，验证连接、密码认证、宿主 PTY、shell 数据、
+`TermEngine` 和 `GridSnapshot`，以及独立 allowlist exec 查询、stderr 隔离、容器 PTY 输入/尺寸/
+滚动/关闭和恶意容器 ID 拒绝。协议 Debug 测试确保远端 payload 不会写入日志。当前测试尚未覆盖
+用户主动取消控件或真机 GBoard/IME。
 
 ## 发布自动化
 

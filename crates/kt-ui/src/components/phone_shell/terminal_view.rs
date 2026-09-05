@@ -55,6 +55,7 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
                         show_timestamps: settings().show_timestamps,
                         language,
                         split_mode,
+                        exec_id: None,
                         // 手机屏幕放不下两个终端，不提供分屏入口。
                         allow_split: false,
                     }

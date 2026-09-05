@@ -1,6 +1,7 @@
 //! UI 多语言文案集中入口。
 
 use kt_config::AppLanguage;
+use kt_core::OperationsErrorKind;
 
 mod en;
 mod zh_cn;
@@ -33,7 +34,120 @@ pub struct Texts {
     pub dialog: DialogText,
     pub sftp: SftpText,
     pub monitor: MonitorText,
+    pub operations: OperationsText,
     pub phone: PhoneText,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OperationsText {
+    pub tool_docker: &'static str,
+    pub tool_services: &'static str,
+    pub tool_processes: &'static str,
+    pub tool_network: &'static str,
+    pub tool_metrics: &'static str,
+    pub refresh: &'static str,
+    pub close: &'static str,
+    pub no_successful_snapshot: &'static str,
+    pub refreshing: &'static str,
+    pub process_owner_unavailable: &'static str,
+    pub process_id: &'static str,
+    pub parent_process_id: &'static str,
+    pub user_id: &'static str,
+    pub unknown_image: &'static str,
+    pub loading_title: &'static str,
+    pub loading_hint: &'static str,
+    pub empty_title: &'static str,
+    pub empty_hint: &'static str,
+    pub system: &'static str,
+    pub host: &'static str,
+    pub distribution: &'static str,
+    pub architecture: &'static str,
+    pub uptime: &'static str,
+    pub cpu: &'static str,
+    pub load: &'static str,
+    pub one_minute: &'static str,
+    pub memory: &'static str,
+    pub ram: &'static str,
+    pub swap: &'static str,
+    pub network: &'static str,
+    pub disk: &'static str,
+    pub show_virtual_interfaces: &'static str,
+    pub metrics_loading: &'static str,
+    pub metrics_snapshot_unavailable: &'static str,
+    pub metrics_error: &'static str,
+    pub container_open: &'static str,
+    pub container_close: &'static str,
+    pub container_closed: &'static str,
+    pub container_starting: &'static str,
+    pub container_terminal_hint: &'static str,
+    pub container_input_unavailable: &'static str,
+    pub container_error: &'static str,
+    pub error_command_missing: &'static str,
+    pub error_unsupported_backend: &'static str,
+    pub error_permission_denied: &'static str,
+    pub error_busy: &'static str,
+    pub error_timeout: &'static str,
+    pub error_output_limit: &'static str,
+    pub error_parse_failed: &'static str,
+    pub error_disconnected: &'static str,
+    pub error_command_failed: &'static str,
+}
+
+pub fn operations_result_count_message(language: AppLanguage, count: usize) -> String {
+    match language {
+        AppLanguage::Chinese => format!("{count} 项"),
+        AppLanguage::English => {
+            let noun = if count == 1 { "item" } else { "items" };
+            format!("{count} {noun}")
+        }
+    }
+}
+
+pub fn operations_updated_message(language: AppLanguage, elapsed_secs: u64) -> String {
+    match language {
+        AppLanguage::Chinese if elapsed_secs == 0 => "刚刚更新".to_string(),
+        AppLanguage::Chinese if elapsed_secs < 60 => format!("{elapsed_secs} 秒前更新"),
+        AppLanguage::Chinese => format!("{} 分钟前更新", elapsed_secs / 60),
+        AppLanguage::English if elapsed_secs == 0 => "Updated just now".to_string(),
+        AppLanguage::English if elapsed_secs < 60 => {
+            let noun = if elapsed_secs == 1 {
+                "second"
+            } else {
+                "seconds"
+            };
+            format!("Updated {} {noun} ago", elapsed_secs)
+        }
+        AppLanguage::English => {
+            let minutes = elapsed_secs / 60;
+            let noun = if minutes == 1 { "minute" } else { "minutes" };
+            format!("Updated {minutes} {noun} ago")
+        }
+    }
+}
+
+pub fn operations_cpu_summary(language: AppLanguage, cpu_percent: f32, cpu_cores: u32) -> String {
+    match language {
+        AppLanguage::Chinese => format!("平均 {cpu_percent:.1}% · {cpu_cores} 核"),
+        AppLanguage::English => {
+            let noun = if cpu_cores == 1 { "core" } else { "cores" };
+            format!("Average {cpu_percent:.1}% · {cpu_cores} {noun}")
+        }
+    }
+}
+
+pub fn operations_error_message(language: AppLanguage, kind: OperationsErrorKind) -> &'static str {
+    let t = texts(language).operations;
+    match kind {
+        OperationsErrorKind::CommandMissing => t.error_command_missing,
+        OperationsErrorKind::UnsupportedBackend => t.error_unsupported_backend,
+        OperationsErrorKind::PermissionDenied => t.error_permission_denied,
+        OperationsErrorKind::Busy => t.error_busy,
+        OperationsErrorKind::Timeout => t.error_timeout,
+        OperationsErrorKind::OutputLimitExceeded => t.error_output_limit,
+        OperationsErrorKind::ParseFailed => t.error_parse_failed,
+        OperationsErrorKind::Disconnected => t.error_disconnected,
+        OperationsErrorKind::CommandFailed => t.error_command_failed,
+    }
 }
 
 /// 手机端专用文案。桌面端不渲染 [`crate::components::phone_shell`]，这些文案只在
@@ -294,6 +408,7 @@ pub struct MonitorText {
     pub system_monitor: &'static str,
     pub close: &'static str,
     pub error_prefix: &'static str,
+    pub unavailable: &'static str,
     pub core_unit: &'static str,
     pub latency: &'static str,
     pub memory: &'static str,

@@ -15,8 +15,8 @@ and mobile UIs are rendered through native WebView stacks.
   artifacts are produced.
 - **Mobile UI:** edge-to-edge WebView content with safe-area-aware layouts on
   Android and iOS.
-- **Core engine:** pure-Rust SSH client, terminal grid, SFTP task, and remote
-  monitor in `kt-core`, with no UI dependency.
+- **Core engine:** pure-Rust SSH client, terminal grid, SFTP task, remote
+  monitor, and read-only operations queries in `kt-core`, with no UI dependency.
 - **UI:** current stable Dioxus desktop/mobile, native desktop window or mobile WebView,
   responsive connection/SFTP area, terminal workbench, monitor strip, status
   bar, dialogs, and settings.
@@ -43,6 +43,11 @@ and mobile UIs are rendered through native WebView stacks.
   editors.
 - Editor settings for default editor selection and "Open With" entries.
 - Remote CPU, memory, disk, network, load, uptime, and latency monitoring.
+- Read-only remote operations center for Linux/WSL Linux: system services,
+  processes, network connections, Docker containers, and detailed metrics. Each
+  query uses an isolated SSH exec channel and the current SSH user's permissions.
+  A Docker row can open an independent SSH PTY running `/bin/sh` inside the
+  container, with its own terminal state and input/resize/scroll lifecycle.
 - Light/dark theme and Chinese/English UI language settings.
 - Non-secret configuration synchronization through WebDAV or a one-time local
   network share. Password vaults, vault keys, and `known_hosts.toml` are never
@@ -65,6 +70,12 @@ and mobile UIs are rendered through native WebView stacks.
   continuity depends on the user's re-signing setup, not on this CI pipeline.
 - The headless client exists as a `kt-core` example for debugging the core
   pipeline; it is not the main product surface.
+- Read-only operations queries currently target Linux/WSL Linux, never invoke
+  `sudo`, and do not perform remote writes. The Docker container terminal is the
+  operations center's only interactive remote-write exception; it still uses
+  the current SSH user's permissions and a fixed `docker exec -it <id> /bin/sh`
+  command. Missing commands, permissions, or systemd are reported as query
+  failures, and read-only queries currently have no user-cancel button.
 
 ## Quick Start
 
@@ -140,6 +151,13 @@ cargo run -p kt-app -- --gui
 cargo run -p kt-app -- --help
 ```
 
+To preview the phone Shell on a desktop window, enable the development-only
+feature and resize the window below the 600 CSS-pixel short-side threshold:
+
+```bash
+cargo run -p kt-app --features phone-preview
+```
+
 In the UI, create a connection from the sidebar, choose authentication options,
 connect, then save the session if you want it persisted. Saved passwords and key
 passphrases go into the encrypted vault, not into `config.toml`.
@@ -163,11 +181,13 @@ kt-app
 
 kt-ui
   Dioxus components, AppState/Store bridge, terminal workbench, SFTP sidebar,
-  monitor UI, dialogs, settings, host-key/auth prompts
+  monitor UI, Operations rail/drawer, container terminal panel, dialogs,
+  settings, host-key/auth prompts
 
 kt-core
   SessionManager, russh connection/auth, PTY shell, terminal engine,
-  SFTP worker, remote monitor, UI <-> core message protocol
+  SFTP worker, remote monitor, allowlisted operations queries, isolated container
+  PTY runner, UI <-> core message protocol
 
 kt-config
   Config paths, TOML model, sessions, app settings, known_hosts, ssh_config merge
@@ -220,10 +240,14 @@ storage, SSH/terminal/SFTP core behavior, UI state transitions, and pure UI
 logic. Counts are intentionally not listed here because they change whenever
 coverage grows.
 
-The core integration test at
+The core integration tests at
 [`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
-starts a real in-process `russh` server on loopback and verifies the full path:
-connect, password auth, PTY, shell data, `TermEngine`, and `GridSnapshot`.
+start a real in-process `russh` server on loopback and verify the full path:
+connect, password auth, host PTY, shell data, `TermEngine`, and `GridSnapshot`,
+plus isolated allowlisted exec queries, stderr isolation, container PTY input/
+resize/scroll/close, and malicious container-ID rejection. Protocol debug tests
+ensure remote payloads are not written to logs. The current suite does not yet
+exercise a user-cancel control or GBoard/IME on a physical phone.
 
 ## Release Automation
 
