@@ -55,7 +55,7 @@ pub struct ActiveMonitorView {
     pub has_sample: bool,
 }
 
-pub type AuthChallengeView = (SessionId, String, AuthChallenge);
+pub type AuthChallengeView = (SessionId, String, u64, AuthChallenge);
 
 /// 按 group 字段分组，无 group 的归入默认组名，并保留空分组。
 pub fn group_profiles(
@@ -100,6 +100,7 @@ pub fn session_state_from_profile(
         connection_error: None,
         host_key_pending: false,
         auth_challenge: None,
+        auth_challenge_generation: None,
         sftp_path: ".".to_string(),
         sftp_entries: Vec::new(),
         sftp_loading: false,
@@ -107,6 +108,7 @@ pub fn session_state_from_profile(
         sftp_list_request_id: None,
         sftp_completions: std::collections::VecDeque::new(),
         sftp_failures: std::collections::VecDeque::new(),
+        sftp_pending_requests: std::collections::HashSet::new(),
         sftp_progress: None,
         terminal_cwd: None,
         terminal_cwd_inference_target: None,
@@ -122,6 +124,8 @@ pub fn session_state_from_profile(
         monitor: None,
         monitor_loading: false,
         monitor_error: None,
+        operations: std::collections::HashMap::new(),
+        container_terminal: None,
     }
 }
 
@@ -206,9 +210,14 @@ pub fn active_monitor_view(active: Option<&SessionState>) -> Option<ActiveMonito
 
 pub fn auth_challenge_view(sessions: &[SessionState]) -> Option<AuthChallengeView> {
     sessions.iter().find_map(|sess| {
-        sess.auth_challenge
-            .clone()
-            .map(|challenge| (sess.id, sess.title.clone(), challenge))
+        sess.auth_challenge.clone().map(|challenge| {
+            (
+                sess.id,
+                sess.title.clone(),
+                sess.auth_challenge_generation.unwrap_or_default(),
+                challenge,
+            )
+        })
     })
 }
 

@@ -468,10 +468,21 @@ impl AppLanguage {
 /// Visual / behavioral app settings.
 pub const DEFAULT_DARK_THEME: &str = "default-dark";
 pub const DEFAULT_LIGHT_THEME: &str = "default-light";
+pub const DEFAULT_SYSTEM_THEME: &str = "system";
 
 pub fn normalize_theme_name(theme: &str) -> &'static str {
     match theme.trim() {
         DEFAULT_LIGHT_THEME | "light" => DEFAULT_LIGHT_THEME,
+        DEFAULT_SYSTEM_THEME | "system-default" | "auto" => DEFAULT_SYSTEM_THEME,
+        _ => DEFAULT_DARK_THEME,
+    }
+}
+
+/// Resolve the persisted theme preference to the concrete theme used by the UI.
+pub fn resolve_theme_name(theme: &str, system_is_light: bool) -> &'static str {
+    match normalize_theme_name(theme) {
+        DEFAULT_LIGHT_THEME => DEFAULT_LIGHT_THEME,
+        DEFAULT_SYSTEM_THEME if system_is_light => DEFAULT_LIGHT_THEME,
         _ => DEFAULT_DARK_THEME,
     }
 }
@@ -497,6 +508,9 @@ pub struct AppSettings {
     pub font_size: f32,
     /// Named color theme.
     pub theme: String,
+    /// Accent color used for focus, selection and operation controls.
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
     /// Scrollback buffer size in lines.
     pub scrollback_lines: usize,
     /// Cursor style.
@@ -532,6 +546,7 @@ impl Default for AppSettings {
             font_family: default_mono_font().to_string(),
             font_size: 13.0,
             theme: DEFAULT_DARK_THEME.to_string(),
+            accent_color: default_accent_color(),
             scrollback_lines: 10_000,
             cursor_style: CursorStyle::Block,
             use_ssh_config: true,
@@ -553,6 +568,10 @@ impl AppSettings {
     pub fn is_light_theme(&self) -> bool {
         self.normalized_theme() == DEFAULT_LIGHT_THEME
     }
+
+    pub fn follows_system_theme(&self) -> bool {
+        self.normalized_theme() == DEFAULT_SYSTEM_THEME
+    }
 }
 
 fn default_trigger_highlights() -> Vec<String> {
@@ -560,6 +579,10 @@ fn default_trigger_highlights() -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+fn default_accent_color() -> String {
+    "#5aa7ff".to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -962,6 +985,11 @@ use_ssh_config = true
         assert!(settings.editors.is_empty());
         assert!(!settings.show_line_numbers);
         assert!(!settings.show_timestamps);
+        assert_eq!(settings.accent_color, "#5aa7ff");
+        // 旧配置中的密度字段已不再生效，仍可读取；保存时不会重新写回。
+        let legacy_toml = format!("{toml}density = \"comfortable\"\n");
+        let legacy: AppSettings = toml::from_str(&legacy_toml).unwrap();
+        assert!(!toml::to_string(&legacy).unwrap().contains("density"));
     }
 
     #[test]
@@ -976,6 +1004,36 @@ use_ssh_config = true
 
         settings.theme = "unknown-theme".to_string();
         assert_eq!(settings.normalized_theme(), DEFAULT_DARK_THEME);
+
+        settings.theme = DEFAULT_SYSTEM_THEME.to_string();
+        assert_eq!(settings.normalized_theme(), DEFAULT_SYSTEM_THEME);
+        assert!(settings.follows_system_theme());
+        assert_eq!(
+            resolve_theme_name(&settings.theme, true),
+            DEFAULT_LIGHT_THEME
+        );
+        assert_eq!(
+            resolve_theme_name(&settings.theme, false),
+            DEFAULT_DARK_THEME
+        );
+        assert_eq!(
+            resolve_theme_name("system-default", true),
+            DEFAULT_LIGHT_THEME
+        );
+    }
+
+    #[test]
+    fn app_settings_system_theme_and_font_roundtrip() {
+        let settings = AppSettings {
+            theme: DEFAULT_SYSTEM_THEME.to_string(),
+            font_family: "Noto Sans Mono".to_string(),
+            ..AppSettings::default()
+        };
+
+        let encoded = toml::to_string(&settings).unwrap();
+        let decoded: AppSettings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.theme, DEFAULT_SYSTEM_THEME);
+        assert_eq!(decoded.font_family, "Noto Sans Mono");
     }
 
     #[test]

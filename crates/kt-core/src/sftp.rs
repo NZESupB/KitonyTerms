@@ -14,7 +14,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::session::{FromCore, SessionId, SftpEntry, SftpOp, SftpRequest, SftpRequestId};
+use crate::session::{
+    FromCore, SessionEventSender, SessionId, SftpBatchEntry, SftpEntry, SftpOp, SftpRequest,
+    SftpRequestId,
+};
 use crate::ssh::SshConnectionGuard;
 
 /// 传输分块大小;同时作为进度上报的步长基准。
@@ -26,32 +29,43 @@ const PROGRESS_STEP: u64 = 256 * 1024;
 /// 单次快速 SFTP 操作超时,避免 UI 无限 loading。
 /// Timeout for quick SFTP operations so the UI never spins forever.
 const QUICK_OP_TIMEOUT: Duration = Duration::from_secs(12);
+/// 下载/上传允许较长时间传输，但仍需有总上限，避免远端半开连接永久占用任务。
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// 目录递归上传允许多个文件顺序传输。
+const BATCH_TRANSFER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// 事件队列背压时放弃当前事件，不能反向阻塞 SFTP/SSH 清理。
+const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCAL_TEMP_CREATE_ATTEMPTS: usize = 16;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// SFTP 子任务主循环。`rx` 关闭(会话结束)时退出,`session` 随之 drop 关闭通道。
 /// Main loop. Exits when `rx` closes (session ended); dropping `session` closes
 /// the channel.
-pub async fn sftp_task(
+pub(crate) async fn sftp_task(
     id: SessionId,
     session: SftpSession,
     _connection_guard: Option<SshConnectionGuard>,
     mut rx: mpsc::UnboundedReceiver<(SftpRequestId, SftpRequest)>,
-    out: mpsc::Sender<FromCore>,
+    out: SessionEventSender,
 ) {
     while let Some((request_id, req)) = rx.recv().await {
         if let Err(message) = handle(&session, id, request_id, &req, &out).await {
-            let _ = out
-                .send(FromCore::SftpError {
+            if !send_sftp_event(
+                &out,
+                FromCore::SftpError {
                     id,
                     request_id,
                     message,
-                })
-                .await;
+                },
+            )
+            .await
+            {
+                break;
+            }
         }
     }
     let _ = session.close().await;
-    let _ = out.send(FromCore::SftpStopped { id }).await;
+    let _ = send_sftp_event(&out, FromCore::SftpStopped { id }).await;
 }
 
 /// 处理单个请求。返回 `Err(message)` 时由调用方上报 [`FromCore::SftpError`]。
@@ -61,7 +75,30 @@ async fn handle(
     id: SessionId,
     request_id: SftpRequestId,
     req: &SftpRequest,
-    out: &mpsc::Sender<FromCore>,
+    out: &SessionEventSender,
+) -> Result<(), String> {
+    let timeout = match req {
+        SftpRequest::Download { .. } | SftpRequest::Upload { .. } => TRANSFER_TIMEOUT,
+        SftpRequest::UploadBatch { .. } => BATCH_TRANSFER_TIMEOUT,
+        _ => QUICK_OP_TIMEOUT,
+    };
+    let path = request_path(req);
+    match tokio::time::timeout(timeout, handle_inner(session, id, request_id, req, out)).await {
+        Ok(result) => result,
+        Err(_) => Err(timeout_message_with_seconds(
+            "SFTP 操作",
+            path,
+            timeout.as_secs(),
+        )),
+    }
+}
+
+async fn handle_inner(
+    session: &SftpSession,
+    id: SessionId,
+    request_id: SftpRequestId,
+    req: &SftpRequest,
+    out: &SessionEventSender,
 ) -> Result<(), String> {
     match req {
         SftpRequest::List { path } => {
@@ -116,14 +153,16 @@ async fn handle(
                     .cmp(&a.is_dir)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
-            let _ = out
-                .send(FromCore::SftpListing {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpListing {
                     id,
                     request_id,
                     path: abs,
                     entries,
-                })
-                .await;
+                },
+            )
+            .await;
             Ok(())
         }
 
@@ -135,78 +174,68 @@ async fn handle(
                 .map_err(|e| e.to_string())?;
             let total = src.metadata().await.ok().and_then(|m| m.size).unwrap_or(0);
             download_to_local(&mut src, local, id, request_id, &name, total, out).await?;
-            let _ = out
-                .send(FromCore::SftpDone {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
                     id,
                     request_id,
                     op: SftpOp::Download,
                     path: remote.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
             Ok(())
         }
 
         SftpRequest::Upload { local, remote } => {
-            let name = basename(remote);
-            let mut src = tokio::fs::File::open(local)
-                .await
-                .map_err(|e| e.to_string())?;
-            let total = src.metadata().await.map(|m| m.len()).unwrap_or(0);
-            // 先探测目标：目录直接拒绝；已存在的文件记录权限，提交后保持原权限不变。
-            let existing = session.metadata(remote.clone()).await.ok();
-            if existing.as_ref().is_some_and(|meta| meta.is_dir()) {
-                return Err(format!("上传目标 {remote} 是目录，无法覆盖"));
-            }
-            let existing_permissions = existing.as_ref().and_then(|meta| meta.permissions);
-            let target_exists = existing.is_some();
-
-            let temp_path = remote_temp_path(remote, &unique_temp_suffix());
-            let mut dst = session
-                .open_with_flags(
-                    temp_path.clone(),
-                    OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
-                )
-                .await
-                .map_err(|e| format!("创建远端临时文件 {temp_path} 失败：{e}"))?;
-            let transfer_result = async {
-                copy_with_progress(&mut src, &mut dst, id, request_id, &name, total, out).await?;
-                // 先关闭远端临时文件，确保服务器提交写入后再执行 rename。
-                dst.shutdown().await.map_err(|e| e.to_string())
-            }
-            .await;
-            drop(dst);
-
-            if let Err(error) = transfer_result {
-                return Err(cleanup_remote_temp(
-                    session,
-                    &temp_path,
-                    format!("上传 {remote} 失败：{error}"),
-                )
-                .await);
-            }
-
-            // 覆盖上传保持原文件权限（含可执行位）；失败只告警，不影响内容提交。
-            if let Some(permissions) = existing_permissions {
-                let mut attributes = FileAttributes::empty();
-                attributes.permissions = Some(permissions);
-                if let Err(error) = session.set_metadata(temp_path.clone(), attributes).await {
-                    tracing::warn!("保持 {remote} 原有权限失败: {error}");
-                }
-            }
-
-            if let Err(error) =
-                commit_uploaded_temp(session, &temp_path, remote, target_exists).await
-            {
-                return Err(cleanup_remote_temp(session, &temp_path, error).await);
-            }
-            let _ = out
-                .send(FromCore::SftpDone {
+            upload_file(session, id, request_id, local, remote, true, out).await?;
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
                     id,
                     request_id,
                     op: SftpOp::Upload,
                     path: remote.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
+            Ok(())
+        }
+
+        SftpRequest::UploadBatch {
+            entries,
+            target_dir,
+            overwrite_paths,
+        } => {
+            if entries.is_empty() {
+                return Err("上传批次为空".to_string());
+            }
+            for entry in entries {
+                if entry.is_dir {
+                    ensure_remote_directory(session, entry).await?;
+                } else {
+                    upload_file(
+                        session,
+                        id,
+                        request_id,
+                        &entry.local,
+                        &entry.remote,
+                        overwrite_paths.iter().any(|path| path == &entry.remote),
+                        out,
+                    )
+                    .await?;
+                }
+            }
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
+                    id,
+                    request_id,
+                    op: SftpOp::Upload,
+                    path: target_dir.clone(),
+                },
+            )
+            .await;
             Ok(())
         }
 
@@ -215,14 +244,16 @@ async fn handle(
                 .create_dir(path.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            let _ = out
-                .send(FromCore::SftpDone {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
                     id,
                     request_id,
                     op: SftpOp::Mkdir,
                     path: path.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
             Ok(())
         }
 
@@ -238,14 +269,16 @@ async fn handle(
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            let _ = out
-                .send(FromCore::SftpDone {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
                     id,
                     request_id,
                     op: SftpOp::Remove,
                     path: path.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
             Ok(())
         }
 
@@ -254,17 +287,113 @@ async fn handle(
                 .rename(from.clone(), to.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            let _ = out
-                .send(FromCore::SftpDone {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
                     id,
                     request_id,
                     op: SftpOp::Rename,
                     path: to.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
             Ok(())
         }
     }
+}
+
+/// 确保批次中的目录存在；已有目录合并，文件与目录同名则停止批次。
+async fn ensure_remote_directory(
+    session: &SftpSession,
+    entry: &SftpBatchEntry,
+) -> Result<(), String> {
+    let local_metadata = std::fs::symlink_metadata(&entry.local)
+        .map_err(|error| format!("读取本地目录 {} 失败：{error}", entry.local.display()))?;
+    if local_metadata.file_type().is_symlink() || !local_metadata.is_dir() {
+        return Err(format!("上传源 {} 不再是目录", entry.local.display()));
+    }
+    match session.metadata(entry.remote.clone()).await {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!("上传目录 {} 与远端文件冲突", entry.remote)),
+        Err(_) => session
+            .create_dir(entry.remote.clone())
+            .await
+            .map_err(|error| format!("创建远端目录 {} 失败：{error}", entry.remote)),
+    }
+}
+
+/// 将一个本地普通文件通过同目录临时文件安全提交到远端。
+async fn upload_file(
+    session: &SftpSession,
+    id: SessionId,
+    request_id: SftpRequestId,
+    local: &Path,
+    remote: &str,
+    overwrite: bool,
+    out: &SessionEventSender,
+) -> Result<(), String> {
+    let name = basename(remote);
+    let local_metadata = std::fs::symlink_metadata(local)
+        .map_err(|error| format!("读取本地条目 {} 失败：{error}", local.display()))?;
+    if local_metadata.file_type().is_symlink() {
+        return Err(format!("不支持上传符号链接：{}", local.display()));
+    }
+    if !local_metadata.is_file() {
+        return Err(format!("上传源 {} 不是普通文件", local.display()));
+    }
+    let mut src = tokio::fs::File::open(local)
+        .await
+        .map_err(|e| format!("读取本地文件 {} 失败：{e}", local.display()))?;
+    let total = src.metadata().await.map(|m| m.len()).unwrap_or(0);
+    // 先探测目标：目录直接拒绝；已存在文件仅在用户确认后覆盖。
+    let existing = session.metadata(remote.to_string()).await.ok();
+    if existing.as_ref().is_some_and(|meta| meta.is_dir()) {
+        return Err(format!("上传目标 {remote} 是目录，无法覆盖"));
+    }
+    if existing.is_some() && !overwrite {
+        return Err(format!("上传目标 {remote} 已存在，未确认覆盖"));
+    }
+    let existing_permissions = existing.as_ref().and_then(|meta| meta.permissions);
+    let target_exists = existing.is_some();
+
+    let temp_path = remote_temp_path(remote, &unique_temp_suffix());
+    let mut dst = session
+        .open_with_flags(
+            temp_path.clone(),
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .map_err(|e| format!("创建远端临时文件 {temp_path} 失败：{e}"))?;
+    let transfer_result = async {
+        copy_with_progress(&mut src, &mut dst, id, request_id, &name, total, out).await?;
+        // 先关闭远端临时文件，确保服务器提交写入后再执行 rename。
+        dst.shutdown().await.map_err(|e| e.to_string())
+    }
+    .await;
+    drop(dst);
+
+    if let Err(error) = transfer_result {
+        return Err(cleanup_remote_temp(
+            session,
+            &temp_path,
+            format!("上传 {remote} 失败：{error}"),
+        )
+        .await);
+    }
+
+    // 覆盖上传保持原文件权限（含可执行位）；失败只告警，不影响内容提交。
+    if let Some(permissions) = existing_permissions {
+        let mut attributes = FileAttributes::empty();
+        attributes.permissions = Some(permissions);
+        if let Err(error) = session.set_metadata(temp_path.clone(), attributes).await {
+            tracing::warn!("保持 {remote} 原有权限失败: {error}");
+        }
+    }
+
+    if let Err(error) = commit_uploaded_temp(session, &temp_path, remote, target_exists).await {
+        return Err(cleanup_remote_temp(session, &temp_path, error).await);
+    }
+    Ok(())
 }
 
 /// 提交上传所需的远端最小文件操作，便于按不同服务器的 rename 语义做单元测试。
@@ -339,7 +468,7 @@ async fn download_to_local<R>(
     request_id: SftpRequestId,
     name: &str,
     total: u64,
-    out: &mpsc::Sender<FromCore>,
+    out: &SessionEventSender,
 ) -> Result<(), String>
 where
     R: AsyncReadExt + Unpin,
@@ -489,7 +618,7 @@ async fn copy_with_progress<R, W>(
     request_id: SftpRequestId,
     name: &str,
     total: u64,
-    out: &mpsc::Sender<FromCore>,
+    out: &SessionEventSender,
 ) -> Result<(), String>
 where
     R: AsyncReadExt + Unpin,
@@ -507,27 +636,49 @@ where
         transferred += n as u64;
         if transferred - last_emit >= PROGRESS_STEP {
             last_emit = transferred;
-            let _ = out
-                .send(FromCore::SftpProgress {
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpProgress {
                     id,
                     request_id,
                     name: name.to_string(),
                     transferred,
                     total,
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
-    let _ = out
-        .send(FromCore::SftpProgress {
+    let _ = send_sftp_event(
+        out,
+        FromCore::SftpProgress {
             id,
             request_id,
             name: name.to_string(),
             transferred,
             total,
-        })
-        .await;
+        },
+    )
+    .await;
     Ok(())
+}
+
+async fn send_sftp_event(out: &SessionEventSender, event: FromCore) -> bool {
+    match tokio::time::timeout(EVENT_SEND_TIMEOUT, out.send(event)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
+fn request_path(req: &SftpRequest) -> &str {
+    match req {
+        SftpRequest::List { path }
+        | SftpRequest::Mkdir { path }
+        | SftpRequest::Remove { path, .. } => path,
+        SftpRequest::Download { remote, .. } | SftpRequest::Upload { remote, .. } => remote,
+        SftpRequest::UploadBatch { target_dir, .. } => target_dir,
+        SftpRequest::Rename { to, .. } => to,
+    }
 }
 
 /// 取远端 POSIX 路径的末段作为显示名。
@@ -537,15 +688,20 @@ fn basename(path: &str) -> String {
 }
 
 fn timeout_message(operation: &str, path: &str) -> String {
+    timeout_message_with_seconds(operation, path, QUICK_OP_TIMEOUT.as_secs())
+}
+
+fn timeout_message_with_seconds(operation: &str, path: &str, seconds: u64) -> String {
     format!(
         "{operation} {path} 超时({} 秒)，远端 SFTP 子系统可能无响应",
-        QUICK_OP_TIMEOUT.as_secs()
+        seconds
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionEvent;
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, ReadBuf};
@@ -776,6 +932,7 @@ mod tests {
         let target = directory.join("target.txt");
         tokio::fs::write(&target, b"original").await.unwrap();
         let (out_tx, _out_rx) = mpsc::channel(4);
+        let out = SessionEventSender::new(SessionId(1), 0, out_tx);
         let mut src = FailingReader {
             emitted_partial: false,
         };
@@ -787,7 +944,7 @@ mod tests {
             SftpRequestId(2),
             "target.txt",
             100,
-            &out_tx,
+            &out,
         )
         .await
         .unwrap_err();
@@ -809,6 +966,7 @@ mod tests {
         tokio::fs::create_dir(&directory).await.unwrap();
         let target = directory.join("target.txt");
         let (out_tx, _out_rx) = mpsc::channel(4);
+        let out = SessionEventSender::new(SessionId(1), 0, out_tx);
         let mut src = std::io::Cursor::new(b"complete".to_vec());
 
         download_to_local(
@@ -818,7 +976,7 @@ mod tests {
             SftpRequestId(3),
             "target.txt",
             8,
-            &out_tx,
+            &out,
         )
         .await
         .unwrap();
@@ -841,6 +999,7 @@ mod tests {
         let target = directory.join("target.txt");
         tokio::fs::write(&target, b"original").await.unwrap();
         let (out_tx, _out_rx) = mpsc::channel(4);
+        let out = SessionEventSender::new(SessionId(1), 0, out_tx);
         let mut src = std::io::Cursor::new(b"replacement".to_vec());
 
         download_to_local(
@@ -850,7 +1009,7 @@ mod tests {
             SftpRequestId(4),
             "target.txt",
             11,
-            &out_tx,
+            &out,
         )
         .await
         .unwrap();
@@ -864,6 +1023,7 @@ mod tests {
         let mut src = std::io::Cursor::new(b"hello".to_vec());
         let mut dst = tokio::io::sink();
         let (out_tx, mut out_rx) = mpsc::channel(4);
+        let out = SessionEventSender::new(SessionId(3), 0, out_tx);
 
         copy_with_progress(
             &mut src,
@@ -872,18 +1032,21 @@ mod tests {
             SftpRequestId(9),
             "hello.txt",
             5,
-            &out_tx,
+            &out,
         )
         .await
         .unwrap();
 
         assert!(matches!(
             out_rx.recv().await,
-            Some(FromCore::SftpProgress {
-                id: SessionId(3),
-                request_id: SftpRequestId(9),
-                transferred: 5,
-                total: 5,
+            Some(SessionEvent {
+                event: FromCore::SftpProgress {
+                    id: SessionId(3),
+                    request_id: SftpRequestId(9),
+                    transferred: 5,
+                    total: 5,
+                    ..
+                },
                 ..
             })
         ));

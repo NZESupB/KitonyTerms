@@ -553,6 +553,28 @@ pub fn detect_editors() -> Vec<EditorEntry> {
     found
 }
 
+/// 合并本机探测结果与用户已保存的编辑器，供文件管理的“打开方式”菜单使用。
+///
+/// 探测结果排在前面，让安装后即可用的编辑器直接出现；用户保存的自定义命令
+/// 追加到列表末尾。命令是实际执行身份，因此同一命令只保留一项。
+pub fn editor_menu_entries(
+    configured: &[EditorEntry],
+    detected: &[EditorEntry],
+) -> Vec<EditorEntry> {
+    let mut entries = Vec::with_capacity(detected.len() + configured.len());
+    for editor in detected.iter().chain(configured) {
+        if editor.command.trim().is_empty()
+            || entries
+                .iter()
+                .any(|entry: &EditorEntry| entry.command == editor.command)
+        {
+            continue;
+        }
+        entries.push(editor.clone());
+    }
+    entries
+}
+
 /// 清洗环境变量取值：去首尾空白，空串视为未设置。
 fn clean_env_editor(value: &str) -> Option<String> {
     let trimmed = value.trim();
@@ -706,6 +728,7 @@ mod tests {
             connection_error: None,
             host_key_pending: false,
             auth_challenge: None,
+            auth_challenge_generation: None,
             sftp_path: ".".to_string(),
             sftp_entries: Vec::<SftpEntry>::new(),
             sftp_loading: false,
@@ -713,6 +736,7 @@ mod tests {
             sftp_list_request_id: None,
             sftp_completions: std::collections::VecDeque::new(),
             sftp_failures: std::collections::VecDeque::new(),
+            sftp_pending_requests: std::collections::HashSet::new(),
             sftp_progress: None,
             terminal_cwd: None,
             terminal_cwd_inference_target: None,
@@ -728,6 +752,8 @@ mod tests {
             monitor: None,
             monitor_loading: false,
             monitor_error: None,
+            operations: std::collections::HashMap::new(),
+            container_terminal: None,
         }
     }
 
@@ -866,6 +892,31 @@ mod tests {
         let mut deduped = names.clone();
         deduped.dedup();
         assert_eq!(names, deduped, "编辑器显示名应去重");
+    }
+
+    #[test]
+    fn editor_menu_entries_includes_detected_and_configured_editors_once() {
+        let detected = vec![EditorEntry {
+            name: "Vim".to_string(),
+            command: "vim {file}".to_string(),
+        }];
+        let configured = vec![
+            EditorEntry {
+                name: "Vim (custom label)".to_string(),
+                command: "vim {file}".to_string(),
+            },
+            EditorEntry {
+                name: "Remote wrapper".to_string(),
+                command: "my-editor --wait {file}".to_string(),
+            },
+            EditorEntry {
+                name: "Empty".to_string(),
+                command: "  ".to_string(),
+            },
+        ];
+
+        let entries = editor_menu_entries(&configured, &detected);
+        assert_eq!(entries, vec![detected[0].clone(), configured[1].clone(),]);
     }
 
     #[test]

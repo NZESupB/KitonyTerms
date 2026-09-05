@@ -46,6 +46,14 @@ pub fn AuthChallengeDialog(
             };
             (dialog_t.auth_keyboard_title, body, prompts.clone())
         }
+        AuthChallenge::Sudo { prompt, .. } => (
+            dialog_t.auth_password_title,
+            prompt.clone(),
+            vec![AuthPrompt {
+                text: dialog_t.password.to_string(),
+                echo: false,
+            }],
+        ),
     };
     let mut answers = use_signal(|| vec![String::new(); prompts.len()]);
     let answer_values = answers();

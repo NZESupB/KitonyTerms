@@ -192,6 +192,10 @@ pub fn ConnectionDialog(
                 onclick: move |evt| {
                     evt.stop_propagation();
                 },
+                oncontextmenu: move |evt| {
+                    // 让输入框保留系统复制/粘贴菜单，同时避免触发工作台的全局菜单处理。
+                    evt.stop_propagation();
+                },
 
                 div {
                     class: "settings-head",

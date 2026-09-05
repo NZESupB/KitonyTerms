@@ -6,11 +6,12 @@
 
 use dioxus::prelude::*;
 use kt_config::{
-    normalize_theme_name, AppLanguage, AppSettings, EditorEntry, DEFAULT_DARK_THEME,
-    DEFAULT_LIGHT_THEME,
+    normalize_theme_name, AppLanguage, AppSettings, CursorStyle, EditorEntry, DEFAULT_DARK_THEME,
+    DEFAULT_LIGHT_THEME, DEFAULT_SYSTEM_THEME,
 };
 
 use crate::components::external_edit::{detect_editors, env_editor_command};
+use crate::components::fonts::{css_font_family, detect_system_fonts};
 use crate::components::icons::Icon;
 use crate::components::qr::QrCodeView;
 use crate::i18n::{texts, AppText};
@@ -123,6 +124,7 @@ pub fn SettingsPanel(
 ) -> Element {
     // hooks 必须在 early return 之前初始化，避免随 show 抖动改变 hooks 顺序。
     let detected_editors = use_signal(detect_editors);
+    let detected_fonts = use_signal(detect_system_fonts);
     let env_editor = use_signal(env_editor_command);
     let new_editor_command = use_signal(String::new);
     let sync_url = use_signal(String::new);
@@ -182,6 +184,7 @@ pub fn SettingsPanel(
         scan_supported,
         on_sync_action,
         detected_editors,
+        detected_fonts,
         env_editor,
         new_editor_command,
         sync_url,
@@ -296,6 +299,7 @@ struct SettingsBodyProps {
     scan_supported: bool,
     on_sync_action: EventHandler<SyncAction>,
     detected_editors: Signal<Vec<EditorEntry>>,
+    detected_fonts: Signal<Vec<String>>,
     env_editor: Signal<Option<String>>,
     new_editor_command: Signal<String>,
     sync_url: Signal<String>,
@@ -321,7 +325,10 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
     let language = props.language;
     let on_language_change = props.on_language_change;
     let on_theme_change = props.on_theme_change;
+    let on_settings_change = props.on_settings_change;
     let selected_theme = normalize_theme_name(&props.settings.theme);
+    let accent_settings = props.settings.clone();
+    let ssh_config_settings = props.settings.clone();
 
     rsx! {
         div {
@@ -365,9 +372,63 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
                     onclick: move |_| on_theme_change.call(DEFAULT_LIGHT_THEME.to_string()),
                     "{t.theme_light}"
                 }
+                button {
+                    class: if selected_theme == DEFAULT_SYSTEM_THEME { "is-selected" } else { "" },
+                    onclick: move |_| on_theme_change.call(DEFAULT_SYSTEM_THEME.to_string()),
+                    "{t.theme_system}"
+                }
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div {
+                class: "settings-row-copy",
+                strong { "{t.accent_color}" }
+                p { "{t.accent_color_hint}" }
+            }
+            input {
+                class: "settings-color-input",
+                r#type: "color",
+                value: "{accent_settings.accent_color}",
+                onchange: move |evt: Event<FormData>| {
+                    let value = evt.value();
+                    if is_valid_accent_color(&value) {
+                        let mut next = accent_settings.clone();
+                        next.accent_color = value;
+                        on_settings_change.call(next);
+                    }
+                },
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div {
+                class: "settings-row-copy",
+                strong { "{t.use_ssh_config}" }
+                p { "{t.use_ssh_config_hint}" }
+            }
+            label {
+                class: "settings-toggle",
+                input {
+                    r#type: "checkbox",
+                    checked: ssh_config_settings.use_ssh_config,
+                    onchange: move |evt: Event<FormData>| {
+                        let mut next = ssh_config_settings.clone();
+                        next.use_ssh_config = evt.checked();
+                        on_settings_change.call(next);
+                    },
+                }
             }
         }
     }
+}
+
+fn is_valid_accent_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[component]
@@ -377,6 +438,12 @@ fn TerminalSection(props: SettingsBodyProps) -> Element {
     let on_settings_change = props.on_settings_change;
     let line_numbers_settings = settings.clone();
     let timestamps_settings = settings.clone();
+    let font_settings = settings.clone();
+    let size_settings = settings.clone();
+    let scrollback_settings = settings.clone();
+    let cursor_settings = settings.clone();
+    let font_options = font_options(&settings.font_family, &(props.detected_fonts)());
+    let preview_font_family = css_font_family(&settings.font_family);
 
     rsx! {
         div {
@@ -416,7 +483,111 @@ fn TerminalSection(props: SettingsBodyProps) -> Element {
                 }
             }
         }
+
+        div {
+            class: "settings-row",
+            div {
+                class: "settings-row-copy",
+                strong { "{t.terminal_font}" }
+                p { "{t.terminal_font_hint}" }
+            }
+            div {
+                class: "settings-control-stack",
+                select {
+                    class: "settings-text-input settings-font-select",
+                    value: "{settings.font_family}",
+                    onchange: move |evt| {
+                        let value = evt.value().replace(['\n', '\r'], "");
+                        if value.len() <= 128 {
+                            let mut next = font_settings.clone();
+                            next.font_family = value;
+                            on_settings_change.call(next);
+                        }
+                    },
+                    for font in font_options.iter() {
+                        option {
+                            value: "{font}",
+                            selected: settings.font_family == *font,
+                            "{font}"
+                        }
+                    }
+                }
+                div {
+                    class: "terminal-font-preview",
+                    style: "font-family: {preview_font_family}; font-size: {settings.font_size:.0}px;",
+                    aria_label: "{t.terminal_font_preview}",
+                    pre {
+                        "user@host:~$ ls -la\n-rw-r--r--  1 user  staff  1.2K README.md\n✓ Connected · warning: retrying"
+                    }
+                }
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div { class: "settings-row-copy", strong { "{t.terminal_font_size}" } }
+            input {
+                class: "settings-number-input",
+                r#type: "number",
+                min: "9",
+                max: "32",
+                step: "1",
+                value: "{settings.font_size:.0}",
+                oninput: move |evt: Event<FormData>| {
+                    if let Ok(value) = evt.value().parse::<f32>() {
+                        let mut next = size_settings.clone();
+                        next.font_size = value.clamp(9.0, 32.0);
+                        on_settings_change.call(next);
+                    }
+                },
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div { class: "settings-row-copy", strong { "{t.terminal_scrollback}" } }
+            input {
+                class: "settings-number-input",
+                r#type: "number",
+                min: "1000",
+                max: "100000",
+                step: "1000",
+                value: "{settings.scrollback_lines}",
+                oninput: move |evt: Event<FormData>| {
+                    if let Ok(value) = evt.value().parse::<usize>() {
+                        let mut next = scrollback_settings.clone();
+                        next.scrollback_lines = value.clamp(1000, 100000);
+                        on_settings_change.call(next);
+                    }
+                },
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div { class: "settings-row-copy", strong { "{t.terminal_cursor}" } }
+            select {
+                class: "settings-text-input settings-select-compact",
+                value: match settings.cursor_style { CursorStyle::Block => "block", CursorStyle::Bar => "bar", CursorStyle::Underline => "underline" },
+                onchange: move |evt: Event<FormData>| {
+                    let mut next = cursor_settings.clone();
+                    next.cursor_style = match evt.value().as_str() { "bar" => CursorStyle::Bar, "underline" => CursorStyle::Underline, _ => CursorStyle::Block };
+                    on_settings_change.call(next);
+                },
+                option { value: "block", "{t.cursor_block}" }
+                option { value: "bar", "{t.cursor_bar}" }
+                option { value: "underline", "{t.cursor_underline}" }
+            }
+        }
     }
+}
+
+fn font_options(current: &str, detected: &[String]) -> Vec<String> {
+    let mut options = detected.to_vec();
+    if !current.trim().is_empty() && !options.iter().any(|font| font == current) {
+        options.insert(0, current.to_string());
+    }
+    options
 }
 
 #[component]
@@ -815,5 +986,35 @@ mod tests {
             assert!(sections.contains(&SettingsSection::Terminal));
             assert!(sections.contains(&SettingsSection::Sync));
         }
+    }
+
+    #[test]
+    fn accent_color_validation_accepts_hex_only() {
+        assert!(is_valid_accent_color("#5aa7ff"));
+        assert!(is_valid_accent_color("#ABCDEF"));
+        assert!(!is_valid_accent_color("5aa7ff"));
+        assert!(!is_valid_accent_color("#12345"));
+        assert!(!is_valid_accent_color("#123456;"));
+    }
+
+    #[test]
+    fn font_options_preserve_an_unknown_saved_font() {
+        let detected = vec!["Menlo".to_string(), "Arial".to_string()];
+        let options = font_options("My Private Font", &detected);
+        assert_eq!(options.first().map(String::as_str), Some("My Private Font"));
+        assert!(options.iter().any(|font| font == "Menlo"));
+    }
+
+    #[test]
+    fn font_options_do_not_duplicate_detected_current_font() {
+        let detected = vec!["Menlo".to_string(), "Arial".to_string()];
+        let options = font_options("Menlo", &detected);
+        assert_eq!(
+            options
+                .iter()
+                .filter(|font| font.as_str() == "Menlo")
+                .count(),
+            1
+        );
     }
 }

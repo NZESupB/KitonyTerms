@@ -1,8 +1,11 @@
 //! 侧边栏 SFTP 树与右键菜单组件。
 
+use dioxus::prelude::dioxus_elements::HasFileData;
 use dioxus::prelude::*;
 use kt_config::{AppLanguage, SessionProfile};
-use kt_core::{SessionId, SftpEntry};
+use kt_core::{SessionId, SftpBatchEntry, SftpEntry, SftpRequest, SftpRequestId};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::components::app::get_state;
 use crate::components::app_logic::DEFAULT_GROUP_NAME;
@@ -11,7 +14,7 @@ use crate::components::sftp::{
     display_path, join_path, normalize_sftp_path_input, parent_path, request_directory,
 };
 use crate::i18n::texts;
-use crate::state::TerminalCdBlocked;
+use crate::state::{SftpProgressState, TerminalCdBlocked};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContextMenuTarget {
@@ -46,6 +49,26 @@ pub fn sftp_entry_open_action(entry: &SftpEntry) -> SftpEntryOpenAction {
         SftpEntryOpenAction::OpenDirectory
     } else {
         SftpEntryOpenAction::ExternalEdit
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextSubmenuSide {
+    Left,
+    Right,
+}
+
+/// Choose the side with enough viewport room for a fly-out menu.
+pub fn context_submenu_side(
+    menu_x: f64,
+    menu_width: f64,
+    submenu_width: f64,
+    viewport_width: f64,
+) -> ContextSubmenuSide {
+    if menu_x + menu_width + submenu_width > viewport_width - 8.0 && menu_x >= submenu_width + 8.0 {
+        ContextSubmenuSide::Left
+    } else {
+        ContextSubmenuSide::Right
     }
 }
 
@@ -187,6 +210,189 @@ pub fn format_sftp_owner(entry: &SftpEntry) -> String {
     format!("{user}/{group}")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingUpload {
+    entries: Vec<SftpBatchEntry>,
+    target_dir: String,
+    conflicts: Vec<String>,
+    confirm_all_files: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UploadBatchView {
+    request_id: SftpRequestId,
+    session_id: SessionId,
+    target_dir: String,
+    item_count: usize,
+    progress: Option<SftpProgressState>,
+}
+
+/// 把原生拖放得到的本地文件/目录展开为有序批次；目录先于子项，空目录也保留。
+pub fn collect_upload_entries(
+    paths: &[PathBuf],
+    target_dir: &str,
+) -> Result<Vec<SftpBatchEntry>, String> {
+    let mut result = Vec::new();
+    for path in upload_roots(paths) {
+        let name = local_file_name(&path)?;
+        collect_upload_path(&path, &join_path(target_dir, &name), &mut result)?;
+    }
+    Ok(result)
+}
+
+fn upload_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = paths.to_vec();
+    roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    roots.dedup();
+    let mut filtered = Vec::with_capacity(roots.len());
+    for path in roots {
+        if filtered
+            .iter()
+            .any(|parent: &PathBuf| path == *parent || path.strip_prefix(parent).is_ok())
+        {
+            continue;
+        }
+        filtered.push(path);
+    }
+    filtered
+}
+
+fn local_file_name(path: &Path) -> Result<String, String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("无法读取本地条目名称：{}", path.display()))
+}
+
+fn collect_upload_path(
+    local: &Path,
+    remote: &str,
+    result: &mut Vec<SftpBatchEntry>,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(local)
+        .map_err(|error| format!("读取本地条目 {} 失败：{error}", local.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(format!("不支持上传符号链接：{}", local.display()));
+    }
+    if metadata.is_dir() {
+        result.push(SftpBatchEntry {
+            local: local.to_path_buf(),
+            remote: remote.to_string(),
+            is_dir: true,
+        });
+        let mut children = std::fs::read_dir(local)
+            .map_err(|error| format!("读取本地目录 {} 失败：{error}", local.display()))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取本地目录 {} 失败：{error}", local.display()))?;
+        children.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        for child in children {
+            let child_name = local_file_name(&child)?;
+            collect_upload_path(&child, &join_path(remote, &child_name), result)?;
+        }
+    } else if metadata.is_file() {
+        result.push(SftpBatchEntry {
+            local: local.to_path_buf(),
+            remote: remote.to_string(),
+            is_dir: false,
+        });
+    } else {
+        return Err(format!("不支持上传特殊文件：{}", local.display()));
+    }
+    Ok(())
+}
+
+fn prepare_upload(
+    paths: &[PathBuf],
+    target_dir: &str,
+    remote_entries: &[SftpEntry],
+) -> Result<PendingUpload, String> {
+    let entries = collect_upload_entries(paths, target_dir)?;
+    let mut conflicts = Vec::new();
+    let mut confirm_all_files = false;
+    let mut seen_roots = HashSet::new();
+    for root in upload_roots(paths) {
+        let name = local_file_name(&root)?;
+        if !seen_roots.insert(name.to_string()) {
+            return Err(format!("多个本地条目将上传到同一个远端名称：{name}"));
+        }
+        let local_is_dir = std::fs::symlink_metadata(&root)
+            .map_err(|error| format!("读取本地条目 {} 失败：{error}", root.display()))?
+            .is_dir();
+        if local_is_dir {
+            confirm_all_files = true;
+        }
+        if let Some(existing) = remote_entries.iter().find(|entry| entry.name == name) {
+            if existing.is_dir != local_is_dir {
+                return Err(format!("本地条目 {name} 与远端同名条目类型不同，无法合并"));
+            }
+            conflicts.push(name.to_string());
+        }
+    }
+    if confirm_all_files && conflicts.is_empty() {
+        conflicts.extend(
+            upload_roots(paths)
+                .iter()
+                .filter_map(|root| local_file_name(root).ok()),
+        );
+    }
+    Ok(PendingUpload {
+        entries,
+        target_dir: target_dir.to_string(),
+        conflicts,
+        confirm_all_files,
+    })
+}
+
+fn start_upload_batch(
+    state: &std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
+    session_id: SessionId,
+    prepared: PendingUpload,
+    overwrite: bool,
+    mut upload_batch: Signal<Option<UploadBatchView>>,
+    language: AppLanguage,
+) {
+    let target_dir = prepared.target_dir.clone();
+    let item_count = prepared.entries.len();
+    let overwrite_paths = if overwrite && prepared.confirm_all_files {
+        prepared
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.remote.clone())
+            .collect()
+    } else if overwrite {
+        prepared
+            .conflicts
+            .iter()
+            .map(|name| join_path(&target_dir, name))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let request = SftpRequest::UploadBatch {
+        entries: prepared.entries,
+        target_dir: target_dir.clone(),
+        overwrite_paths,
+    };
+    let result = state
+        .lock()
+        .map_err(|_| texts(language).sftp.state_unavailable.to_string())
+        .and_then(|mut app_state| app_state.send_sftp_request(session_id, request));
+    match result {
+        Ok(request_id) => upload_batch.set(Some(UploadBatchView {
+            request_id,
+            session_id,
+            target_dir,
+            item_count,
+            progress: None,
+        })),
+        Err(message) => set_sftp_sync_error(state, session_id, message),
+    }
+}
+
 #[component]
 pub fn SidebarSftpTree(
     session_id: SessionId,
@@ -199,7 +405,7 @@ pub fn SidebarSftpTree(
     language: AppLanguage,
     on_context_menu: EventHandler<ContextMenuState>,
     on_entry_open: EventHandler<SftpEntryContext>,
-    on_entry_external_edit: EventHandler<SftpEntryContext>,
+    on_entry_inline_edit: EventHandler<SftpEntryContext>,
     on_auto_sync_change: EventHandler<bool>,
 ) -> Element {
     let state = get_state().clone();
@@ -216,6 +422,9 @@ pub fn SidebarSftpTree(
         (true, true) => "sftp-auto-sync is-active",
         (true, false) => "sftp-auto-sync",
     };
+    let mut drop_target = use_signal(|| None::<String>);
+    let mut pending_upload = use_signal(|| None::<PendingUpload>);
+    let mut upload_batch = use_signal(|| None::<UploadBatchView>);
 
     use_effect(use_reactive((&path,), move |(path,)| {
         let display = display_path(&path);
@@ -223,6 +432,82 @@ pub fn SidebarSftpTree(
             path_input.set(display);
         }
     }));
+
+    use_effect(use_reactive((&connected,), move |(connected,)| {
+        if !connected {
+            drop_target.set(None);
+            pending_upload.set(None);
+            upload_batch.set(None);
+        }
+    }));
+
+    // 批次请求沿用会话级 SFTP 事件队列；这里只观察自己的 request ID，断线时立即收敛。
+    let state_for_upload = state.clone();
+    use_effect(move || {
+        let state_for_upload = state_for_upload.clone();
+        spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                let Some(batch) = upload_batch.peek().clone() else {
+                    continue;
+                };
+                let mut clear_batch = false;
+                let mut failure = None;
+                if let Ok(app_state) = state_for_upload.lock() {
+                    if batch.session_id != session_id {
+                        upload_batch.set(None);
+                        continue;
+                    }
+                    let Some(session) = app_state.sessions.get(&session_id) else {
+                        drop_target.set(None);
+                        upload_batch.set(None);
+                        continue;
+                    };
+                    if !session.connected {
+                        clear_batch = true;
+                        drop_target.set(None);
+                    } else if let Some(progress) = session
+                        .sftp_progress
+                        .as_ref()
+                        .filter(|progress| progress.request_id == batch.request_id)
+                    {
+                        let mut next = batch.clone();
+                        next.progress = Some(progress.clone());
+                        upload_batch.set(Some(next));
+                    } else if !session.sftp_pending_requests.contains(&batch.request_id) {
+                        if let Some(item) = session
+                            .sftp_failures
+                            .iter()
+                            .find(|item| item.request_id == batch.request_id)
+                        {
+                            failure = Some(item.message.clone());
+                        } else if session
+                            .sftp_completions
+                            .iter()
+                            .any(|item| item.request_id == batch.request_id)
+                        {
+                            clear_batch = true;
+                        } else {
+                            // SFTP 子任务停止时不会为未完成请求补发终态，避免 UI 永久显示上传中。
+                            clear_batch = true;
+                        }
+                    }
+                } else {
+                    clear_batch = true;
+                }
+                if let Some(message) = failure {
+                    set_sftp_sync_error(&state_for_upload, session_id, message);
+                    clear_batch = true;
+                }
+                if clear_batch {
+                    upload_batch.set(None);
+                }
+            }
+        });
+    });
+
+    let drop_path_for_over = path.clone();
+    let drop_path_for_leave = path.clone();
 
     rsx! {
         div {
@@ -346,7 +631,70 @@ pub fn SidebarSftpTree(
             }
 
             div {
-                class: "sftp-tree-list",
+                class: if drop_target().as_deref() == Some(path.as_str()) {
+                    "sftp-tree-list is-drop-target"
+                } else {
+                    "sftp-tree-list"
+                },
+                ondragover: move |evt| {
+                    if !connected {
+                        return;
+                    }
+                    evt.prevent_default();
+                    evt.stop_propagation();
+                    drop_target.set(Some(drop_path_for_over.clone()));
+                },
+                ondragleave: move |evt| {
+                    evt.stop_propagation();
+                    if drop_target.peek().as_deref() == Some(drop_path_for_leave.as_str()) {
+                        drop_target.set(None);
+                    }
+                },
+                ondrop: {
+                    let path = path.clone();
+                    let remote_entries = entries.clone();
+                    move |evt| {
+                        if !connected {
+                            return;
+                        }
+                        evt.prevent_default();
+                        evt.stop_propagation();
+                        drop_target.set(None);
+                        let paths = evt
+                            .data()
+                            .files()
+                            .into_iter()
+                            .map(|file| file.path())
+                            .collect::<Vec<_>>();
+                        if paths.is_empty() {
+                            return;
+                        }
+                        if upload_batch.peek().is_some() {
+                            set_sftp_sync_error(
+                                &state,
+                                session_id,
+                                t.upload_in_progress.to_string(),
+                            );
+                            return;
+                        }
+                        match prepare_upload(&paths, &path, &remote_entries) {
+                            Ok(prepared)
+                                if prepared.conflicts.is_empty() && !prepared.confirm_all_files =>
+                            {
+                                start_upload_batch(
+                                    &state,
+                                    session_id,
+                                    prepared,
+                                    false,
+                                    upload_batch,
+                                    language,
+                                );
+                            }
+                            Ok(prepared) => pending_upload.set(Some(prepared)),
+                            Err(message) => set_sftp_sync_error(&state, session_id, message),
+                        }
+                    }
+                },
                 oncontextmenu: {
                     let path = path.clone();
                     move |evt| {
@@ -390,7 +738,33 @@ pub fn SidebarSftpTree(
                                 entry,
                                 on_context_menu,
                                 on_entry_open,
-                                on_entry_external_edit,
+                                on_entry_inline_edit,
+                                drop_target,
+                                on_file_drop: {
+                                    let state = state.clone();
+                                    move |(drop_path, paths): (String, Vec<PathBuf>)| {
+                                        if upload_batch.peek().is_some() {
+                                            set_sftp_sync_error(
+                                                &state,
+                                                session_id,
+                                                t.upload_in_progress.to_string(),
+                                            );
+                                            return;
+                                        }
+                                        // 目录内容在当前列表之外，先确认一次，再由 core
+                                        // 按精确批次路径覆盖文件并合并目录。
+                                        match prepare_upload(&paths, &drop_path, &[]) {
+                                            Ok(mut prepared) => {
+                                                prepared.confirm_all_files = true;
+                                                if prepared.conflicts.is_empty() {
+                                                    prepared.conflicts.push(drop_path.clone());
+                                                }
+                                                pending_upload.set(Some(prepared));
+                                            }
+                                            Err(message) => set_sftp_sync_error(&state, session_id, message),
+                                        }
+                                    }
+                                },
                             }
                         }
                     }
@@ -401,6 +775,80 @@ pub fn SidebarSftpTree(
                 class: "sftp-table-status",
                 span { "{item_count} {t.items}" }
                 span { "{format_sftp_size(total_size, false)}" }
+            }
+
+            if let Some(batch) = upload_batch() {
+                div {
+                    class: "sftp-upload-status",
+                    title: "{batch.target_dir}",
+                    Icon { name: "upload" }
+                    span {
+                        if let Some(progress) = batch.progress {
+                            "{t.uploading} {progress.name} ({progress.transferred}/{progress.total})"
+                        } else {
+                            "{t.uploading} {batch.item_count} {t.items}"
+                        }
+                    }
+                }
+            }
+
+            if let Some(conflict) = pending_upload() {
+                div {
+                    class: "settings-overlay upload-conflict-overlay",
+                    onclick: move |_| pending_upload.set(None),
+                    section {
+                        class: "settings-panel group-dialog upload-conflict-dialog",
+                        onclick: move |evt| {
+                            evt.stop_propagation();
+                            evt.prevent_default();
+                        },
+                        div {
+                            class: "settings-head",
+                            h2 { "{t.upload_conflict_title}" }
+                            button {
+                                class: "icon-button slim",
+                                title: "{t.close}",
+                                onclick: move |_| pending_upload.set(None),
+                                Icon { name: "close" }
+                            }
+                        }
+                        div {
+                            class: "group-form",
+                            p { "{t.upload_conflict_body}" }
+                            for name in conflict.conflicts.iter() {
+                                code { "{name}" }
+                            }
+                        }
+                        div {
+                            class: "group-actions",
+                            button {
+                                onclick: move |_| pending_upload.set(None),
+                                "{t.upload_cancel}"
+                            }
+                            button {
+                                class: "primary",
+                                onclick: {
+                                    let state = state.clone();
+                                    move |_| {
+                                        let Some(prepared) = pending_upload.peek().clone() else {
+                                            return;
+                                        };
+                                        pending_upload.set(None);
+                                        start_upload_batch(
+                                            &state,
+                                            session_id,
+                                            prepared,
+                                            true,
+                                            upload_batch,
+                                            language,
+                                        );
+                                    }
+                                },
+                                "{t.upload_overwrite}"
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -413,7 +861,9 @@ pub fn SidebarSftpEntry(
     entry: SftpEntry,
     on_context_menu: EventHandler<ContextMenuState>,
     on_entry_open: EventHandler<SftpEntryContext>,
-    on_entry_external_edit: EventHandler<SftpEntryContext>,
+    on_entry_inline_edit: EventHandler<SftpEntryContext>,
+    drop_target: Signal<Option<String>>,
+    on_file_drop: EventHandler<(String, Vec<PathBuf>)>,
 ) -> Element {
     let icon = if entry.is_dir { "folder" } else { "file" };
     let row_class = if entry.is_dir {
@@ -422,6 +872,7 @@ pub fn SidebarSftpEntry(
         "sftp-table-row is-file"
     };
     let name = entry.name.clone();
+    let is_dir = entry.is_dir;
     let modified = format_sftp_time(entry.modified);
     let size = format_sftp_size(entry.size, entry.is_dir);
     let permissions = format_sftp_permissions(entry.permissions, entry.is_dir);
@@ -429,10 +880,19 @@ pub fn SidebarSftpEntry(
     let full_path = join_path(&base_path, &name);
     let double_open_base_path = base_path.clone();
     let double_open_entry = entry.clone();
+    let drop_path = full_path.clone();
+    let drop_path_for_leave = full_path.clone();
+    let drop_path_for_drop = full_path.clone();
+    let row_class = row_class.to_string();
+    let row_class_with_drop = format!("{row_class} is-drop-target");
 
     rsx! {
         div {
-            class: "{row_class}",
+            class: if drop_target().as_deref() == Some(full_path.as_str()) {
+                "{row_class_with_drop}"
+            } else {
+                "{row_class}"
+            },
             title: "{full_path}",
             onclick: move |evt| {
                 evt.stop_propagation();
@@ -446,7 +906,39 @@ pub fn SidebarSftpEntry(
                 };
                 match sftp_entry_open_action(&ctx.entry) {
                     SftpEntryOpenAction::OpenDirectory => on_entry_open.call(ctx),
-                    SftpEntryOpenAction::ExternalEdit => on_entry_external_edit.call(ctx),
+                    // 内置编辑器是普通文件的默认入口；外部编辑仍可从右键菜单选择。
+                    SftpEntryOpenAction::ExternalEdit => on_entry_inline_edit.call(ctx),
+                }
+            },
+            ondragover: move |evt| {
+                if !is_dir {
+                    return;
+                }
+                evt.prevent_default();
+                evt.stop_propagation();
+                drop_target.set(Some(drop_path.clone()));
+            },
+            ondragleave: move |evt| {
+                evt.stop_propagation();
+                if drop_target.peek().as_deref() == Some(drop_path_for_leave.as_str()) {
+                    drop_target.set(None);
+                }
+            },
+            ondrop: move |evt| {
+                if !is_dir {
+                    return;
+                }
+                evt.prevent_default();
+                evt.stop_propagation();
+                drop_target.set(None);
+                let paths = evt
+                    .data()
+                    .files()
+                    .into_iter()
+                    .map(|file| file.path())
+                    .collect::<Vec<_>>();
+                if !paths.is_empty() {
+                    on_file_drop.call((drop_path_for_drop.clone(), paths));
                 }
             },
             oncontextmenu: {
@@ -526,6 +1018,28 @@ pub fn ContextMenu(
                     menu.style.top = 'auto';
                     menu.style.bottom = `${{Math.max(margin, window.innerHeight - {menu_y})}}px`;
                 }}
+
+                const placeSubmenus = () => {{
+                    menu.querySelectorAll('.context-submenu').forEach((item) => {{
+                        const panel = item.querySelector('.context-submenu-panel');
+                        if (!panel) return;
+                        panel.style.left = '100%';
+                        panel.style.right = 'auto';
+                        panel.style.marginLeft = '0';
+                        const itemRect = item.getBoundingClientRect();
+                        const panelRect = panel.getBoundingClientRect();
+                        if (itemRect.right + panelRect.width > window.innerWidth - margin) {{
+                            panel.style.left = 'auto';
+                            panel.style.right = '100%';
+                        }}
+                    }});
+                }};
+                if (!menu.__ktSubmenuPlacement) {{
+                    menu.addEventListener('pointerover', placeSubmenus);
+                    menu.addEventListener('focusin', placeSubmenus);
+                    menu.__ktSubmenuPlacement = true;
+                }}
+                placeSubmenus();
             }});
             "#
         );
@@ -892,5 +1406,112 @@ mod tests {
             sftp_entry_open_action(&file),
             SftpEntryOpenAction::ExternalEdit
         );
+    }
+
+    #[test]
+    fn open_with_submenu_flips_left_only_when_right_edge_is_occupied() {
+        assert_eq!(
+            context_submenu_side(700.0, 190.0, 180.0, 1024.0),
+            ContextSubmenuSide::Left
+        );
+        assert_eq!(
+            context_submenu_side(120.0, 190.0, 180.0, 1024.0),
+            ContextSubmenuSide::Right
+        );
+        assert_eq!(
+            context_submenu_side(2.0, 190.0, 180.0, 200.0),
+            ContextSubmenuSide::Right
+        );
+    }
+
+    #[test]
+    fn open_with_submenu_uses_the_shared_theme_tokens() {
+        let css = include_str!("../assets/app.css");
+        let submenu = css
+            .split_once(".context-submenu-panel {")
+            .and_then(|(_, rest)| rest.split_once('}'))
+            .map(|(body, _)| body)
+            .expect("缺少打开方式子菜单样式");
+        assert!(submenu.contains("var(--menu-bg)"));
+        assert!(submenu.contains("var(--menu-border)"));
+        assert!(submenu.contains("var(--menu-shadow)"));
+    }
+
+    #[test]
+    fn collect_upload_entries_preserves_nested_and_empty_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("bundle");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("readme.txt"), b"hello").unwrap();
+
+        let entries = collect_upload_entries(std::slice::from_ref(&root), "/srv").unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].remote, "/srv/bundle");
+        assert!(entries[0].is_dir);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.remote == "/srv/bundle/nested" && entry.is_dir));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.remote == "/srv/bundle/readme.txt" && !entry.is_dir));
+    }
+
+    #[test]
+    fn collect_upload_entries_rejects_symlinks_and_special_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("link");
+        let target = temp.path().join("target");
+        std::fs::write(&target, b"data").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let error = collect_upload_entries(&[link], ".").unwrap_err();
+            assert!(error.contains("符号链接"));
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = link;
+        }
+    }
+
+    #[test]
+    fn prepare_upload_reports_file_conflicts_but_merges_existing_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("notes.txt");
+        let folder = temp.path().join("folder");
+        std::fs::write(&file, b"new").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+
+        let remote_entries = vec![
+            SftpEntry {
+                name: "notes.txt".to_string(),
+                is_dir: false,
+                size: 1,
+                modified: None,
+                permissions: None,
+                user: None,
+                group: None,
+                uid: None,
+                gid: None,
+            },
+            SftpEntry {
+                name: "folder".to_string(),
+                is_dir: true,
+                size: 0,
+                modified: None,
+                permissions: None,
+                user: None,
+                group: None,
+                uid: None,
+                gid: None,
+            },
+        ];
+        let prepared = prepare_upload(&[file, folder], "/srv", &remote_entries).unwrap();
+        assert_eq!(prepared.conflicts, vec!["folder", "notes.txt"]);
+        assert!(prepared.confirm_all_files);
+        assert_eq!(prepared.entries.len(), 2);
     }
 }

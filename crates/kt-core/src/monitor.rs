@@ -6,18 +6,22 @@
 //! rates are computed from deltas between polls. Linux-only (`/proc`); missing
 //! fields degrade gracefully. Runs in its own task so it never blocks the shell.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
-use crate::session::{FromCore, SessionId};
+use crate::session::{FromCore, SessionEventSender, SessionId};
+use crate::ssh::ChannelCloseGuard;
 
 /// 轮询间隔。Poll interval.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(12);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(4);
 const TCP_LATENCY_TIMEOUT: Duration = Duration::from_millis(900);
+const MONITOR_IO_TIMEOUT: Duration = Duration::from_secs(4);
+const MONITOR_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// 监控子任务退出原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +43,7 @@ cat /proc/net/dev 2>/dev/null;echo __KTM_SEC__;\
 df -P -k 2>/dev/null;echo __KTM_SEC__;\
 cat /proc/loadavg 2>/dev/null;echo __KTM_SEC__;\
 cat /proc/uptime 2>/dev/null;echo __KTM_SEC__;\
-ps -eo pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -n 9;\
+printf 'hostname=%s\\n' \"$(hostname 2>/dev/null)\"; printf 'arch=%s\\n' \"$(uname -m 2>/dev/null)\"; awk -F= '/^PRETTY_NAME=/{gsub(/^\"|\"$/, \"\", $2); print \"distro=\" $2; exit}' /etc/os-release 2>/dev/null;\
 echo __KTM_END__\n";
 
 const BEGIN: &str = "__KTM_BEGIN__";
@@ -49,24 +53,41 @@ const HEARTBEAT: &str = "__KTM_HEARTBEAT__";
 const HEARTBEAT_CMD: &str = "printf '__KTM_HEARTBEAT__\\n'\n";
 
 /// 单个挂载点使用情况。Disk usage for one mount point.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskUsage {
     pub mount: String,
     pub used: u64,
     pub total: u64,
 }
 
-/// 单个进程占用。One process's usage.
-#[derive(Debug, Clone)]
-pub struct ProcInfo {
-    pub cpu: f32,
-    pub mem: f32,
+/// 远端主机的静态系统信息。只在 Monitor 通道中读取，不影响交互终端。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemInfo {
+    pub hostname: String,
+    pub distro: Option<String>,
+    pub architecture: Option<String>,
+}
+
+/// 单个逻辑 CPU 的利用率。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CpuCoreUsage {
+    pub id: u32,
+    pub percent: f32,
+}
+
+/// 单个网卡的实时收发速率。虚拟网卡由名称启发式识别，UI 可按需隐藏。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetInterfaceStats {
     pub name: String,
+    pub rx_rate: u64,
+    pub tx_rate: u64,
+    pub is_virtual: bool,
 }
 
 /// 一次采样的服务器资源快照。A snapshot of server resource usage.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MonitorStats {
+    pub system: SystemInfo,
     /// CPU 使用率(0..100)。
     pub cpu_percent: f32,
     /// 远端 CPU 逻辑核心数。
@@ -83,7 +104,8 @@ pub struct MonitorStats {
     /// 轻量心跳在已连接 SSH 通道上的往返时间，避免被重监控采样耗时放大。
     pub latency_ms: u64,
     pub disks: Vec<DiskUsage>,
-    pub processes: Vec<ProcInfo>,
+    pub cpu_per_core: Vec<CpuCoreUsage>,
+    pub interfaces: Vec<NetInterfaceStats>,
 }
 
 /// TCP 延迟探测目标。通常就是当前 SSH 会话的 host:port。
@@ -116,6 +138,12 @@ struct NetSample {
     tx: u64,
 }
 
+#[derive(Clone, Copy)]
+struct NetInterfaceSample {
+    rx: u64,
+    tx: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadUntil {
     Found,
@@ -134,47 +162,75 @@ enum HeartbeatError {
 /// Monitor loop; exits when the channel closes (session ended).
 pub(crate) async fn monitor_task(
     id: SessionId,
-    mut channel: russh::Channel<russh::client::Msg>,
+    channel: russh::Channel<russh::client::Msg>,
     latency_target: LatencyProbeTarget,
-    out: mpsc::Sender<FromCore>,
+    out: SessionEventSender,
+    mut cancel_rx: oneshot::Receiver<()>,
 ) -> MonitorExit {
+    let mut channel = ChannelCloseGuard::new(channel);
     let mut prev_cpu: Option<CpuSample> = None;
     let mut prev_net: Option<NetSample> = None;
+    let mut prev_cpu_cores: HashMap<u32, CpuSample> = HashMap::new();
+    let mut prev_interfaces: HashMap<String, NetInterfaceSample> = HashMap::new();
     let mut prev_at: Option<Instant> = None;
     let mut buf = String::new();
 
     let exit = loop {
+        if matches!(
+            cancel_rx.try_recv(),
+            Ok(()) | Err(oneshot::error::TryRecvError::Closed)
+        ) {
+            break MonitorExit::Stopped;
+        }
         let latency_ms = match measure_latency(&mut channel, &mut buf, &latency_target).await {
             Ok(latency_ms) => latency_ms,
             Err(HeartbeatError::Closed) => break MonitorExit::Stopped,
             Err(HeartbeatError::SendFailed) => {
-                let _ = out
-                    .send(FromCore::MonitorError {
+                if !send_monitor_event(
+                    &out,
+                    FromCore::MonitorError {
                         id,
                         message: "资源监控心跳发送失败".to_string(),
-                    })
-                    .await;
+                    },
+                )
+                .await
+                {
+                    break MonitorExit::ReceiverDropped;
+                }
                 break MonitorExit::ErrorReported;
             }
             Err(HeartbeatError::Timeout) => {
-                let _ = out
-                    .send(FromCore::MonitorError {
+                if !send_monitor_event(
+                    &out,
+                    FromCore::MonitorError {
                         id,
                         message: format!("资源监控心跳超时({} 秒)", HEARTBEAT_TIMEOUT.as_secs()),
-                    })
-                    .await;
+                    },
+                )
+                .await
+                {
+                    break MonitorExit::ReceiverDropped;
+                }
                 break MonitorExit::ErrorReported;
             }
         };
 
         // 写入命令包。Write the command bundle.
-        if channel.data(CMD.as_bytes()).await.is_err() {
-            let _ = out
-                .send(FromCore::MonitorError {
+        if matches!(
+            tokio::time::timeout(MONITOR_IO_TIMEOUT, channel.data(CMD.as_bytes())).await,
+            Err(_) | Ok(Err(_))
+        ) {
+            if !send_monitor_event(
+                &out,
+                FromCore::MonitorError {
                     id,
                     message: "资源监控命令发送失败".to_string(),
-                })
-                .await;
+                },
+            )
+            .await
+            {
+                break MonitorExit::ReceiverDropped;
+            }
             break MonitorExit::ErrorReported;
         }
 
@@ -183,12 +239,17 @@ pub(crate) async fn monitor_task(
             ReadUntil::Found => {}
             ReadUntil::Closed => break MonitorExit::Stopped,
             ReadUntil::Timeout => {
-                let _ = out
-                    .send(FromCore::MonitorError {
+                if !send_monitor_event(
+                    &out,
+                    FromCore::MonitorError {
                         id,
                         message: format!("资源监控采样超时({} 秒)", SAMPLE_TIMEOUT.as_secs()),
-                    })
-                    .await;
+                    },
+                )
+                .await
+                {
+                    break MonitorExit::ReceiverDropped;
+                }
                 break MonitorExit::ErrorReported;
             }
         }
@@ -199,35 +260,61 @@ pub(crate) async fn monitor_task(
             .unwrap_or(0.0);
         prev_at = Some(now);
 
-        if let Some(mut stats) = parse_block(&buf, &mut prev_cpu, &mut prev_net, elapsed) {
+        if let Some(mut stats) = parse_block(
+            &buf,
+            &mut prev_cpu,
+            &mut prev_net,
+            &mut prev_cpu_cores,
+            &mut prev_interfaces,
+            elapsed,
+        ) {
             stats.latency_ms = latency_ms;
-            if out
-                .send(FromCore::Monitor {
+            if !send_monitor_event(
+                &out,
+                FromCore::Monitor {
                     id,
                     stats: Box::new(stats),
-                })
-                .await
-                .is_err()
+                },
+            )
+            .await
             {
                 break MonitorExit::ReceiverDropped;
             }
         } else {
-            let _ = out
-                .send(FromCore::MonitorError {
+            if !send_monitor_event(
+                &out,
+                FromCore::MonitorError {
                     id,
                     message: "资源监控采样解析失败".to_string(),
-                })
-                .await;
+                },
+            )
+            .await
+            {
+                break MonitorExit::ReceiverDropped;
+            }
             break MonitorExit::ErrorReported;
         }
 
-        tokio::time::sleep(POLL).await;
+        tokio::select! {
+            _ = &mut cancel_rx => break MonitorExit::Stopped,
+            _ = tokio::time::sleep(POLL) => {}
+        }
     };
 
     // 关闭 sh:写 EOF 让远端进程退出。
     // Close sh by sending EOF so the remote process exits.
-    let _ = channel.eof().await;
+    let _ = tokio::time::timeout(MONITOR_IO_TIMEOUT, channel.eof()).await;
+    // `russh::Channel` 的 Drop 不会替普通 channel 发送 CHANNEL_CLOSE。
+    // EOF 只结束远端 stdin，仍需显式关闭通道以收敛会话资源。
+    channel.close().await;
     exit
+}
+
+async fn send_monitor_event(out: &SessionEventSender, event: FromCore) -> bool {
+    match tokio::time::timeout(MONITOR_EVENT_TIMEOUT, out.send(event)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) | Err(_) => false,
+    }
 }
 
 async fn measure_latency(
@@ -283,7 +370,10 @@ async fn measure_heartbeat_latency(
     buf: &mut String,
 ) -> Result<u64, HeartbeatError> {
     let started = Instant::now();
-    if channel.data(HEARTBEAT_CMD.as_bytes()).await.is_err() {
+    if matches!(
+        tokio::time::timeout(MONITOR_IO_TIMEOUT, channel.data(HEARTBEAT_CMD.as_bytes())).await,
+        Err(_) | Ok(Err(_))
+    ) {
         return Err(HeartbeatError::SendFailed);
     }
 
@@ -340,6 +430,8 @@ fn parse_block(
     raw: &str,
     prev_cpu: &mut Option<CpuSample>,
     prev_net: &mut Option<NetSample>,
+    prev_cpu_cores: &mut HashMap<u32, CpuSample>,
+    prev_interfaces: &mut HashMap<String, NetInterfaceSample>,
     elapsed: f64,
 ) -> Option<MonitorStats> {
     // 截取 BEGIN..END 之间,再按 SEC 切段。
@@ -366,6 +458,7 @@ fn parse_block(
         *prev_cpu = Some(cur);
     }
     stats.cpu_cores = parse_cpu_cores(get(0));
+    stats.cpu_per_core = parse_cpu_core_usage(get(0), prev_cpu_cores);
 
     // --- MEM ---
     let (mt, ma, st, sf) = parse_meminfo(get(1));
@@ -384,6 +477,7 @@ fn parse_block(
         }
         *prev_net = Some(cur);
     }
+    stats.interfaces = parse_interfaces(get(2), prev_interfaces, elapsed);
 
     // --- DISK ---
     stats.disks = parse_df(get(3));
@@ -403,10 +497,55 @@ fn parse_block(
         .map(|v| v as u64)
         .unwrap_or(0);
 
-    // --- PROCESSES ---
-    stats.processes = parse_ps(get(6));
+    // --- STATIC SYSTEM ---
+    stats.system = parse_system_info(get(6));
 
     Some(stats)
+}
+
+fn parse_cpu_core_usage(s: &str, previous: &mut HashMap<u32, CpuSample>) -> Vec<CpuCoreUsage> {
+    let mut current_ids = Vec::new();
+    let mut usage = Vec::new();
+    for line in s.lines() {
+        let Some(rest) = line.strip_prefix("cpu") else {
+            continue;
+        };
+        let Some((id, values)) = rest.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(id) = id.parse::<u32>() else {
+            continue;
+        };
+        let values: Vec<u64> = values
+            .split_whitespace()
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        if values.len() < 4 {
+            continue;
+        }
+        let total: u64 = values.iter().sum();
+        let idle = values[3].saturating_add(values.get(4).copied().unwrap_or(0));
+        let sample = CpuSample {
+            busy: total.saturating_sub(idle),
+            total,
+        };
+        let percent = previous
+            .get(&id)
+            .and_then(|prior| {
+                let total_delta = sample.total.saturating_sub(prior.total);
+                (total_delta > 0).then(|| {
+                    (sample.busy.saturating_sub(prior.busy) as f32 / total_delta as f32 * 100.0)
+                        .clamp(0.0, 100.0)
+                })
+            })
+            .unwrap_or(0.0);
+        previous.insert(id, sample);
+        current_ids.push(id);
+        usage.push(CpuCoreUsage { id, percent });
+    }
+    previous.retain(|id, _| current_ids.contains(id));
+    usage.sort_by_key(|core| core.id);
+    usage
 }
 
 /// 解析 `/proc/stat` 的 `cpu ` 行 → (busy, total) jiffies。
@@ -485,6 +624,88 @@ fn parse_net(s: &str) -> Option<NetSample> {
     seen.then_some(NetSample { rx, tx })
 }
 
+fn parse_interfaces(
+    s: &str,
+    previous: &mut HashMap<String, NetInterfaceSample>,
+    elapsed: f64,
+) -> Vec<NetInterfaceStats> {
+    let mut names = Vec::new();
+    let mut interfaces = Vec::new();
+    for line in s.lines() {
+        let Some((name, fields)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let values: Vec<u64> = fields
+            .split_whitespace()
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        if values.len() < 9 {
+            continue;
+        }
+        let current = NetInterfaceSample {
+            rx: values[0],
+            tx: values[8],
+        };
+        let (rx_rate, tx_rate) = previous
+            .get(name)
+            .filter(|_| elapsed > 0.0)
+            .map(|prior| {
+                (
+                    (current.rx.saturating_sub(prior.rx) as f64 / elapsed) as u64,
+                    (current.tx.saturating_sub(prior.tx) as f64 / elapsed) as u64,
+                )
+            })
+            .unwrap_or((0, 0));
+        previous.insert(name.to_string(), current);
+        names.push(name.to_string());
+        interfaces.push(NetInterfaceStats {
+            name: name.to_string(),
+            rx_rate,
+            tx_rate,
+            is_virtual: is_virtual_interface(name),
+        });
+    }
+    previous.retain(|name, _| names.contains(name));
+    interfaces.sort_by(|left, right| left.name.cmp(&right.name));
+    interfaces
+}
+
+fn is_virtual_interface(name: &str) -> bool {
+    name == "lo"
+        || name.starts_with("veth")
+        || name.starts_with("br-")
+        || name.starts_with("docker")
+        || name.starts_with("virbr")
+        || name.starts_with("cni")
+        || name.starts_with("flannel")
+        || name.starts_with("tun")
+        || name.starts_with("tap")
+}
+
+fn parse_system_info(s: &str) -> SystemInfo {
+    let mut info = SystemInfo::default();
+    for line in s.lines() {
+        if let Some(value) = line.strip_prefix("hostname=") {
+            info.hostname = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("distro=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                info.distro = Some(value.to_string());
+            }
+        } else if let Some(value) = line.strip_prefix("arch=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                info.architecture = Some(value.to_string());
+            }
+        }
+    }
+    info
+}
+
 /// 解析 `df -P -k` → 各真实挂载点使用情况(跳过伪文件系统)。
 fn parse_df(s: &str) -> Vec<DiskUsage> {
     let mut out = Vec::new();
@@ -509,27 +730,6 @@ fn parse_df(s: &str) -> Vec<DiskUsage> {
     out
 }
 
-/// 解析 `ps` 输出 → Top 进程(跳过表头)。
-fn parse_ps(s: &str) -> Vec<ProcInfo> {
-    let mut out = Vec::new();
-    for line in s.lines().skip(1) {
-        let mut it = line.split_whitespace();
-        let (Some(cpu), Some(mem)) = (it.next(), it.next()) else {
-            continue;
-        };
-        let name: String = it.collect::<Vec<_>>().join(" ");
-        if name.is_empty() {
-            continue;
-        }
-        out.push(ProcInfo {
-            cpu: cpu.parse().unwrap_or(0.0),
-            mem: mem.parse().unwrap_or(0.0),
-            name,
-        });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,11 +741,21 @@ mod tests {
             total: 200,
         });
         let mut net = None;
+        let mut cores = HashMap::new();
+        let mut interfaces = HashMap::new();
         let block = format!(
             "x{BEGIN}\ncpu  150 0 0 250 0 0 0 0\ncpu0 75 0 0 125 0 0 0 0\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{SEC}\n{END}y"
         );
         // busy=150,total=400;delta busy=50,total=200 → 25%
-        let s = parse_block(&block, &mut prev, &mut net, 2.0).unwrap();
+        let s = parse_block(
+            &block,
+            &mut prev,
+            &mut net,
+            &mut cores,
+            &mut interfaces,
+            2.0,
+        )
+        .unwrap();
         assert!((s.cpu_percent - 25.0).abs() < 0.01, "{}", s.cpu_percent);
         assert_eq!(s.cpu_cores, 1);
     }
@@ -580,11 +790,21 @@ mod tests {
     fn malformed_df_section_does_not_break_other_metrics() {
         let mut prev_cpu = None;
         let mut prev_net = None;
+        let mut prev_cores = HashMap::new();
+        let mut prev_interfaces = HashMap::new();
         let block = format!(
             "{BEGIN}\ncpu  1 0 0 3\ncpu0 1 0 0 3\n{SEC}\nMemTotal: 1024 kB\nMemAvailable: 512 kB\n{SEC}\n{SEC}\ninvalid df output\n{SEC}\n0.25 0.10 0.05\n{SEC}\n3600.0 0.0\n{SEC}\n{END}"
         );
 
-        let stats = parse_block(&block, &mut prev_cpu, &mut prev_net, 2.0).unwrap();
+        let stats = parse_block(
+            &block,
+            &mut prev_cpu,
+            &mut prev_net,
+            &mut prev_cores,
+            &mut prev_interfaces,
+            2.0,
+        )
+        .unwrap();
 
         assert_eq!(stats.mem_used, 512 * 1024);
         assert_eq!(stats.load1, 0.25);
@@ -600,6 +820,49 @@ mod tests {
         let n = parse_net(s).unwrap();
         assert_eq!(n.rx, 100);
         assert_eq!(n.tx, 200);
+    }
+
+    #[test]
+    fn per_core_and_interface_rates_use_deltas() {
+        let mut cores = HashMap::from([(
+            0,
+            CpuSample {
+                busy: 10,
+                total: 20,
+            },
+        )]);
+        let mut interfaces =
+            HashMap::from([("eth0".to_string(), NetInterfaceSample { rx: 100, tx: 200 })]);
+        let cpu = "cpu 20 0 0 20\ncpu0 15 0 0 25";
+        let net =
+            "eth0: 300 0 0 0 0 0 0 0 500 0 0 0 0 0 0 0\nveth1: 20 0 0 0 0 0 0 0 30 0 0 0 0 0 0 0";
+
+        let core = parse_cpu_core_usage(cpu, &mut cores);
+        let interface = parse_interfaces(net, &mut interfaces, 2.0);
+
+        assert_eq!(core.len(), 1);
+        assert!((core[0].percent - 25.0).abs() < 0.01);
+        assert_eq!(interface[0].name, "eth0");
+        assert_eq!(interface[0].rx_rate, 100);
+        assert_eq!(interface[0].tx_rate, 150);
+        assert!(interface[1].is_virtual);
+    }
+
+    #[test]
+    fn system_info_is_typed_and_empty_values_are_ignored() {
+        let info = parse_system_info("hostname=node-1\ndistro=Debian GNU/Linux\narch=x86_64\n");
+        assert_eq!(info.hostname, "node-1");
+        assert_eq!(info.distro.as_deref(), Some("Debian GNU/Linux"));
+        assert_eq!(info.architecture.as_deref(), Some("x86_64"));
+    }
+
+    #[test]
+    fn system_info_fields_keep_separate_lines_when_commands_are_empty() {
+        let info = parse_system_info("hostname=\narch=x86_64\n");
+        assert!(info.hostname.is_empty());
+        assert_eq!(info.architecture.as_deref(), Some("x86_64"));
+        assert!(CMD.contains("printf 'hostname=%s\\n'"));
+        assert!(CMD.contains("printf 'arch=%s\\n'"));
     }
 
     #[test]

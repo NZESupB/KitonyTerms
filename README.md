@@ -1,262 +1,73 @@
 # KitonyTerms
 
-**English** | [中文](README.zh-CN.md)
+English | [中文](README.zh-CN.md)
 
-KitonyTerms is a cross-platform SSH client built in **Rust** with
-[Dioxus](https://dioxuslabs.com/). It keeps SSH, terminal emulation, SFTP,
-monitoring, configuration, and secret storage in Rust crates, while desktop
-and mobile UIs are rendered through native WebView stacks.
+A Rust + Dioxus SSH client with saved sessions and groups, password/public-key/keyboard-interactive/agent authentication, single-hop ProxyJump, TCP proxies, terminal, SFTP, monitoring, and configuration sync.
 
-## Current Shape
+## Features and limits
 
-- **Primary app:** GUI-only `kitonyterms` application from `kt-app`.
-- **Supported platforms:** macOS / Windows / Linux desktop artifacts for `x64`
-  and `aarch64`, plus Android / iOS mobile artifacts for `aarch64`. No 32-bit
-  artifacts are produced.
-- **Mobile UI:** edge-to-edge WebView content with safe-area-aware layouts on
-  Android and iOS.
-- **Core engine:** pure-Rust SSH client, terminal grid, SFTP task, and remote
-  monitor in `kt-core`, with no UI dependency.
-- **UI:** current stable Dioxus desktop/mobile, native desktop window or mobile WebView,
-  responsive connection/SFTP area, terminal workbench, monitor strip, status
-  bar, dialogs, and settings.
-- **Validation:** unit and integration tests cover every workspace crate; clippy
-  is run with `-D warnings`.
+- SFTP supports batch uploads, downloads, directory operations, an inline text editor, and desktop external editors.
+- Linux/WSL operations include services, processes, network, Docker/Compose queries and management, capability detection, cancellation, and independent container terminals. Management uses typed commands; some actions require sudo authentication.
+- Compact desktop layout and a separate touch UI for phones; system/light/dark themes, English/Chinese, and terminal font settings.
+- WebDAV and LAN sync only non-secret configuration, excluding vault, vault key, and known_hosts. WebDAV takes a full resource URL; LAN v2 uses a 26-character pairing secret or QR code.
+- The main binary is a GUI with no-argument, `--gui`, and `--help` entry points. Multi-hop ProxyJump, UI editing of trigger rules, and full syntax highlighting are not provided.
 
-## What Works
+Sources: [app](crates/kt-app/src/main.rs), [UI](crates/kt-ui/src/components/app.rs), [operations](crates/kt-core/src/remote_ops.rs), [sync](crates/kt-sync/src/lib.rs).
 
-- SSH terminal sessions with password, public key, keyboard-interactive, and
-  ssh-agent/Pageant authentication.
-- Saved sessions grouped in the sidebar, with reconnect, edit, copy, delete,
-  and `~/.ssh/config` merge support.
-- Host-key trust flow backed by `known_hosts.toml`, including unknown/changed
-  key confirmation and one-time allow.
-- Encrypted local secret vault for passwords and private-key passphrases,
-  opened automatically by the UI on startup.
-- Single-hop `ProxyJump`, TCP proxy modes (`Direct`, `System`, `SOCKS5`,
-  `HTTP CONNECT`), and optional agent forwarding.
-- Terminal rendering with RGB colors, common text attributes, cursor styles,
-  scrollback, split views, trigger highlighting, optional line numbers, and
-  optional timestamps.
-- SFTP file browser with list, upload, download, mkdir, delete, rename, remote
-  path navigation, terminal-directory follow, and remote editing through local
-  editors.
-- Editor settings for default editor selection and "Open With" entries.
-- Remote CPU, memory, disk, network, load, uptime, and latency monitoring.
-- Light/dark theme and Chinese/English UI language settings.
-- Non-secret configuration synchronization through WebDAV or a one-time local
-  network share. Password vaults, vault keys, and `known_hosts.toml` are never
-  included.
+## Run locally
 
-## Current Limits
+Use the [Rust stable toolchain](rust-toolchain.toml) and dependencies recorded in [Cargo.lock](Cargo.lock).
 
-- The main `kt-app` binary intentionally exposes only GUI entry points:
-  no args, `--gui`, and `--help`. Historical flags such as `--safe`,
-  `--system-ssh`, `--show-log`, and `--list` fail clearly.
-- Multi-hop `ProxyJump` chains are not implemented.
-- Trigger rules are not editable from the UI yet, and full syntax highlighting
-  is not implemented.
-- macOS and Windows desktop packages are not formally signed/notarized, so
-  Gatekeeper and SmartScreen may require manual confirmation.
-- Android APKs use a stable keystore and increasing `versionCode` values, so
-  newer builds can replace older installations. iOS IPAs are intentionally
-  unsigned and cannot be installed until the user signs them.
-- The pipeline does not upload to TestFlight or the App Store. iOS update
-  continuity depends on the user's re-signing setup, not on this CI pipeline.
-- The headless client exists as a `kt-core` example for debugging the core
-  pipeline; it is not the main product surface.
-
-## Quick Start
-
-Requires the current Rust stable channel. `rust-toolchain.toml` follows `stable`
-and does not pin a numeric compiler version.
-
-### Linux Dependencies
-
-Ubuntu/Debian:
+Ubuntu/Debian dependencies match [CI](.github/workflows/alpha.yml):
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev \
-  libgtk-3-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
-  libxdo-dev \
-  libssl-dev \
-  pkg-config
-```
-
-macOS and Windows need no extra system packages for local development.
-
-### Mobile Packaging
-
-Mobile builds use the current stable Dioxus CLI:
-
-```bash
-rustup component add llvm-tools-preview
-cargo install dioxus-cli --locked
-dx bundle --release --platform android --target aarch64-linux-android --package-types apk --package kt-app
-dx build --release --platform ios --target aarch64-apple-ios --package kt-app
-```
-
-Android additionally needs Android SDK 35, Build Tools 35.0.0, and NDK 27.2;
-iOS compilation only needs Xcode. Release stripping uses the host toolchain's
-`rust-objcopy`; the repository packaging scripts preflight it and configure the
-LLVM dynamic-library path for Linux/macOS. Create a protected `mobile-signing` Environment
-for the Android job and configure these Environment secrets:
-
-- Android (PKCS#12 keystore): `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-  `ANDROID_KEY_ALIAS`, and `ANDROID_CERT_SHA256`; add `ANDROID_KEY_PASSWORD`
-  when it differs from the store password.
-
-Both platforms use the fixed identifier `com.kitonyterms.app`. Never replace
-the Android keystore after publishing. The iOS artifact contains no signing
-identity or provisioning profile and must be re-signed before installation.
-For later iOS builds to replace an existing installation, keep the same Apple
-Team/application identifier, Bundle ID, and compatible entitlements, and do not
-decrease the app version or build number. Some free-account signing tools may
-rewrite the Bundle ID or issue short-lived signatures, so seamless updates are
-not guaranteed.
-
-Restrict the `mobile-signing` deployment branch/tag policy to `main` and formal
-`v*` tags, and protect both `main` and `v*` tag creation so unreviewed workflow
-changes cannot access production signing material. Mobile build numbers are
-allocated by the shared Alpha/Release concurrency lock from UTC seconds, with
-the previous counter value (`1,787,238,032`) as the cutover floor. This avoids
-GitHub API writes from the allocator and must remain at or below Android's
-`2,100,000,000` versionCode limit. The lock prevents same-second allocations
-under normal runner clocks; a persistent external counter is required for an
-absolute guarantee across clock rollback or workflow concurrency changes.
-
-### Run The App
-
-```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config
 cargo run -p kt-app
 ```
 
-Useful entry checks:
+On macOS/Windows, install Rust and the platform build tools, then run `cargo run -p kt-app`. For a desktop phone preview:
 
 ```bash
-cargo run -p kt-app -- --gui
-cargo run -p kt-app -- --help
+cargo run -p kt-app --features phone-preview
 ```
 
-In the UI, create a connection from the sidebar, choose authentication options,
-connect, then save the session if you want it persisted. Saved passwords and key
-passphrases go into the encrypted vault, not into `config.toml`.
+Resize the window below a 600 CSS-pixel short side. Create and save connections from the sidebar; passwords and key passphrases go into the encrypted vault.
 
-In Settings, WebDAV accepts a complete HTTP(S) resource URL and uses ETag
-preconditions to avoid silently overwriting concurrent changes. LAN sharing
-uses a temporary random-port HTTP endpoint with a one-time pairing code and a
-ten-minute expiry. LAN protocol v2 uses a 26-character Crockford Base32 pairing
-secret (I/L/O/U are excluded) and also renders it as a QR code, so mobile devices
-can scan it with the camera instead of typing; manual entry normalizes case,
-spaces, hyphens, and the O/I/L lookalikes. Legacy v1 and short pairing codes are
-not accepted. Address discovery ranks VPN and tunnel interfaces last, so
-sharing while a VPN is up does not hand out an unreachable address. Only
-`config.toml`-equivalent non-secret settings and saved sessions are synchronized.
+## Storage
 
-## Developer Map
+[Config paths](crates/kt-config/src/lib.rs) and [Store](crates/kt-ui/src/store.rs) manage:
 
-```text
-kt-app
-  Dioxus desktop/mobile entry, desktop window/icon/menu setup, minimal CLI handling
+- `config.toml`: sessions and non-secret settings; `known_hosts.toml`: trusted host keys.
+- `secrets.vault`: encrypted passwords and passphrases; `secrets.vault.key`: the per-install local key. Keep both private.
+- Android uses app-private `files/config` and `files/data`.
+- Legacy fixed-key vaults migrate automatically; legacy master-password vaults that cannot be opened are backed up as `secrets.vault.legacy*` before replacement.
 
-kt-ui
-  Dioxus components, AppState/Store bridge, terminal workbench, SFTP sidebar,
-  monitor UI, dialogs, settings, host-key/auth prompts
+## Build and release
 
-kt-core
-  SessionManager, russh connection/auth, PTY shell, terminal engine,
-  SFTP worker, remote monitor, UI <-> core message protocol
+[Alpha](.github/workflows/alpha.yml) updates the rolling prerelease on main pushes. [Release](.github/workflows/release.yml) publishes v* tags whose version matches [Cargo.toml](Cargo.toml). RustSec findings block formal releases and produce warnings for Alpha.
 
-kt-config
-  Config paths, TOML model, sessions, app settings, known_hosts, ssh_config merge
+Artifacts cover macOS/Windows/Linux x64 and aarch64, plus Android/iOS aarch64. Android APKs use a fixed signing certificate. iOS IPAs are unsigned and require user re-signing before installation.
 
-kt-secrets
-  Argon2id + XChaCha20-Poly1305 vault for local secret storage
+The workflows define mobile environments and commands: Dioxus CLI, `llvm-tools-preview`, Android SDK/NDK or Xcode. Packaging entry points:
 
-kt-sync
-  WebDAV and one-time LAN transport for non-secret configuration snapshots
-```
+- [Android](.github/scripts/package-android-apk.sh): the `mobile-signing` Environment supplies `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_CERT_SHA256`; set `ANDROID_KEY_PASSWORD` when different. Missing or mismatched credentials fail the build.
+- [iOS](.github/scripts/package-ios-ipa.sh): produces unsigned IPAs without Android signing secrets.
+- [Build numbers](.github/scripts/allocate-mobile-build-number.sh): UTC-second allocation under shared concurrency; absolute uniqueness and monotonicity are not guaranteed across clock rollback.
+- [objcopy preflight](.github/scripts/prepare-rust-objcopy.sh): prepares the LLVM loader path before dx.
 
-The important boundary is `kt-core`: it owns protocol and terminal behavior and
-does not depend on the UI. `kt-ui` talks to it through `ToCore` / `FromCore`
-messages and renders selector-style view models.
+Both platforms use [com.kitonyterms.app](Dioxus.toml). Android updates retain the signing certificate; iOS replacement depends on re-signing identity and configuration.
 
-## Storage Model
-
-- `config.toml`: non-secret session profiles and app settings.
-- `known_hosts.toml`: trusted host-key fingerprints and last-seen metadata.
-- `secrets.vault`: encrypted passwords and key passphrases.
-- `secrets.vault.key`: per-install local vault key; keep it private together
-  with the vault.
-- On Android these files live under the app-private `files/config` and
-  `files/data` directories.
-- Legacy fixed-key vaults are migrated to the current per-install key at startup.
-- Legacy master-password vaults that cannot be opened automatically are backed
-  up as `secrets.vault.legacy*`; new secrets continue in a fresh encrypted
-  vault.
-
-Secret values should never be written to config files or logs.
-
-## Validation
-
-Maintainer gate:
+## Validation and development
 
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-bash -n .github/scripts/allocate-mobile-build-number.sh
-bash -n .github/scripts/prepare-rust-objcopy.sh
-bash -n .github/scripts/package-android-apk.sh
-bash -n .github/scripts/package-ios-ipa.sh
-bash -n .github/scripts/publish-alpha.sh
 ```
 
-The workspace test suite covers the app entry point, configuration and secret
-storage, SSH/terminal/SFTP core behavior, UI state transitions, and pure UI
-logic. Counts are intentionally not listed here because they change whenever
-coverage grows.
+[SSH loopback tests](crates/kt-core/tests/roundtrip.rs) cover exec, PTY, cancellation, and generation isolation. [Mobile packaging contracts](crates/kt-app/tests/mobile_packaging_contract.rs) cover scripts and artifact rules. Test definitions are not evidence of a passing run in the current environment.
 
-The core integration test at
-[`crates/kt-core/tests/roundtrip.rs`](crates/kt-core/tests/roundtrip.rs)
-starts a real in-process `russh` server on loopback and verifies the full path:
-connect, password auth, PTY, shell data, `TermEngine`, and `GridSnapshot`.
+See [architecture](.agentdocs/architecture.md), [targeted checks](.agentdocs/maintenance.md), and [pending phone input validation](.agentdocs/workflow/260820-mobile-phone-ui.md).
 
-## Release Automation
-
-GitHub Actions has two packaging workflows:
-
-- `.github/workflows/release.yml`: `v*` tags create formal GitHub Releases with
-  desktop artifacts, signed Android APKs, and unsigned iOS IPAs after the
-  blocking RustSec audit passes.
-- `.github/workflows/alpha.yml`: pushes to `main` update the rolling `alpha`
-  prerelease. RustSec findings are warnings only. New assets are uploaded to an
-  invisible draft first, then the fixed `alpha` tag and public Release are
-  switched together; failures restore the previous tag and Release.
-
-Both workflows share artifact naming for Linux/macOS/Windows x
-`x64`/`aarch64`, plus Android/iOS `aarch64`. Android packaging verifies the
-identifier, version, ABI, icon, and signing certificate. iOS packaging verifies
-the unique `Payload/*.app`, Info.plist metadata, arm64 architecture, and absence
-of provisioning profiles or code-signature residue. Missing or mismatched
-Android signing secrets fail closed. GitHub cannot mark a prerelease as Latest,
-so Alpha uses the rolling tag/newest prerelease semantics rather than promising
-a permanent first position after later releases.
-
-## Roadmap Snapshot
-
-- [x] Core SSH + terminal engine
-- [x] Dioxus desktop GUI
-- [x] Session persistence, encrypted vault, SFTP, monitor
-- [x] Host-key trust flow, split views, ssh-agent, ProxyJump, trigger highlight
-- [x] UI modularization and selector-driven shell panels
-- [x] Release/alpha packaging and maintenance governance
-- [x] Stable-signed Android APK and re-signable unsigned iOS IPA packaging
-- [ ] Multi-hop ProxyJump, editable trigger rules, richer terminal highlighting
-
-## License
-
-Apache-2.0
+License: Apache-2.0 ([workspace declaration](Cargo.toml)).

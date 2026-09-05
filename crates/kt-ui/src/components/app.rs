@@ -26,9 +26,9 @@ use crate::components::dialog::{
     first_public_key_path, saved_connection_refs, ConnectionDialog, GroupDialog, SftpNameDialog,
 };
 use crate::components::external_edit::{
-    ensure_private_edit_dir, external_edit_local_path, external_edit_status_text,
-    local_file_modified, open_local_file_with, ExternalEdit, ExternalEditAction,
-    ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
+    detect_editors, editor_menu_entries, ensure_private_edit_dir, external_edit_local_path,
+    external_edit_status_text, local_file_modified, open_local_file_with, ExternalEdit,
+    ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
 };
 use crate::components::inline_editor::{
     inline_edit_load_error_text, inline_edit_size_rejection, read_editable_text,
@@ -46,6 +46,7 @@ use crate::components::settings::{ActiveShare, SettingsPanel, SyncAction};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
 use crate::components::state_controller::{use_state_controller, EditSignals, StoreSignals};
+use crate::components::theme::{concrete_theme_name, use_system_theme};
 use crate::device::use_device_class;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
@@ -92,7 +93,9 @@ pub fn get_state() -> &'static Arc<Mutex<AppState>> {
         )
         .expect("无法启动 SessionManager");
 
-        Arc::new(Mutex::new(AppState::new(manager)))
+        let mut app_state = AppState::new(manager);
+        app_state.update_terminal_scrollback(store.settings().scrollback_lines);
+        Arc::new(Mutex::new(app_state))
     })
 }
 
@@ -124,6 +127,7 @@ pub fn App() -> Element {
     let mut edit_forward_agent = use_signal(|| false);
 
     let mut settings = use_signal(|| store.settings());
+    let detected_editors = use_signal(detect_editors);
     let show_settings = use_signal(|| false);
     let mut sync_busy = use_signal(|| false);
     let mut sync_status = use_signal(|| None::<String>);
@@ -191,6 +195,7 @@ pub fn App() -> Element {
     let phone_tab = use_signal(|| PhoneTab::Servers);
     let mut phone_sheet = use_signal(|| None::<PhoneSheet>);
     let device_class = use_device_class();
+    let system_is_light = use_system_theme();
     use_effect(move || {
         // 上下文菜单和动作面板分别属于桌面/手机 Shell，设备切换时不能把旧状态带过去。
         let is_phone = device_class().is_phone();
@@ -415,9 +420,12 @@ pub fn App() -> Element {
 
     let current_settings = settings();
     let language = current_settings.language;
-    let theme_name = current_settings.normalized_theme();
+    let theme_name = concrete_theme_name(&current_settings.theme, system_is_light());
     let is_phone = device_class().is_phone();
     let window_class_name = window_class(active_resize(), theme_name, is_phone);
+    let open_with_editors = editor_menu_entries(&current_settings.editors, &(detected_editors)());
+    let accent_color = normalized_accent_color(&current_settings.accent_color);
+    let accent_rgb = accent_color_rgb(accent_color);
     let sessions_snapshot = all_sessions();
     let active_session_ref = active_session(&sessions_snapshot, active_session_id());
     let active_status_session = active_session_ref.cloned();
@@ -574,28 +582,7 @@ pub fn App() -> Element {
                 }
             })
         },
-        on_sftp_entry_external_edit: {
-            let state = Arc::clone(state);
-            Callback::new(move |ctx: SftpEntryContext| {
-                let file_name = ctx.entry.name.clone();
-                let editor = settings.peek().default_editor.clone();
-                if let Err(message) = start_sftp_external_edit(
-                    state.clone(),
-                    ctx,
-                    editor,
-                    external_edits,
-                    next_external_edit_id,
-                ) {
-                    tracing::error!("外部编辑下载启动失败: {}", message);
-                    external_edit_notice.set(Some(format!(
-                        "{} {}: {}",
-                        texts(language).sftp.edit_status_failed,
-                        file_name,
-                        message
-                    )));
-                }
-            })
-        },
+        on_sftp_entry_inline_edit: on_sftp_inline_edit,
     };
 
     // 手机与桌面/平板的主界面在这里分派。两个 render 函数都必须保持无 hook，
@@ -620,6 +607,7 @@ pub fn App() -> Element {
 
         div {
             class: "{window_class_name}",
+            style: "--blue: {accent_color}; --accent-rgb: {accent_rgb};",
             "data-theme": "{theme_name}",
             onmousemove: move |evt| {
                 match active_resize() {
@@ -657,7 +645,7 @@ pub fn App() -> Element {
                     ContextMenu {
                     menu,
                     language,
-                    editors: current_settings.editors.clone(),
+                    editors: open_with_editors.clone(),
                     on_profile_edit: {
                         let saved_profiles = saved_profiles.clone();
                         move |name: String| {
@@ -955,7 +943,9 @@ pub fn App() -> Element {
                 }
             }
 
-            if let Some((session_id, session_title, challenge)) = active_auth_challenge.clone() {
+            if let Some((session_id, session_title, generation, challenge)) =
+                active_auth_challenge.clone()
+            {
                 AuthChallengeDialog {
                     session_title,
                     challenge: challenge.clone(),
@@ -964,6 +954,20 @@ pub fn App() -> Element {
                         let state = Arc::clone(state);
                         let challenge = challenge.clone();
                         move |answers: Vec<String>| {
+                            if let AuthChallenge::Sudo { operation_id, .. } = &challenge {
+                                if let Ok(mut app_state) = state.lock() {
+                                    let _ = app_state.manager.send(ToCore::SudoResponse {
+                                        id: session_id,
+                                        operation_id: *operation_id,
+                                        response: AuthResponse::Answers(answers),
+                                    });
+                                    if let Some(sess) = app_state.sessions.get_mut(&session_id) {
+                                        sess.auth_challenge = None;
+                                        sess.auth_challenge_generation = None;
+                                    }
+                                }
+                                return;
+                            }
                             if let Some(secret) =
                                 pending_auth_secret(session_id, &challenge, &answers)
                             {
@@ -979,28 +983,42 @@ pub fn App() -> Element {
                             if let Ok(mut app_state) = state.lock() {
                                 if !app_state.manager.send(ToCore::AuthResponse {
                                     id: session_id,
+                                    generation,
                                     response: AuthResponse::Answers(answers),
                                 }) {
                                     tracing::warn!("认证响应投递失败: {:?}", session_id);
                                 }
                                 if let Some(sess) = app_state.sessions.get_mut(&session_id) {
                                     sess.auth_challenge = None;
+                                    sess.auth_challenge_generation = None;
                                 }
                             }
                         }
                     },
                     on_cancel: {
                         let state = Arc::clone(state);
+                        let challenge = challenge.clone();
                         move |_| {
                             if let Ok(mut app_state) = state.lock() {
-                                if !app_state.manager.send(ToCore::AuthResponse {
-                                    id: session_id,
-                                    response: AuthResponse::Cancel,
-                                }) {
+                                let sent = if let AuthChallenge::Sudo { operation_id, .. } = &challenge {
+                                    app_state.manager.send(ToCore::SudoResponse {
+                                        id: session_id,
+                                        operation_id: *operation_id,
+                                        response: AuthResponse::Cancel,
+                                    })
+                                } else {
+                                    app_state.manager.send(ToCore::AuthResponse {
+                                        id: session_id,
+                                        generation,
+                                        response: AuthResponse::Cancel,
+                                    })
+                                };
+                                if !sent {
                                     tracing::warn!("认证取消响应投递失败: {:?}", session_id);
                                 }
                                 if let Some(sess) = app_state.sessions.get_mut(&session_id) {
                                     sess.auth_challenge = None;
+                                    sess.auth_challenge_generation = None;
                                 }
                             }
                         }
@@ -1446,15 +1464,59 @@ pub fn App() -> Element {
                 },
                 on_settings_change: {
                     let store = Arc::clone(store);
+                    let state = Arc::clone(state);
                     move |next: kt_config::AppSettings| {
                         match store.update_settings(next.clone()) {
-                            Ok(()) => settings.set(next),
+                            Ok(()) => {
+                                if next.scrollback_lines != settings.peek().scrollback_lines {
+                                    if let Ok(mut app_state) = state.lock() {
+                                        app_state.update_terminal_scrollback(next.scrollback_lines);
+                                    }
+                                }
+                                settings.set(next)
+                            }
                             Err(e) => tracing::error!("保存设置失败: {}", e),
                         }
                     }
                 },
             }
         }
+    }
+}
+
+fn normalized_accent_color(value: &str) -> &str {
+    if value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        value
+    } else {
+        "#5aa7ff"
+    }
+}
+
+fn accent_color_rgb(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() != 7 || bytes[0] != b'#' {
+        return "90, 167, 255".to_string();
+    }
+    let parse = |start| {
+        let high = hex_digit(bytes[start])?;
+        let low = hex_digit(bytes[start + 1])?;
+        Some(high * 16 + low)
+    };
+    match (parse(1), parse(3), parse(5)) {
+        (Some(red), Some(green), Some(blue)) => format!("{red}, {green}, {blue}"),
+        _ => "90, 167, 255".to_string(),
+    }
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1593,6 +1655,7 @@ fn auth_challenge_vault_id(challenge: &AuthChallenge) -> Option<String> {
         AuthChallenge::Password { user, host, port } => Some(format!("{user}@{host}:{port}")),
         AuthChallenge::KeyPassphrase { key_path } => Some(format!("key:{key_path}")),
         AuthChallenge::KeyboardInteractive { .. } => None,
+        AuthChallenge::Sudo { .. } => None,
     }
 }
 
@@ -1602,6 +1665,7 @@ fn auth_challenge_secret(challenge: &AuthChallenge, answers: &[String]) -> Optio
             answers.first().filter(|answer| !answer.is_empty()).cloned()
         }
         AuthChallenge::KeyboardInteractive { .. } => None,
+        AuthChallenge::Sudo { .. } => None,
     }
 }
 
@@ -1711,5 +1775,21 @@ mod tests {
         };
 
         assert!(pending_auth_secret(SessionId(1), &challenge, &["123456".to_string()]).is_none());
+    }
+
+    #[test]
+    fn sudo_challenge_is_never_saved_as_a_login_secret() {
+        let challenge = AuthChallenge::Sudo {
+            operation_id: kt_core::OperationId(9),
+            prompt: "sudo password".to_string(),
+        };
+        assert!(pending_auth_secret(SessionId(1), &challenge, &["secret".to_string()]).is_none());
+    }
+
+    #[test]
+    fn accent_color_rgb_matches_the_hex_accent() {
+        assert_eq!(accent_color_rgb("#12aBc0"), "18, 171, 192");
+        assert_eq!(accent_color_rgb("invalid"), "90, 167, 255");
+        assert_eq!(accent_color_rgb("#ééé"), "90, 167, 255");
     }
 }

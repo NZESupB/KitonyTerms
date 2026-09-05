@@ -75,10 +75,12 @@ fn run_gui() -> Result<(), String> {
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn mobile_config() -> dioxus::desktop::Config {
-    dioxus::desktop::Config::new().with_custom_head(
-        r#"<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">"#
-            .to_string(),
-    )
+    dioxus::desktop::Config::new()
+        .with_disable_context_menu(false)
+        .with_custom_head(
+            r#"<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">"#
+                .to_string(),
+        )
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -143,6 +145,8 @@ fn desktop_config() -> dioxus::desktop::Config {
             .with_resizable(true)
             .with_decorations(false),
     );
+    // 保留输入控件的系统复制/粘贴右键菜单；工作台自身的上下文菜单仍由 UI 事件处理。
+    config = config.with_disable_context_menu(false);
     if let Some(window_icon) = icon::kitony_window_icon() {
         config = config.with_icon(window_icon);
     }

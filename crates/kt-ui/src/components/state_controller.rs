@@ -59,6 +59,12 @@ pub fn use_state_controller(
         mut inline_edit,
         on_inline_edit_action,
     } = edit_signals;
+    use_effect(move || {
+        let active = active_session_id();
+        if let Ok(mut app_state) = state.lock() {
+            app_state.select_operations_session(active);
+        }
+    });
     use_future(move || async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;

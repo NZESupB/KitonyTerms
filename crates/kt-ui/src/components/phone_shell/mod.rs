@@ -38,7 +38,7 @@ pub use tab::{PhoneTab, PHONE_TABS};
 use crate::components::app_logic::duplicate_profile;
 use crate::components::icons::Icon;
 use crate::components::main_shell::{ConnectionDialogSignals, ShellArgs};
-use crate::components::monitor::MonitorPanel;
+use crate::components::operations::OperationsPanel;
 use crate::components::sftp::join_path;
 use crate::components::sidebar::SftpEntryContext;
 use crate::components::terminal::{
@@ -188,18 +188,12 @@ pub fn render_phone_shell(args: ShellArgs, extras: PhoneExtras) -> Element {
                     PhoneTab::Monitor => rsx! {
                         div {
                             class: "phone-view phone-view-monitor",
-                            if let Some(monitor) = active_monitor {
-                                div {
-                                    class: "phone-scroll",
-                                    MonitorPanel {
-                                        key: "phone-monitor-{monitor.session_id.0}",
-                                        session_id: monitor.session_id,
-                                        language,
-                                        compact: false,
-                                    }
-                                }
-                            } else {
-                                div { class: "phone-empty", p { "{t.phone.monitor_need_session}" } }
+                            OperationsPanel {
+                                session_id: active_monitor.as_ref().map(|monitor| monitor.session_id),
+                                connected,
+                                language,
+                                mobile: true,
+                                settings,
                             }
                         }
                     },

@@ -274,6 +274,9 @@ pub fn InlineEditorDialog(
             section {
                 class: "inline-editor-panel",
                 onclick: move |evt| evt.stop_propagation(),
+                // 工作台根节点会屏蔽自己的右键菜单；编辑器必须让原生
+                // textarea 菜单继续工作，才能使用复制、剪切、粘贴和全选。
+                oncontextmenu: move |evt| evt.stop_propagation(),
 
                 header {
                     class: "inline-editor-head",

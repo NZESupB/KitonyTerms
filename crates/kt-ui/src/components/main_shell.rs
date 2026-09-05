@@ -13,7 +13,7 @@ use std::{
 
 use dioxus::prelude::*;
 use kt_config::{
-    normalize_theme_name, AppLanguage, AppSettings, AuthMethod, SessionProfile, DEFAULT_LIGHT_THEME,
+    resolve_theme_name, AppLanguage, AppSettings, AuthMethod, SessionProfile, DEFAULT_LIGHT_THEME,
 };
 use kt_core::{SessionId, ToCore};
 
@@ -28,6 +28,7 @@ use crate::components::app_logic::{
 };
 use crate::components::dialog::first_public_key_path;
 use crate::components::icons::Icon;
+use crate::components::operations::OperationsPanel;
 use crate::components::sidebar::{ContextMenuState, SftpEntryContext};
 use crate::i18n::{texts, AppText};
 use crate::state::AppState;
@@ -53,7 +54,7 @@ pub enum SplitMode {
 }
 
 pub fn theme_class(theme: &str) -> &'static str {
-    if normalize_theme_name(theme) == DEFAULT_LIGHT_THEME {
+    if resolve_theme_name(theme, false) == DEFAULT_LIGHT_THEME {
         "theme-light"
     } else {
         "theme-dark"
@@ -183,7 +184,7 @@ pub struct ShellArgs {
     pub sidebar_collapsed: Signal<bool>,
     pub split_mode: Signal<Option<SplitMode>>,
     pub on_sftp_entry_open: Callback<SftpEntryContext>,
-    pub on_sftp_entry_external_edit: Callback<SftpEntryContext>,
+    pub on_sftp_entry_inline_edit: Callback<SftpEntryContext>,
 }
 
 #[derive(Clone, Copy)]
@@ -310,7 +311,7 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
         mut sidebar_collapsed,
         split_mode,
         on_sftp_entry_open,
-        on_sftp_entry_external_edit,
+        on_sftp_entry_inline_edit,
         // 连接对话框的各个 edit_* 信号已由 `from_shell_args` 取走。
         ..
     } = args;
@@ -390,7 +391,7 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
                 context_menu,
                 collapsed_server_groups,
                 on_sftp_entry_open,
-                on_sftp_entry_external_edit,
+                on_sftp_entry_inline_edit,
             })}
 
             div {
@@ -419,12 +420,20 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
                 state,
                 settings,
                 language,
-                active_terminal,
+                active_terminal: active_terminal.clone(),
                 session_tabs,
                 dialog_signals,
                 active_session_id,
                 split_mode,
             })}
+
+            OperationsPanel {
+                session_id: active_terminal.as_ref().map(|session| session.id),
+                connected: active_terminal.as_ref().is_some_and(|session| session.connected),
+                language,
+                mobile: false,
+                settings,
+            }
         }
 
         {render_status_bar(StatusBarArgs {

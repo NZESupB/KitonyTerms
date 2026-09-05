@@ -162,6 +162,15 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M17 3V7H21" }
             path { d: "M7 21V17H3" }
         },
+        "play" => rsx! {
+            path { d: "M8 5L19 12L8 19z" }
+        },
+        "stop" => rsx! {
+            path { d: "M6 6H18V18H6z" }
+        },
+        "check" => rsx! {
+            path { d: "M5 12L10 17L19 7" }
+        },
         "upload" => rsx! {
             path { d: "M12 19V5" }
             path { d: "M6 11L12 5L18 11" }
@@ -222,6 +231,28 @@ fn IconPath(name: &'static str) -> Element {
             path { d: "M12 9L6 15" }
             path { d: "M12 9L18 15" }
             path { d: "M6 15L18 15" }
+        },
+        "docker" => rsx! {
+            path { d: "M3 13H21" }
+            path { d: "M5 10H8V13H5z" }
+            path { d: "M9 10H12V13H9z" }
+            path { d: "M13 10H16V13H13z" }
+            path { d: "M9 7H12V10H9z" }
+            path { d: "M13 7H16V10H13z" }
+            path { d: "M6 16C8 19 15 20 19 16" }
+            path { d: "M19 11C20 10 21 10 22 11" }
+        },
+        "services" => rsx! {
+            path { d: "M5 4H19V20H5z" }
+            path { d: "M8 8H16" }
+            path { d: "M8 12H16" }
+            path { d: "M8 16H13" }
+        },
+        "processes" => rsx! {
+            path { d: "M5 5H19V19H5z" }
+            path { d: "M8 9H16" }
+            path { d: "M8 13H13" }
+            path { d: "M16 14L19 17" }
         },
         _ => rsx! {
             path { d: "M4 4H20V20H4z" }

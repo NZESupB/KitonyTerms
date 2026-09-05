@@ -58,7 +58,7 @@ pub(super) struct SidebarPanelArgs {
     pub(super) context_menu: Signal<Option<ContextMenuState>>,
     pub(super) collapsed_server_groups: Signal<BTreeSet<String>>,
     pub(super) on_sftp_entry_open: Callback<SftpEntryContext>,
-    pub(super) on_sftp_entry_external_edit: Callback<SftpEntryContext>,
+    pub(super) on_sftp_entry_inline_edit: Callback<SftpEntryContext>,
 }
 
 pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
@@ -85,7 +85,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
         context_menu,
         mut collapsed_server_groups,
         on_sftp_entry_open,
-        on_sftp_entry_external_edit,
+        on_sftp_entry_inline_edit,
     } = args;
 
     let t = texts(language).app;
@@ -304,7 +304,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         language,
                         on_context_menu: move |menu| show_context_menu(context_menu, menu),
                         on_entry_open: move |ctx| on_sftp_entry_open.call(ctx),
-                        on_entry_external_edit: move |ctx| on_sftp_entry_external_edit.call(ctx),
+                        on_entry_inline_edit: move |ctx| on_sftp_entry_inline_edit.call(ctx),
                         on_auto_sync_change: {
                             let store = Arc::clone(&store);
                             let mut settings = settings;

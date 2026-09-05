@@ -53,8 +53,12 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
                         trigger_highlights: settings().trigger_highlights,
                         show_line_numbers: settings().show_line_numbers,
                         show_timestamps: settings().show_timestamps,
+                        font_family: settings().font_family,
+                        font_size: settings().font_size,
+                        cursor_style: settings().cursor_style,
                         language,
                         split_mode,
+                        exec_id: None,
                         // 手机屏幕放不下两个终端，不提供分屏入口。
                         allow_split: false,
                     }

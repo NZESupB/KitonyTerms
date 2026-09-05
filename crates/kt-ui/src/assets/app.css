@@ -17,6 +17,21 @@
     --muted: #98a6b8;
     --faint: #657386;
     --blue: #5aa7ff;
+    --accent-rgb: 90, 167, 255;
+    --accent-soft: rgba(var(--accent-rgb), 0.12);
+    --accent-fill: rgba(var(--accent-rgb), 0.28);
+    --accent-hover: rgba(var(--accent-rgb), 0.38);
+    --accent-border: rgba(var(--accent-rgb), 0.58);
+    --menu-bg: #121a25;
+    --menu-border: rgba(148, 163, 184, 0.24);
+    --menu-shadow: rgba(0, 0, 0, 0.46);
+    --menu-text: #dce7f6;
+    --menu-hover: rgba(var(--accent-rgb), 0.13);
+    --menu-hover-text: #f8fbff;
+    --menu-muted: var(--muted);
+    --menu-danger: #ffb1b1;
+    --menu-danger-hover: #ffd5d5;
+    --menu-danger-bg: rgba(255, 111, 111, 0.14);
     --green: #57d28b;
     --amber: #f2b85b;
     --purple: #b487ff;
@@ -396,6 +411,16 @@ button[title]:focus-visible::after {
     --amber: #b7791f;
     --purple: #7c3aed;
     --red: #dc2626;
+    --menu-bg: rgba(255, 255, 255, 0.98);
+    --menu-border: rgba(75, 91, 109, 0.24);
+    --menu-shadow: rgba(27, 39, 56, 0.22);
+    --menu-text: var(--text);
+    --menu-hover: rgba(var(--accent-rgb), 0.12);
+    --menu-hover-text: var(--text);
+    --menu-muted: var(--muted);
+    --menu-danger: #b91c1c;
+    --menu-danger-hover: #991b1b;
+    --menu-danger-bg: rgba(220, 38, 38, 0.10);
     --shadow: rgba(27, 39, 56, 0.16);
     --terminal-default-fg: #17212f;
     /* 浅色终端底色是 #f8fbff：gutter 必须用足够深的前景色才看得清。 */
@@ -582,7 +607,7 @@ button[title]:focus-visible::after {
 .kt-window.theme-light .dialog-select,
 .kt-window.theme-light .dialog-field input,
 .kt-window.theme-light .password-toggle {
-    background: rgba(241, 245, 249, 0.9);
+    background: var(--panel-soft);
     color: var(--text);
 }
 
@@ -599,13 +624,13 @@ button[title]:focus-visible::after {
 }
 
 .kt-window.theme-light .dialog-btn {
-    background: rgba(148, 163, 184, 0.18);
+    background: var(--panel-raised);
     color: var(--text);
 }
 
 .kt-window.theme-light .dialog-btn.primary {
-    background: rgba(37, 99, 235, 0.22);
-    color: #ffffff;
+    background: var(--accent-fill);
+    color: var(--text);
 }
 
 .kt-content {
@@ -613,6 +638,459 @@ button[title]:focus-visible::after {
     min-height: 0;
     flex: 1;
     overflow: hidden;
+}
+
+/* ========== 远程运维中心 ========== */
+.operations-capabilities {
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    margin-bottom: 8px;
+}
+
+.operations-capabilities summary {
+    cursor: pointer;
+    padding: 4px 0;
+}
+
+.operations-capabilities dl {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 4px 8px;
+    padding: 8px 0;
+}
+
+.operations-dock {
+    display: flex;
+    flex-direction: row-reverse;
+    min-height: 0;
+    flex: 0 0 auto;
+    border-left: 1px solid var(--border-soft);
+    background: var(--panel);
+}
+
+.operations-rail {
+    display: flex;
+    width: 48px;
+    min-width: 48px;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 2px;
+    border-left: 1px solid var(--border-soft);
+}
+
+.operations-tool-button,
+.operations-close,
+.operations-refresh {
+    display: inline-flex;
+    width: 40px;
+    height: 40px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 6px;
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+}
+
+.operations-tool-button:hover:not(:disabled),
+.operations-tool-button.is-active,
+.operations-close:hover,
+.operations-refresh:hover:not(:disabled) {
+    color: var(--text);
+    background: rgba(90, 167, 255, 0.16);
+}
+
+.operations-tool-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.38;
+}
+
+.operations-tool-button .kt-icon,
+.operations-close .kt-icon,
+.operations-refresh .kt-icon {
+    width: 20px;
+    height: 20px;
+    color: currentColor;
+    background: transparent;
+}
+
+.operations-drawer {
+    display: none;
+    width: clamp(360px, 32vw, 520px);
+    min-width: 360px;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--panel);
+}
+
+.operations-drawer.is-open {
+    display: flex;
+}
+
+.operations-drawer-header {
+    display: flex;
+    min-height: 54px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px 0 16px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.operations-drawer-header > div,
+.operations-section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.operations-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.operations-drawer-header h2,
+.operations-section h3 {
+    margin: 0;
+    font-size: 15px;
+    letter-spacing: 0;
+}
+
+.operations-drawer-body {
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+    color: var(--text);
+}
+
+.operations-state {
+    display: flex;
+    min-height: 160px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--muted);
+    text-align: center;
+}
+
+.operations-state .kt-icon {
+    width: 28px;
+    height: 28px;
+}
+
+.operations-state p,
+.operations-state small,
+.operations-error,
+.operations-summary {
+    margin: 0;
+}
+
+.operations-state p {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.operations-state small {
+    max-width: 280px;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.operations-error {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 4px;
+    color: var(--red);
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 12px;
+}
+
+.operations-section {
+    margin-bottom: 14px;
+    padding: 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.operations-summary {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.operations-kv-grid {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.operations-kv {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.operations-kv small {
+    color: var(--muted);
+}
+
+.operations-kv strong,
+.operations-list-row strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.operations-core-grid {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+}
+
+.operations-core,
+.operations-list-row {
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.1);
+    font-size: 12px;
+}
+
+.operations-core {
+    padding: 6px 8px;
+}
+
+.operations-section-title {
+    justify-content: space-between;
+}
+
+.operations-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.operations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.operations-list-row {
+    display: grid;
+    min-height: 32px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.operations-list-row span {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.operations-result-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 28px;
+    margin-bottom: 8px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.operations-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+
+.operations-tab {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 9px;
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.operations-tab:hover,
+.operations-tab.is-active {
+    border-color: var(--blue);
+    background: rgba(90, 167, 255, 0.14);
+    color: var(--text);
+}
+
+.operations-filter-bar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.operations-filter-input,
+.operations-filter-select {
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    background: var(--bg-strong);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+}
+
+.operations-filter-input {
+    flex: 1 1 0;
+}
+
+.operations-filter-select {
+    flex: 0 0 auto;
+}
+
+.operations-resource-list {
+    margin-top: 0;
+}
+
+.operations-resource-row {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    background: var(--panel-soft);
+}
+
+.operations-resource-primary,
+.operations-resource-meta {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.operations-resource-primary {
+    flex: 1 1 0;
+}
+
+.operations-resource-primary strong,
+.operations-resource-primary small,
+.operations-resource-meta span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.operations-resource-primary strong {
+    color: var(--text);
+    font-size: 13px;
+}
+
+.operations-resource-primary small,
+.operations-resource-meta {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.operations-resource-meta {
+    flex: 0 1 42%;
+    max-width: 58%;
+    align-items: flex-end;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.operations-row-actions {
+    display: inline-flex;
+    max-width: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: 2px;
+}
+
+.operations-action-button {
+    display: inline-flex;
+    width: 25px;
+    height: 25px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.operations-action-button:hover {
+    border-color: var(--border);
+    background: rgba(90, 167, 255, 0.14);
+    color: var(--text);
+}
+
+.operations-action-button.danger {
+    color: var(--red);
+}
+
+.operations-action-button.is-confirm {
+    border-color: rgba(239, 68, 68, 0.55);
+    background: rgba(239, 68, 68, 0.16);
+    color: var(--red);
+}
+
+.operations-details {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.operations-details pre {
+    max-height: 520px;
+    margin: 0;
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    background: var(--bg-strong);
+    color: var(--text);
+    font: 12px/1.5 "SF Mono", "Menlo", "Consolas", monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.operations-action-result {
+    padding: 12px;
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    border-radius: 5px;
+    color: var(--green);
+    background: rgba(74, 222, 128, 0.08);
+    font-size: 12px;
+}
+
+.operations-status {
+    color: var(--green);
+    font-weight: 600;
 }
 
 .toolbar-spacer,
@@ -869,9 +1347,18 @@ button[title]:focus-visible::after {
 }
 
 .sftp-tree-list {
+    position: relative;
     min-height: 0;
     flex: 1;
     overflow: auto;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.sftp-tree-list.is-drop-target {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
 }
 
 .sftp-table-grid {
@@ -920,7 +1407,12 @@ button[title]:focus-visible::after {
 }
 
 .sftp-table-row:hover {
-    background: rgba(90, 167, 255, 0.10);
+    background: var(--accent-soft);
+}
+
+.sftp-table-row.is-drop-target {
+    outline: 1px solid var(--accent-border);
+    background: var(--accent-soft);
 }
 
 .sftp-name-cell {
@@ -959,6 +1451,24 @@ button[title]:focus-visible::after {
     padding: 5px 2px 0;
     color: var(--muted);
     font-size: 12px;
+}
+
+.sftp-upload-status {
+    display: flex;
+    min-height: 24px;
+    align-items: center;
+    gap: 7px;
+    margin: 0 10px;
+    padding: 4px 2px 0;
+    color: var(--blue);
+    font-size: 11px;
+}
+
+.sftp-upload-status span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .sftp-tree-message,
@@ -1056,10 +1566,11 @@ button[title]:focus-visible::after {
 .connection-card {
     position: relative;
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 8px;
-    margin: 2px 0;
-    padding: 8px 7px 8px 10px;
+    margin: 1px 0;
+    padding: 5px 7px 5px 10px;
     border: 1px solid transparent;
     border-radius: 8px;
     color: #d7e1ef;
@@ -1081,6 +1592,7 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 8px;
     cursor: pointer;
+    overflow: hidden;
 }
 
 .connection-main > .status-dot {
@@ -1090,6 +1602,8 @@ button[title]:focus-visible::after {
 
 .connection-copy {
     min-width: 0;
+    overflow: hidden;
+    padding-right: 78px;
 }
 
 .connection-copy strong,
@@ -1113,6 +1627,15 @@ button[title]:focus-visible::after {
 }
 
 .connection-actions {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    right: 6px;
+    min-width: 78px;
+    justify-content: flex-end;
+    padding-left: 12px;
+    transform: translateY(-50%);
+    background: linear-gradient(90deg, transparent, var(--panel) 22%);
     display: flex;
     align-items: center;
     gap: 2px;
@@ -1121,6 +1644,14 @@ button[title]:focus-visible::after {
 }
 
 .connection-card:hover .connection-actions {
+    opacity: 1;
+}
+
+.connection-card.is-active .connection-actions {
+    background: linear-gradient(90deg, transparent, #304d81 22%);
+}
+
+.connection-card:focus-within .connection-actions {
     opacity: 1;
 }
 
@@ -2167,12 +2698,14 @@ button[title]:focus-visible::after {
     z-index: 1200;
     min-width: 190px;
     max-height: calc(100vh - 16px);
-    overflow: auto;
+    /* 子菜单从这里横向飞出，不能被父菜单的滚动裁剪吞掉。长菜单由
+       视口边界脚本负责定位，面板本身保持可见以便命中指针事件。 */
+    overflow: visible;
     padding: 5px;
-    border: 1px solid rgba(148, 163, 184, 0.24);
+    border: 1px solid var(--menu-border);
     border-radius: 8px;
-    background: #121a25;
-    box-shadow: 0 18px 46px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    background: var(--menu-bg);
+    box-shadow: 0 18px 46px var(--menu-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .context-menu button {
@@ -2184,15 +2717,15 @@ button[title]:focus-visible::after {
     padding: 0 9px;
     border-radius: 6px;
     background: transparent;
-    color: #dce7f6;
+    color: var(--menu-text);
     cursor: pointer;
     font-size: 13px;
     text-align: left;
 }
 
 .context-menu button:hover:not(:disabled) {
-    background: rgba(90, 167, 255, 0.13);
-    color: #f8fbff;
+    background: var(--menu-hover);
+    color: var(--menu-hover-text);
 }
 
 .context-menu button:disabled {
@@ -2201,12 +2734,12 @@ button[title]:focus-visible::after {
 }
 
 .context-menu button.danger {
-    color: #ffb1b1;
+    color: var(--menu-danger);
 }
 
 .context-menu button.danger:hover:not(:disabled) {
-    background: rgba(255, 111, 111, 0.14);
-    color: #ffd5d5;
+    background: var(--menu-danger-bg);
+    color: var(--menu-danger-hover);
 }
 
 .context-menu .kt-icon {
@@ -2218,7 +2751,7 @@ button[title]:focus-visible::after {
 }
 
 .context-menu small {
-    color: var(--muted);
+    color: var(--menu-muted);
     font-family: "SF Mono", "Menlo", monospace;
     font-size: 11px;
 }
@@ -2232,6 +2765,7 @@ button[title]:focus-visible::after {
 /* 右键"打开方式"子菜单：悬停触发的横向飞出面板 */
 .context-submenu {
     position: relative;
+    z-index: 1;
 }
 
 .context-submenu-panel {
@@ -2242,16 +2776,22 @@ button[title]:focus-visible::after {
     min-width: 180px;
     max-height: calc(100vh - 16px);
     overflow: auto;
-    margin-left: 2px;
+    /* 与触发项无缝相接，避免移入子菜单时丢失 hover。 */
+    margin-left: 0;
     padding: 5px;
-    border: 1px solid rgba(148, 163, 184, 0.24);
+    border: 1px solid var(--menu-border);
     border-radius: 8px;
-    background: #121a25;
-    box-shadow: 0 18px 46px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    background: var(--menu-bg);
+    box-shadow: 0 18px 46px var(--menu-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     display: none;
+    pointer-events: auto;
 }
 
 .context-submenu:hover .context-submenu-panel {
+    display: block;
+}
+
+.context-submenu-panel:hover {
     display: block;
 }
 
@@ -2274,12 +2814,12 @@ button[title]:focus-visible::after {
     border: 1px solid var(--border);
     border-radius: 7px;
     outline: none;
-    background: rgba(8, 13, 19, 0.64);
-    color: #eef4ff;
+    background: var(--panel-soft);
+    color: var(--text);
 }
 
 .group-form input:focus {
-    border-color: rgba(90, 167, 255, 0.58);
+    border-color: var(--accent-border);
 }
 
 .group-actions {
@@ -2293,22 +2833,52 @@ button[title]:focus-visible::after {
     height: 32px;
     padding: 0 14px;
     border-radius: 7px;
-    background: rgba(148, 163, 184, 0.14);
-    color: #dce7f6;
+    background: var(--panel-raised);
+    color: var(--text);
     cursor: pointer;
 }
 
 .group-actions button:hover {
-    background: rgba(148, 163, 184, 0.22);
+    background: var(--accent-soft);
 }
 
 .group-actions button.primary {
-    background: rgba(90, 167, 255, 0.28);
-    color: #f8fbff;
+    background: var(--accent-fill);
+    color: var(--text);
 }
 
 .group-actions button.primary:hover {
-    background: rgba(90, 167, 255, 0.38);
+    background: var(--accent-hover);
+}
+
+.upload-conflict-overlay {
+    z-index: 1100;
+}
+
+.upload-conflict-dialog {
+    width: min(460px, 100%);
+}
+
+.upload-conflict-dialog .group-form p {
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.upload-conflict-dialog .group-form code {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    margin-top: 5px;
+    padding: 5px 7px;
+    border-radius: 5px;
+    background: var(--bg-strong);
+    color: var(--text);
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .settings-panel.external-edit-dialog {
@@ -2373,7 +2943,7 @@ button[title]:focus-visible::after {
 }
 
 .dialog-field span {
-    color: #dce7f6;
+    color: var(--text);
     font-size: 12px;
     font-weight: 700;
 }
@@ -2386,8 +2956,8 @@ button[title]:focus-visible::after {
     min-height: 34px;
     border: 1px solid var(--border);
     border-radius: 7px;
-    background: rgba(8, 13, 19, 0.64);
-    color: #f4f8ff;
+    background: var(--panel-soft);
+    color: var(--text);
     font-size: 13px;
 }
 
@@ -2398,6 +2968,15 @@ button[title]:focus-visible::after {
 
 .dialog-field-row input {
     width: 100%;
+}
+
+.dialog-field input:focus,
+.dialog-field select:focus,
+.dialog-select:focus,
+.password-toggle:focus-visible {
+    border-color: var(--accent-border);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .dialog-fieldset {
@@ -2440,7 +3019,7 @@ button[title]:focus-visible::after {
     border: 1px solid var(--border);
     border-left: 0;
     border-radius: 0 7px 7px 0;
-    background: rgba(8, 13, 19, 0.64);
+    background: var(--panel-soft);
     color: var(--muted);
     cursor: pointer;
 }
@@ -2504,13 +3083,13 @@ button[title]:focus-visible::after {
 
 .dialog-tab:hover {
     color: var(--text);
-    background: rgba(148, 163, 184, 0.10);
+    background: var(--accent-soft);
 }
 
 .dialog-tab.is-active {
     color: var(--text);
     border-left-color: var(--blue);
-    background: rgba(90, 167, 255, 0.12);
+    background: var(--accent-soft);
 }
 
 .dialog-body {
@@ -2535,23 +3114,23 @@ button[title]:focus-visible::after {
     min-height: 32px;
     padding: 0 14px;
     border-radius: 7px;
-    background: rgba(148, 163, 184, 0.14);
-    color: #dce7f6;
+    background: var(--panel-raised);
+    color: var(--text);
     cursor: pointer;
     font-size: 13px;
 }
 
 .dialog-btn:hover {
-    background: rgba(148, 163, 184, 0.22);
+    background: var(--accent-soft);
 }
 
 .dialog-btn.primary {
-    background: rgba(90, 167, 255, 0.28);
-    color: #f8fbff;
+    background: var(--accent-fill);
+    color: var(--text);
 }
 
 .dialog-btn.primary:hover {
-    background: rgba(90, 167, 255, 0.38);
+    background: var(--accent-hover);
 }
 
 .external-edit-dialog-body p.dialog-error {
@@ -2622,8 +3201,9 @@ button[title]:focus-visible::after {
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: #111822;
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 24px 70px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .app-settings-panel {
@@ -2751,11 +3331,16 @@ button[title]:focus-visible::after {
 }
 
 .settings-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);
     align-items: center;
-    justify-content: space-between;
     gap: 18px;
     padding: 16px 18px;
+}
+
+.settings-row:not(.settings-row-stacked) > :last-child {
+    max-width: 280px;
+    justify-self: end;
 }
 
 .settings-row + .settings-row {
@@ -2764,6 +3349,10 @@ button[title]:focus-visible::after {
 
 .settings-row-copy {
     min-width: 0;
+    min-height: 42px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .settings-row strong {
@@ -2773,6 +3362,7 @@ button[title]:focus-visible::after {
 
 .settings-row p {
     max-width: 380px;
+    min-height: 18px;
     margin-top: 4px;
     color: var(--muted);
     font-size: 12px;
@@ -2802,19 +3392,49 @@ button[title]:focus-visible::after {
 }
 
 .segmented-control button.is-selected {
-    background: rgba(90, 167, 255, 0.22);
+    background: var(--accent-fill);
     color: var(--text);
     font-weight: 650;
 }
 
 /* 设置：堆叠行 / 编辑器与终端显示项 */
 .settings-row-stacked {
+    display: flex;
     flex-direction: column;
     align-items: stretch;
 }
 
+.settings-row-stacked .settings-row-copy {
+    min-height: 0;
+}
+
 .settings-row-stacked p {
     max-width: none;
+}
+
+.settings-control-stack {
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.terminal-font-preview {
+    min-height: 84px;
+    overflow: hidden;
+    padding: 9px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    background: var(--terminal-bg, var(--bg-strong));
+    color: var(--terminal-default-fg);
+}
+
+.terminal-font-preview pre {
+    overflow: hidden;
+    font: inherit;
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    white-space: pre;
 }
 
 /* 输入框与下拉统一：字号、高度、配色全部跟随主题变量，
@@ -2839,6 +3459,38 @@ select.settings-text-input {
 .settings-text-input:focus-visible {
     border-color: var(--blue);
     outline: none;
+}
+
+.settings-number-input {
+    width: 120px;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-strong);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.settings-color-input {
+    width: 54px;
+    height: 34px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-strong);
+    cursor: pointer;
+}
+
+.settings-number-input:focus-visible {
+    border-color: var(--blue);
+    outline: none;
+}
+
+.settings-select-compact {
+    width: 100%;
+    max-width: 160px;
 }
 
 /* 配对秘密用等宽字体并放宽字距，核对时不易看错。 */
@@ -3857,6 +4509,72 @@ select.settings-text-input {
     grid-template-columns: 1fr;
 }
 
+.operations-mobile {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
+.operations-mobile-tools {
+    display: flex;
+    min-height: 48px;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.operations-mobile-tools .operations-tool-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+}
+
+.operations-mobile-content {
+    min-height: 0;
+    flex: 1;
+    overflow: auto;
+}
+
+.operations-mobile-content .operations-drawer-body {
+    overflow: visible;
+}
+
+@media (max-width: 1099px), (pointer: coarse) {
+    .operations-dock {
+        position: relative;
+        z-index: 10;
+        border-left: 0;
+        background: transparent;
+    }
+
+    .operations-rail {
+        border-left: 1px solid var(--border-soft);
+        background: var(--panel);
+    }
+
+    .operations-drawer.is-open {
+        position: fixed;
+        z-index: 50;
+        top: 0;
+        right: 0;
+        bottom: 58px;
+        width: min(520px, calc(100vw - 48px));
+        min-width: 0;
+        border-left: 1px solid var(--border);
+        box-shadow: -16px 0 32px var(--shadow);
+    }
+
+    .operations-tool-button,
+    .operations-close {
+        width: 44px;
+        height: 44px;
+    }
+}
+
 /* ---- 底部标签栏 ---- */
 
 .phone-tabbar {
@@ -4036,4 +4754,22 @@ select.settings-text-input {
 /* 手机上按钮与输入等宽排布，避免一行挤两个窄按钮。 */
 .kt-window.is-phone .settings-actions .settings-button {
     flex: 1 1 auto;
+}
+
+.kt-window.is-phone .settings-row:not(.settings-row-stacked) {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+}
+
+.kt-window.is-phone .settings-row:not(.settings-row-stacked) > :last-child {
+    max-width: none;
+    justify-self: stretch;
+}
+
+.kt-window.is-phone .settings-row:not(.settings-row-stacked) .segmented-control {
+    width: 100%;
+}
+
+.kt-window.is-phone .settings-row:not(.settings-row-stacked) .segmented-control button {
+    flex: 1 1 0;
 }

@@ -75,6 +75,9 @@ zeroize = { version = "1", features = ["derive"] }
 # 不限制稳定版本线；Cargo.lock 记录每次更新后实际验证的版本。
 dioxus = { version = ">=0", features = ["desktop", "mobile"] }
 
+# 本机字体枚举（桌面端设置页）。
+fontdb = "0.24"
+
 # --- 桌面端原生剪贴板（绕开 WebView 的系统粘贴确认） ---
 arboard = { version = "3.6.1", default-features = false }
 
@@ -107,9 +110,13 @@ panic = "abort"
 
 # 本地开发/测试优先控制可重建产物体积：依赖不保留完整调试信息，
 # 主项目仍保留行号级调试信息；关闭增量缓存避免多轮 workspace 检查堆积。
+# Apple 目标（macOS/iOS）显式使用 unpacked：调试信息留在各编译单元的目标文件里，
+# 不再执行 dsymutil 导出体积翻倍的 .dSYM 目录。rustc 自身默认是 packed，
+# Cargo 当前只在 macOS 覆盖为 unpacked 且声明默认值可能变化，因此这里显式固定。
 [profile.dev]
 debug = 1
 incremental = false
+split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 debug = 0
@@ -117,6 +124,7 @@ debug = 0
 [profile.test]
 debug = 1
 incremental = false
+split-debuginfo = "unpacked"
 
 [profile.test.package."*"]
 debug = 0
