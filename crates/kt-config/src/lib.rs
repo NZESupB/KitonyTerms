@@ -533,6 +533,11 @@ pub struct AppSettings {
     /// Show a per-line timestamp gutter (`[HH:MM:SS]`) in the terminal.
     #[serde(default)]
     pub show_timestamps: bool,
+    /// Wrap terminal output at the viewport width. When disabled the PTY keeps a
+    /// wider column count so long `systemctl`/`journalctl` lines stay on one row
+    /// and are reachable by horizontal scrolling.
+    #[serde(default = "default_true")]
+    pub terminal_wrap: bool,
     /// Keep the SFTP file manager and the terminal working directory in sync.
     /// Persisted so the user only has to opt in once instead of per session.
     #[serde(default)]
@@ -555,6 +560,7 @@ impl Default for AppSettings {
             editors: Vec::new(),
             show_line_numbers: false,
             show_timestamps: false,
+            terminal_wrap: true,
             sftp_auto_sync: false,
         }
     }
@@ -579,6 +585,11 @@ fn default_trigger_highlights() -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+/// 布尔默认值为真时使用的 serde 默认函数（`bool::default()` 是 false）。
+fn default_true() -> bool {
+    true
 }
 
 fn default_accent_color() -> String {
@@ -985,11 +996,25 @@ use_ssh_config = true
         assert!(settings.editors.is_empty());
         assert!(!settings.show_line_numbers);
         assert!(!settings.show_timestamps);
+        assert!(settings.terminal_wrap);
         assert_eq!(settings.accent_color, "#5aa7ff");
         // 旧配置中的密度字段已不再生效，仍可读取；保存时不会重新写回。
         let legacy_toml = format!("{toml}density = \"comfortable\"\n");
         let legacy: AppSettings = toml::from_str(&legacy_toml).unwrap();
         assert!(!toml::to_string(&legacy).unwrap().contains("density"));
+    }
+
+    #[test]
+    fn terminal_wrap_round_trips_and_defaults_to_wrapping() {
+        assert!(AppSettings::default().terminal_wrap);
+
+        let settings = AppSettings {
+            terminal_wrap: false,
+            ..AppSettings::default()
+        };
+        let toml = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&toml).unwrap();
+        assert!(!parsed.terminal_wrap);
     }
 
     #[test]

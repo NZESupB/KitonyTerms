@@ -43,7 +43,7 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
             div {
                 class: "phone-terminal-body",
                 // 点击终端任意处唤起软键盘：手机上没有别的方式把焦点交给输入框。
-                onclick: move |_| focus_phone_keyboard(session_id),
+                onclick: move |_| focus_phone_keyboard(),
 
                 if let Some(snapshot) = session.snapshot.clone() {
                     Terminal {
@@ -53,6 +53,7 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
                         trigger_highlights: settings().trigger_highlights,
                         show_line_numbers: settings().show_line_numbers,
                         show_timestamps: settings().show_timestamps,
+                        terminal_wrap: settings().terminal_wrap,
                         font_family: settings().font_family,
                         font_size: settings().font_size,
                         cursor_style: settings().cursor_style,
@@ -72,8 +73,8 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
                 }
             }
 
+            // 组件自身跟随会话切换（桥接目标由渲染同步），无需靠 key 重建。
             PhoneKeyboard {
-                key: "phone-keyboard-{session_id.0}",
                 session_id,
                 language,
             }

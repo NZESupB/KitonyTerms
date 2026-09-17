@@ -3232,6 +3232,14 @@ button[title]:focus-visible::after {
     font-size: 16px;
 }
 
+.settings-version {
+    flex: 0 0 auto;
+    color: var(--faint);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    user-select: text;
+}
+
 /* 桌面：左导航 + 右内容，两栏各自滚动，导航始终可见。 */
 .settings-layout {
     display: flex;

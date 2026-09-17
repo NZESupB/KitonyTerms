@@ -978,6 +978,7 @@ fn ContainerTerminalPanel(
                         trigger_highlights: settings_value.trigger_highlights,
                         show_line_numbers: settings_value.show_line_numbers,
                         show_timestamps: settings_value.show_timestamps,
+                        terminal_wrap: settings_value.terminal_wrap,
                         font_family: settings_value.font_family,
                         font_size: settings_value.font_size,
                         cursor_style: settings_value.cursor_style,

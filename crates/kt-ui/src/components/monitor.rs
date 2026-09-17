@@ -1,5 +1,7 @@
 //! 资源监控面板组件。
 
+use std::{cell::Cell, rc::Rc};
+
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
 use kt_core::monitor::MonitorStats;
@@ -11,6 +13,11 @@ use crate::components::metrics_format::{
 };
 use crate::i18n::texts;
 
+/// 样本只有在归属当前会话时才允许渲染：切换会话的当帧不能画出上一个会话的数据。
+fn sample_is_current(owner: Option<SessionId>, session_id: SessionId) -> bool {
+    owner == Some(session_id)
+}
+
 #[component]
 pub fn MonitorPanel(session_id: SessionId, language: AppLanguage, compact: bool) -> Element {
     let state = crate::components::app::get_state().clone();
@@ -19,24 +26,58 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage, compact: bool)
     let mut stats = use_signal(|| None::<MonitorStats>);
     let mut loading = use_signal(|| true);
     let mut error_message = use_signal(|| None::<String>);
+    // 样本归属的会话：渲染前先比对归属，切换会话的当帧就不会再画出上一个会话的数据。
+    let mut sample_owner = use_signal(|| None::<SessionId>);
+    // 底栏里的 MonitorPanel 处在普通子节点位，外层 `key` 不参与 Dioxus 的 diff（`key`
+    // 只在条件渲染/迭代器产生的 Fragment 层比较），所以切换会话必须由 `use_reactive`
+    // 重启轮询；旧轮询靠代次收敛，避免迟到样本写回新会话。
+    let poll_generation = use_hook(|| Rc::new(Cell::new(0_u64)));
 
-    use_effect(move || {
+    use_effect(use_reactive((&session_id,), move |(session_id,)| {
+        sample_owner.set(None);
+        stats.set(None);
+        loading.set(true);
+        error_message.set(None);
+
+        let generation = poll_generation.get().wrapping_add(1);
+        poll_generation.set(generation);
+        let poll_generation = poll_generation.clone();
         let state = state.clone();
         spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                if let Ok(app_state) = state.lock() {
-                    if let Some(sess) = app_state.sessions.get(&session_id) {
-                        stats.set(sess.monitor.clone());
-                        loading.set(sess.monitor_loading);
-                        error_message.set(sess.monitor_error.clone());
-                    }
+                if poll_generation.get() != generation {
+                    break;
+                }
+                let Ok(app_state) = state.lock() else {
+                    continue;
+                };
+                let Some(sess) = app_state.sessions.get(&session_id) else {
+                    continue;
+                };
+                if stats.peek().as_ref() != sess.monitor.as_ref() {
+                    stats.set(sess.monitor.clone());
+                }
+                if *loading.peek() != sess.monitor_loading {
+                    loading.set(sess.monitor_loading);
+                }
+                if error_message.peek().as_ref() != sess.monitor_error.as_ref() {
+                    error_message.set(sess.monitor_error.clone());
+                }
+                if *sample_owner.peek() != Some(session_id) {
+                    sample_owner.set(Some(session_id));
                 }
             }
         });
-    });
+    }));
 
-    let waiting_grid_class = if loading() {
+    let (stats_view, loading_view, error_view) = if sample_is_current(sample_owner(), session_id) {
+        (stats(), loading(), error_message())
+    } else {
+        (None, true, None)
+    };
+
+    let waiting_grid_class = if loading_view {
         "monitor-grid is-loading"
     } else {
         "monitor-grid"
@@ -53,13 +94,13 @@ pub fn MonitorPanel(session_id: SessionId, language: AppLanguage, compact: bool)
                 }
             }
 
-            if error_message().is_some() {
+            if error_view.is_some() {
                 div {
                     class: "monitor-state-message error",
                     Icon { name: "monitor" }
                     "{t.error_prefix}: {t.unavailable}"
                 }
-            } else if let Some(ref s) = stats() {
+            } else if let Some(ref s) = stats_view {
                 div {
                     class: "monitor-grid",
 
@@ -436,5 +477,12 @@ mod tests {
     fn format_cores_uses_real_sample_count() {
         assert_eq!(format_cores(1, "核心"), "1 核心");
         assert_eq!(format_cores(0, "核心"), "--");
+    }
+
+    #[test]
+    fn sample_only_renders_for_the_session_that_owns_it() {
+        assert!(sample_is_current(Some(SessionId(2)), SessionId(2)));
+        assert!(!sample_is_current(Some(SessionId(2)), SessionId(1)));
+        assert!(!sample_is_current(None, SessionId(1)));
     }
 }

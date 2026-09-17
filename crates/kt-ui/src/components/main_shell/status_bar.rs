@@ -23,7 +23,6 @@ pub(super) fn render_status_bar(args: StatusBarArgs) -> Element {
                 div {
                     class: "status-monitor",
                     MonitorPanel {
-                        key: "monitor-{monitor.session_id.0}",
                         session_id: monitor.session_id,
                         language,
                         compact: true,

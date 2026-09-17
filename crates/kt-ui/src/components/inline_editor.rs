@@ -310,7 +310,10 @@ pub fn InlineEditorDialog(
 
                 textarea {
                     class: "inline-editor-text",
-                    value: "{content()}",
+                    // 只播种一次初值：受控的 `value` 会在每次输入后的重渲染里回写 DOM，
+                    // 事件往返期间写入的是偏旧的内容，光标与滚动因此被顶到文末。
+                    // 文本真相由 DOM 持有，`oninput` 仅同步值用于脏检查与保存。
+                    initial_value: "{edit.original}",
                     readonly: saving,
                     autocapitalize: "off",
                     autocorrect: "off",

@@ -318,6 +318,10 @@ jobs:
 
       - name: Install Android SDK and NDK
         uses: android-actions/setup-android@v3
+        with:
+          # 该 action 默认安装的 `tools` 包已从 Google SDK 仓库下架，
+          # 会让 sdkmanager 直接失败；实际需要的包由下一步显式安装。
+          packages: platform-tools
 
       - name: Install Android packages
         shell: bash

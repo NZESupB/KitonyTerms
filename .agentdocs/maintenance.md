@@ -15,6 +15,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 涉及安全、网络、认证、外部命令或并发时，另执行适用的 `cargo clippy --workspace --all-targets --all-features -- -D warnings`。使用项目工具链；失败需区分代码问题与环境限制。
 
+发布流水线的额外门禁：`release.yml` 在打包前执行 `cargo audit` 且失败即阻断发布（`alpha.yml` 同样扫描但只告警）。豁免集中声明在仓库根目录 `.cargo/audit.toml`，当前仅豁免上游无修复版本的 `RUSTSEC-2023-0071`（rsa，经 russh/ssh-key 引入）；新增豁免需要说明依据，并在上游修复后移除。
+
 ## 定向验证入口
 
 下列命令用于定位回归，不替代适用的完整门禁，也不表示已经执行通过。

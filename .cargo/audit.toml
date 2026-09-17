@@ -1,0 +1,13 @@
+# RustSec 审计配置：`cargo audit` 在仓库根目录运行时自动读取本文件。
+#
+# 正式发布工作流（.github/workflows/release.yml）把 RustSec 扫描当作发布门禁，
+# 因此这里仅豁免上游明确「没有修复版本」的告警，保留其余漏洞继续阻断发布。
+
+[advisories]
+ignore = [
+  # rsa 0.10.0-rc.18：经 russh / ssh-key 的 RSA 公钥支持引入。
+  # RustSec 标注 "No fixed upgrade is available"，上游尚无修复版本；
+  # 该告警（Marvin 计时侧信道）针对 RSA 私钥解密，本项目只在 SSH 客户端
+  # 侧使用 RSA 签名。待 rsa 或 russh 发布修复版本后应删除此豁免。
+  "RUSTSEC-2023-0071",
+]

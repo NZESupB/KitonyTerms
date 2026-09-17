@@ -16,6 +16,9 @@ use crate::components::icons::Icon;
 use crate::components::qr::QrCodeView;
 use crate::i18n::{texts, AppText};
 
+/// 设置面板顶部展示的应用版本，取自 workspace 版本（`Cargo.toml`）。
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum SyncAction {
     WebDavUpload {
@@ -220,6 +223,7 @@ pub fn SettingsPanel(
                             _ => t.settings,
                         }
                     }
+                    span { class: "settings-version", "v{APP_VERSION}" }
                     button {
                         class: "icon-button slim",
                         title: "{t.close}",
@@ -438,6 +442,7 @@ fn TerminalSection(props: SettingsBodyProps) -> Element {
     let on_settings_change = props.on_settings_change;
     let line_numbers_settings = settings.clone();
     let timestamps_settings = settings.clone();
+    let wrap_settings = settings.clone();
     let font_settings = settings.clone();
     let size_settings = settings.clone();
     let scrollback_settings = settings.clone();
@@ -480,6 +485,19 @@ fn TerminalSection(props: SettingsBodyProps) -> Element {
                         },
                     }
                     span { "{t.show_timestamps}" }
+                }
+                label {
+                    class: "settings-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: settings.terminal_wrap,
+                        onchange: move |evt: Event<FormData>| {
+                            let mut next = wrap_settings.clone();
+                            next.terminal_wrap = evt.checked();
+                            on_settings_change.call(next);
+                        },
+                    }
+                    span { "{t.terminal_wrap}" }
                 }
             }
         }
@@ -1015,6 +1033,17 @@ mod tests {
                 .filter(|font| font.as_str() == "Menlo")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn displayed_version_matches_the_release_tag_format() {
+        // 发布工作流要求 tag 与 workspace 版本同为 x.y.z，设置面板显示同一字符串。
+        let parts: Vec<&str> = APP_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "版本号必须是三段数字：{APP_VERSION}");
+        assert!(
+            parts.iter().all(|part| part.parse::<u64>().is_ok()),
+            "版本号每段都必须是数字：{APP_VERSION}"
         );
     }
 }

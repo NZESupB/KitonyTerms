@@ -39,6 +39,7 @@
 - 下载先写私有临时文件；上传保留目标权限，经同目录临时文件提交。
 - 覆盖 rename 失败时备份原文件再替换，提交失败尝试恢复备份；不得先删除正式文件。
 - 内置编辑限制 UTF-8、1 MiB，下载前和读取时均校验；上传失败保留编辑内容与临时文件，允许重试。
+- 内置编辑器用非受控 textarea（`initial_value` 播种、`key` 保证换文件时重建）：改回受控 `value` 会在事件往返期间回写 DOM，把光标与滚动顶到文末。
 - 外部编辑按请求 ID 推进下载/回传；Unix 临时目录/文件保持 0700/0600。
 - 桌面打开方式合并探测结果与用户配置；手机使用内置编辑器。
 
@@ -49,6 +50,7 @@
 - OSC 7 上报远端目录；bootstrap 追加 shell hook，保留用户已有配置。
 - 输出过滤仅处理已识别的 bootstrap 数据；登录信息和 stderr 保留，超时、超限或用户输入时冲刷未确认缓存。
 - 文件管理切目录统一经 `AppState::send_terminal_cd`；检查备用屏，转义路径，先清行/擦回显再执行 cd。
+- 终端列数由视口宽度驱动：`terminal_wrap` 开启时下限 20 列、长行在视口内折行；关闭时保留更宽终端（桌面 160、窄屏 80）供横向查看长行。
 - 输入推断仅作有限兜底，不猜测任意脚本或别名；百分号路径解码仍需注意兼容性。
 - 历史视口收到非空输入先恢复实时底部；双宽字符保留占位语义，显式 ANSI 色不被主题覆盖。
 - 桌面粘贴优先[原生剪贴板](../crates/kt-ui/src/clipboard.rs)，失败再回退 WebView。
@@ -70,8 +72,10 @@
 - app 编排，state_controller 处理事件与副作用；展示组件优先接收轻量 selector。
 - 手机以视口短边 600 CSS px 分界，两套 Shell 共用状态；Shell 渲染函数保持无 hook，局部 hook 下沉组件。
 - 软键盘使用真实 textarea，IME 组合期间不清空输入；键序列复用终端映射，键盘高度由 device 写入统一 CSS 变量。
+- 软键盘输入框用固定 DOM id 且桥接脚本常驻，目标会话每次渲染同步到本地 `Cell`：组件在会话切换时不重建，靠 `key` 无法改目标。
 - 桌面固定紧凑布局；旧 density 字段由配置兼容读取并在保存时移除。
 - [主题](../crates/kt-ui/src/components/theme.rs)与[样式](../crates/kt-ui/src/assets/app.css)使用变量；默认终端色随主题，显式颜色保留。
+- 跟随当前会话的组件状态用 `use_reactive(session_id)` 驱动，轮询另以代次收敛旧任务；Dioxus 的 `key` 只在条件渲染/迭代器产生的 Fragment 层比较，普通子节点位的 `key` 不触发重建。
 - 手机输入的待验收场景见[当前任务](workflow/260820-mobile-phone-ui.md)。
 
 ## 配置同步与打包
@@ -82,5 +86,6 @@
 - 导入经 Store 原子落盘后 ACK；连接、头缓冲、处理时间和重放缓存有界，失败可回滚，认证失败不全局销毁分享。
 - 扫码使用限频灰度帧，卸载时释放摄像头；移动产物声明相机权限。
 - [启动逻辑](../crates/kt-app/src/main.rs)隔离移动端命令行参数读取；[app.rs](../crates/kt-ui/src/components/app.rs)内嵌 CSS。
+- 桌面窗口无系统装饰；macOS 的 Cmd+C/V/A 由应用菜单派发 `copy:`/`paste:`/`selectAll:`，因此 `desktop_config` 必须在设置无装饰窗口之前注册 Edit 菜单，否则连接对话框、设置与内置编辑器的输入框都无法复制粘贴。
 - [工具链](../rust-toolchain.toml)跟随 stable，[Cargo.lock](../Cargo.lock)记录依赖快照，升级显式更新锁文件。
 - 发布、签名、构建号和 objcopy 的操作入口统一见 [README](../README.zh-CN.md#构建与发布)，具体配置以 workflow 和脚本为准。

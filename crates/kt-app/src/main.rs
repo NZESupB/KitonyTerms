@@ -138,7 +138,14 @@ fn show_startup_error(_error: &str) {}
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn desktop_config() -> dioxus::desktop::Config {
-    let mut config = dioxus::desktop::Config::new().with_window(
+    // 无装饰窗口默认会让 Dioxus 丢弃菜单栏，因此必须在替换窗口前先注册菜单：
+    // `Config::with_window` 只在菜单仍是默认状态时才会因无装饰而清空它。
+    let mut config = dioxus::desktop::Config::new();
+    #[cfg(target_os = "macos")]
+    {
+        config = config.with_menu(macos_menu_bar());
+    }
+    config = config.with_window(
         dioxus::desktop::WindowBuilder::new()
             .with_title("KitonyTerms")
             .with_inner_size(dioxus::desktop::LogicalSize::new(1200.0, 800.0))
@@ -151,6 +158,45 @@ fn desktop_config() -> dioxus::desktop::Config {
         config = config.with_icon(window_icon);
     }
     icon::with_platform_icon_hooks(config)
+}
+
+/// macOS 菜单栏。无装饰窗口不会自动获得菜单，而 WKWebView 的
+/// Cmd+C/Cmd+V/Cmd+A/Cmd+X 由菜单项的 `copy:`/`paste:`/`selectAll:` 沿响应链派发，
+/// 缺少 Edit 菜单时连接对话框、设置与内置编辑器的输入框都无法复制粘贴。
+#[cfg(target_os = "macos")]
+fn macos_menu_bar() -> dioxus::desktop::muda::Menu {
+    use dioxus::desktop::muda::{Menu, PredefinedMenuItem, Submenu};
+
+    let menu = Menu::new();
+
+    let app_menu = Submenu::new("KitonyTerms", true);
+    app_menu
+        .append_items(&[
+            &PredefinedMenuItem::hide(None),
+            &PredefinedMenuItem::hide_others(None),
+            &PredefinedMenuItem::show_all(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::quit(None),
+        ])
+        .expect("构建 macOS 应用菜单");
+
+    let edit_menu = Submenu::new("Edit", true);
+    edit_menu
+        .append_items(&[
+            &PredefinedMenuItem::undo(None),
+            &PredefinedMenuItem::redo(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::cut(None),
+            &PredefinedMenuItem::copy(None),
+            &PredefinedMenuItem::paste(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::select_all(None),
+        ])
+        .expect("构建 macOS 编辑菜单");
+
+    menu.append_items(&[&app_menu, &edit_menu])
+        .expect("组装 macOS 菜单栏");
+    menu
 }
 
 #[cfg(test)]

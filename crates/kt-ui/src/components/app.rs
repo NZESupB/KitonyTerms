@@ -832,6 +832,8 @@ pub fn App() -> Element {
                     },
                     _ => rsx! {
                         InlineEditorDialog {
+                            // 换文件时必须重建编辑框：非受控文本框只在挂载时播种初值。
+                            key: "{edit.session_id.0}-{edit.remote_path}",
                             edit: edit.clone(),
                             language,
                             on_save: on_inline_edit_save,

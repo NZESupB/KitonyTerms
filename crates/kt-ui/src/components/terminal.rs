@@ -44,6 +44,9 @@ pub fn Terminal(
     trigger_highlights: Vec<String>,
     show_line_numbers: bool,
     show_timestamps: bool,
+    /// 终端列数是否跟随视口宽度（长行在视口内折行）。关闭时保留更宽的终端，
+    /// 长行由横向滚动查看。
+    terminal_wrap: bool,
     font_family: String,
     font_size: f32,
     cursor_style: CursorStyle,
@@ -100,15 +103,16 @@ pub fn Terminal(
     // 绝对行号基数：可见视口首个逻辑行的行号（含 scrollback 历史，滚动回看时随之减小）。
     let gutter_first_line = snapshot.first_visible_line_number();
 
-    use_effect({
+    use_effect(use_reactive((&terminal_wrap,), {
         let terminal_id = terminal_id.clone();
         let terminal_screen_id = terminal_screen_id.clone();
         let pane_id = pane_id.clone();
-        move || {
+        move |(terminal_wrap,)| {
             let value = state_for_resize.clone();
             let terminal_id = terminal_id.clone();
             let terminal_screen_id = terminal_screen_id.clone();
             let pane_id = pane_id.clone();
+            let auto_wrap = if terminal_wrap { "true" } else { "false" };
             spawn(async move {
                 if pane_id != "primary" && exec_id.is_none() {
                     return;
@@ -152,9 +156,10 @@ pub fn Terminal(
                         || 18;
                     const paddingX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
                     const paddingY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-                    // 保留一段可横向查看的终端宽度，systemctl/journalctl 的长行不会在
-                    // 视口边缘立即折成多行；移动端使用较小的下限避免初始视图过宽。
-                    const minColumns = window.innerWidth < 700 ? 80 : 160;
+                    // 自动换行时列数跟随视口，长行在视口内折行；关闭时保留一段更宽的
+                    // 终端宽度，systemctl/journalctl 的长行留在同一行用横向滚动查看。
+                    const autoWrap = {auto_wrap};
+                    const minColumns = autoWrap ? 20 : (window.innerWidth < 700 ? 80 : 160);
                     const cols = Math.max(
                         minColumns,
                         Math.floor(Math.max(0, element.clientWidth - paddingX) / charWidth),
@@ -205,7 +210,7 @@ pub fn Terminal(
                 }
             });
         }
-    });
+    }));
 
     use_effect({
         let menu = terminal_context_menu;

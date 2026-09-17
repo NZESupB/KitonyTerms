@@ -210,10 +210,9 @@ pub fn render_phone_shell(args: ShellArgs, extras: PhoneExtras) -> Element {
                         disabled: entry.requires_session() && !has_session,
                         onclick: move |_| {
                             // 离开终端页时收起软键盘，否则键盘会盖住新页面。
+                            // 输入框不存在时脚本是空操作，不需要先判断当前会话。
                             if tab == PhoneTab::Terminal && entry != PhoneTab::Terminal {
-                                if let Some(id) = active_id {
-                                    blur_phone_keyboard(id);
-                                }
+                                blur_phone_keyboard();
                             }
                             phone_tab.set(entry);
                         },

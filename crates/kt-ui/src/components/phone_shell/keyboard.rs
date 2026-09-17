@@ -14,7 +14,11 @@
 //! 字节序列一律复用 [`crate::components::terminal`] 中已有且已测的映射，不在这里
 //! 重新实现一套 escape 序列。
 
-use std::sync::{Arc, Mutex};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
@@ -74,22 +78,29 @@ pub const PHONE_KEYBAR: &[PhoneKeyDef] = &[
     send("Del", "Delete"),
 ];
 
-/// 软键盘承接输入框的 DOM id。按会话区分，避免会话切换时新旧节点抢焦点。
-pub fn phone_keyboard_input_id(session_id: SessionId) -> String {
-    format!("kt-phone-keyboard-{}", session_id.0)
+/// 软键盘承接输入框的 DOM id。
+///
+/// 固定值而非按会话区分：手机端同一时刻只渲染一个终端键盘，会话切换时组件复用、
+/// 输入框节点不变，桥接脚本因此可以常驻；发送目标由组件每次渲染同步的会话决定，
+/// 避免切换后按键仍发到上一个会话。
+pub const PHONE_KEYBOARD_INPUT_ID: &str = "kt-phone-keyboard";
+
+/// 软键盘承接输入框的 DOM id。
+pub fn phone_keyboard_input_id() -> &'static str {
+    PHONE_KEYBOARD_INPUT_ID
 }
 
 /// 让软键盘承接输入框获得焦点，唤起系统键盘。
-pub fn focus_phone_keyboard(session_id: SessionId) {
-    let input_id = format!("{:?}", phone_keyboard_input_id(session_id));
+pub fn focus_phone_keyboard() {
+    let input_id = format!("{:?}", phone_keyboard_input_id());
     dioxus::document::eval(&format!(
         r#"document.getElementById({input_id})?.focus({{ preventScroll: true }});"#
     ));
 }
 
 /// 收起系统键盘。
-pub fn blur_phone_keyboard(session_id: SessionId) {
-    let input_id = format!("{:?}", phone_keyboard_input_id(session_id));
+pub fn blur_phone_keyboard() {
+    let input_id = format!("{:?}", phone_keyboard_input_id());
     dioxus::document::eval(&format!(r#"document.getElementById({input_id})?.blur();"#));
 }
 
@@ -99,14 +110,20 @@ pub fn PhoneKeyboard(session_id: SessionId, language: AppLanguage) -> Element {
     let t = texts(language).phone;
     let mut ctrl_armed = use_signal(|| false);
     let mut alt_armed = use_signal(|| false);
-    let input_id = phone_keyboard_input_id(session_id);
+    let input_id = phone_keyboard_input_id();
+    // 桥接脚本常驻在固定的输入框上，会话切换只会改变 props；目标会话必须每次渲染
+    // 同步到本地 Cell，否则按键会继续发往上一个会话。
+    let bridge_session = use_hook(|| Rc::new(Cell::new(session_id)));
+    bridge_session.set(session_id);
 
     use_effect({
         let state = state.clone();
-        let input_id = input_id.clone();
+        let input_id = input_id.to_string();
+        let bridge_session = bridge_session.clone();
         move || {
             let state = state.clone();
             let input_id = input_id.clone();
+            let bridge_session = bridge_session.clone();
             spawn(async move {
                 let mut eval = dioxus::document::eval(&keyboard_bridge_script(&input_id));
                 while let Ok(payload) = eval.recv::<Vec<String>>().await {
@@ -123,7 +140,7 @@ pub fn PhoneKeyboard(session_id: SessionId, language: AppLanguage) -> Element {
                     if *alt_armed.peek() {
                         alt_armed.set(false);
                     }
-                    send_input(&state, session_id, data);
+                    send_input(&state, bridge_session.get(), data);
                 }
             });
         }
@@ -159,13 +176,13 @@ pub fn PhoneKeyboard(session_id: SessionId, language: AppLanguage) -> Element {
                                 let next = !ctrl_armed();
                                 ctrl_armed.set(next);
                                 alt_armed.set(false);
-                                focus_phone_keyboard(session_id);
+                                focus_phone_keyboard();
                             }
                             PhoneKeyKind::StickyAlt => {
                                 let next = !alt_armed();
                                 alt_armed.set(next);
                                 ctrl_armed.set(false);
-                                focus_phone_keyboard(session_id);
+                                focus_phone_keyboard();
                             }
                             PhoneKeyKind::Send(name) => {
                                 if let Some(data) = terminal_input_for_key_name(
@@ -389,12 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_input_ids_are_scoped_per_session() {
-        assert_eq!(phone_keyboard_input_id(SessionId(3)), "kt-phone-keyboard-3");
-        assert_ne!(
-            phone_keyboard_input_id(SessionId(1)),
-            phone_keyboard_input_id(SessionId(2))
-        );
+    fn keyboard_input_id_is_stable_across_sessions() {
+        // 固定 id 让桥接脚本在会话切换后继续有效；发送目标由组件同步的会话决定。
+        assert_eq!(phone_keyboard_input_id(), PHONE_KEYBOARD_INPUT_ID);
     }
 
     #[test]

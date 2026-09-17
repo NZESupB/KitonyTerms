@@ -284,6 +284,7 @@ pub struct AppText {
     pub terminal_display: &'static str,
     pub show_line_numbers: &'static str,
     pub show_timestamps: &'static str,
+    pub terminal_wrap: &'static str,
     pub terminal_display_hint: &'static str,
     pub terminal_font: &'static str,
     pub terminal_font_hint: &'static str,
