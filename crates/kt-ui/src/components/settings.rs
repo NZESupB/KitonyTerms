@@ -224,6 +224,9 @@ pub fn SettingsPanel(
                         }
                     }
                     span { class: "settings-version", "v{APP_VERSION}" }
+                    if !is_phone {
+                        SettingsDragArea {}
+                    }
                     button {
                         class: "icon-button slim",
                         title: "{t.close}",
@@ -284,6 +287,27 @@ pub fn SettingsPanel(
             }
         }
     }
+}
+
+#[component]
+fn SettingsDragArea() -> Element {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        let desktop = dioxus::desktop::use_window();
+        return rsx! {
+            div {
+                class: "settings-window-drag",
+                onmousedown: move |event| {
+                    event.stop_propagation();
+                    if event.trigger_button() == Some(dioxus::html::input_data::MouseButton::Primary) {
+                        desktop.drag();
+                    }
+                },
+            }
+        };
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    rsx! {}
 }
 
 /// 内容区。分类之间共享一批 hook 状态（输入框内容），所以由父组件创建后传入。

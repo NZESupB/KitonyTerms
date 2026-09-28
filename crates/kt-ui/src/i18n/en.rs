@@ -185,6 +185,12 @@ pub const TEXTS: Texts = Texts {
         required_warning: "Please fill in all required fields",
     },
     sftp: SftpText {
+        download: "Download file…",
+        download_folder: "Download folder…",
+        downloading: "Downloading (current file)",
+        downloaded: "Download complete",
+        download_conflict: "The local target exists. Merge directories and overwrite matching files?",
+        end_edit: "Finish external editing…",
         title: "File Management",
         path: "Path",
         close: "Close",

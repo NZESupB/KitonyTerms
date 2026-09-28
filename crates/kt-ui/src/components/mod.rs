@@ -18,6 +18,8 @@ pub mod scanner;
 pub mod security_dialogs;
 pub mod settings;
 pub mod sftp;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub(crate) mod sftp_download;
 pub mod sidebar;
 pub mod state_controller;
 pub mod terminal;

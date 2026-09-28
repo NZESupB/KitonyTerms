@@ -10,6 +10,7 @@
 ## 当前任务
 
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
+- [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；桌面交互与 Windows/Linux 构建待验收。
 
 ## 最近归档
 

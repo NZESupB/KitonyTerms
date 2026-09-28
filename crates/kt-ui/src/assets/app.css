@@ -107,6 +107,12 @@ button:disabled {
     cursor: default;
 }
 
+/* 设置打开时仍保留桌面标题栏的原生窗口操作。 */
+.kt-window:has(.app-settings-overlay.is-desktop) .desktop-titlebar {
+    position: relative;
+    z-index: 1001;
+}
+
 .desktop-topbar-icon,
 .desktop-new-session,
 .desktop-tab-action,
@@ -4780,4 +4786,39 @@ select.settings-text-input {
 
 .kt-window.is-phone .settings-row:not(.settings-row-stacked) .segmented-control button {
     flex: 1 1 0;
+}
+
+.settings-window-drag {
+    flex: 1;
+    min-width: 80px;
+    height: 28px;
+    cursor: grab;
+    user-select: none;
+}
+
+.app-settings-overlay.is-desktop .settings-head h2 {
+    flex: 0 0 auto;
+}
+
+.sftp-download-notice, .external-edit-sessions {
+    position: fixed;
+    right: 16px;
+    bottom: 36px;
+    z-index: 900;
+    display: flex;
+    gap: 12px;
+    max-width: min(680px, 90vw);
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+.external-edit-sessions { bottom: 96px; flex-direction: column; }
+.sftp-download-notice button, .external-edit-sessions button {
+    padding: 4px 8px;
+    background: var(--panel-raised);
+    color: var(--text);
+    cursor: pointer;
 }

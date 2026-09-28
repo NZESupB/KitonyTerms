@@ -34,3 +34,7 @@ TODO
 
 # AI 代理工作流文档：治理文档与 Markdown workflow 纳入版本管理；
 .agentdocs/*
+
+# PI/代理本地状态：计划快照与技能队列不纳入版本管理
+.pi/
+.agents/

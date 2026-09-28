@@ -186,6 +186,12 @@ pub const TEXTS: Texts = Texts {
         required_warning: "请填写所有必填字段",
     },
     sftp: SftpText {
+        download: "下载文件…",
+        download_folder: "下载文件夹…",
+        downloading: "正在下载（当前文件）",
+        downloaded: "下载完成",
+        download_conflict: "本地目标已存在。是否合并目录并覆盖其中的同名文件？",
+        end_edit: "结束外部编辑…",
         title: "文件管理",
         path: "路径",
         close: "关闭",
