@@ -984,6 +984,7 @@ pub fn ContextMenu(
     on_group_rename: EventHandler<String>,
     on_group_delete: EventHandler<String>,
     on_sftp_open: EventHandler<SftpEntryContext>,
+    on_sftp_download: EventHandler<SftpEntryContext>,
     on_sftp_refresh: EventHandler<(SessionId, String)>,
     on_sftp_mkdir: EventHandler<(SessionId, String)>,
     on_sftp_rename: EventHandler<SftpEntryContext>,
@@ -1123,6 +1124,14 @@ pub fn ContextMenu(
                             Icon { name: "refresh" }
                             span { "{sftp_t.refresh}" }
                             small { "F5" }
+                        }
+                        button {
+                            onclick: {
+                                let ctx = ctx.clone();
+                                move |_| on_sftp_download.call(ctx.clone())
+                            },
+                            Icon { name: "file" }
+                            span { if is_dir { "{sftp_t.download_folder}" } else { "{sftp_t.download}" } }
                         }
                         if is_dir {
                             button {

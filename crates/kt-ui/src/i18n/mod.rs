@@ -390,6 +390,12 @@ pub struct DialogText {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SftpText {
+    pub download: &'static str,
+    pub download_folder: &'static str,
+    pub downloading: &'static str,
+    pub downloaded: &'static str,
+    pub download_conflict: &'static str,
+    pub end_edit: &'static str,
     pub title: &'static str,
     pub path: &'static str,
     pub close: &'static str,

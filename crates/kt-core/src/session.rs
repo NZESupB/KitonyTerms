@@ -105,6 +105,12 @@ pub enum SftpRequest {
         remote: String,
         local: std::path::PathBuf,
     },
+    /// 下载文件或递归下载目录；local 为根目标，overwrite 仅来自用户确认。
+    DownloadBatch {
+        remote: String,
+        local: std::path::PathBuf,
+        overwrite: bool,
+    },
     /// 上传本地文件到远端。Upload a local file to a remote path.
     Upload {
         local: std::path::PathBuf,
@@ -130,6 +136,7 @@ impl fmt::Debug for SftpRequest {
         match self {
             Self::List { .. } => f.debug_struct("List").finish(),
             Self::Download { .. } => f.debug_struct("Download").finish(),
+            Self::DownloadBatch { .. } => f.debug_struct("DownloadBatch").finish(),
             Self::Upload { .. } => f.debug_struct("Upload").finish(),
             Self::UploadBatch {
                 entries,

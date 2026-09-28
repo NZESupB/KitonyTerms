@@ -13,6 +13,8 @@ use crate::components::icons::Icon;
 use crate::i18n::texts;
 use crate::state::{SessionState, SftpProgressState};
 
+static EDIT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalEditStatus {
     Downloading,
@@ -97,6 +99,15 @@ pub fn sync_external_edits(
             })
         });
         let session_closed = session.is_none_or(|session| !session.connected);
+
+        if session_closed
+            && edit.status == ExternalEditStatus::Watching
+            && local_file_modified(&edit.local_path)
+                .is_some_and(|modified| Some(modified) == edit.last_seen_modified)
+        {
+            actions.push(ExternalEditAction::DeleteLocal(edit.local_path.clone()));
+            continue;
+        }
 
         if failure.is_some()
             || (completion.is_none()
@@ -213,18 +224,45 @@ fn is_newer_modified(current: Option<SystemTime>, previous: Option<SystemTime>) 
     }
 }
 
+/// 清理编辑副本及其空目录；删除失败必须可诊断，重复清理允许文件不存在。
+pub fn cleanup_edit_file(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!("清理编辑临时文件 {} 失败：{error}", path.display());
+            return;
+        }
+    }
+    if let Some(parent) = path.parent() {
+        // 只删除空的应用会话目录，不递归删除其他编辑记录。
+        if parent.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("sftp-edit")) {
+            if let Err(error) = std::fs::remove_dir(parent) {
+                if !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) {
+                    tracing::warn!("清理编辑空目录失败：{error}");
+                }
+            }
+        }
+    }
+}
+
 pub fn external_edit_local_path(session_id: SessionId, remote_path: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
+        .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir()
         .join("kitonyterms")
         .join("sftp-edit")
         .join(format!("session-{}", session_id.0))
         .join(format!(
-            "{}-{}",
+            "{}-{}-{}-{}",
+            std::process::id(),
             stamp,
+            EDIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             sanitize_local_file_name(&remote_file_name(remote_path))
         ))
 }
@@ -1226,5 +1264,70 @@ mod tests {
             }]
         );
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    #[test]
+    fn disconnect_cleans_unchanged_copy_but_keeps_failed_upload() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("copy");
+        std::fs::write(&path, "content").unwrap();
+        let edit = ExternalEdit {
+            id: 1,
+            session_id: SessionId(1),
+            remote_path: "/copy".into(),
+            local_path: path.clone(),
+            file_name: "copy".into(),
+            request_id: None,
+            status: ExternalEditStatus::Watching,
+            sync_mode: ExternalEditSyncMode::Ask,
+            editor_command: None,
+            last_seen_modified: local_file_modified(&path),
+            pending_modified: None,
+        };
+        let (next, actions) = sync_external_edits(vec![edit.clone()], &HashMap::new());
+        assert!(next.is_empty());
+        for action in actions {
+            if let ExternalEditAction::DeleteLocal(path) = action {
+                cleanup_edit_file(&path);
+            }
+        }
+        assert!(!path.exists());
+        std::fs::write(&path, "unsaved").unwrap();
+        let mut failed = edit;
+        failed.status = ExternalEditStatus::UploadingOnce;
+        failed.request_id = Some(SftpRequestId(2));
+        let (next, actions) = sync_external_edits(vec![failed], &HashMap::new());
+        assert_eq!(next[0].status, ExternalEditStatus::PromptPending);
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, ExternalEditAction::DeleteLocal(_))));
+        assert!(path.exists());
+    }
+    #[test]
+    fn cleanup_removes_only_owned_file_and_empty_session_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("sftp-edit/session-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.txt");
+        let other = dir.join("other.txt");
+        std::fs::write(&first, "one").unwrap();
+        std::fs::write(&other, "two").unwrap();
+        cleanup_edit_file(&first);
+        assert!(!first.exists());
+        assert!(other.exists());
+        cleanup_edit_file(&first);
+        cleanup_edit_file(&other);
+        assert!(!dir.exists());
+    }
+    #[test]
+    fn editing_paths_are_unique_even_for_same_name() {
+        assert_ne!(
+            external_edit_local_path(SessionId(1), "/a"),
+            external_edit_local_path(SessionId(1), "/a")
+        );
     }
 }

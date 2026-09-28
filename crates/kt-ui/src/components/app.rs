@@ -26,9 +26,10 @@ use crate::components::dialog::{
     first_public_key_path, saved_connection_refs, ConnectionDialog, GroupDialog, SftpNameDialog,
 };
 use crate::components::external_edit::{
-    detect_editors, editor_menu_entries, ensure_private_edit_dir, external_edit_local_path,
-    external_edit_status_text, local_file_modified, open_local_file_with, ExternalEdit,
-    ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus, ExternalEditSyncMode,
+    cleanup_edit_file, detect_editors, editor_menu_entries, ensure_private_edit_dir,
+    external_edit_local_path, external_edit_status_text, local_file_modified, open_local_file_with,
+    ExternalEdit, ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus,
+    ExternalEditSyncMode,
 };
 use crate::components::inline_editor::{
     inline_edit_load_error_text, inline_edit_size_rejection, read_editable_text,
@@ -175,7 +176,25 @@ pub fn App() -> Element {
     let mut external_edit_notice = use_signal(|| None::<String>);
     let next_external_edit_id = use_signal(|| 1u64);
     // 内嵌编辑器同一时刻只有一个：它是全屏模态，多开既没有入口也没有意义。
+    let mut pending_download = use_signal(|| None::<SftpEntryContext>);
     let mut inline_edit = use_signal(|| None::<InlineEdit>);
+    use_drop(move || {
+        if let Some(edit) = inline_edit.peek().as_ref() {
+            if matches!(
+                edit.status,
+                InlineEditStatus::Ready | InlineEditStatus::LoadFailed(_)
+            ) {
+                cleanup_edit_file(&edit.local_path);
+            }
+        }
+        for edit in external_edits.peek().iter() {
+            if edit.status == ExternalEditStatus::Watching
+                && local_file_modified(&edit.local_path) == edit.last_seen_modified
+            {
+                cleanup_edit_file(&edit.local_path);
+            }
+        }
+    });
     let mut host_key_prompt = use_signal(|| None::<PendingHostKey>);
     let mut host_key_error = use_signal(|| None::<String>);
     let mut pending_auth_secrets = use_signal(Vec::<PendingAuthSecret>::new);
@@ -237,7 +256,7 @@ pub fn App() -> Element {
                             let mut edits = external_edits.peek().clone();
                             edits.retain(|edit| edit.id != edit_id);
                             external_edits.set(edits);
-                            let _ = std::fs::remove_file(path);
+                            cleanup_edit_file(&path);
                         } else {
                             external_edit_notice.set(Some(format!(
                                 "{} {}",
@@ -292,7 +311,7 @@ pub fn App() -> Element {
                         }
                     }
                     ExternalEditAction::DeleteLocal(path) => {
-                        let _ = std::fs::remove_file(path);
+                        cleanup_edit_file(&path);
                     }
                     ExternalEditAction::UploadCompleted { file_name } => {
                         external_edit_notice.set(Some(format!(
@@ -327,7 +346,7 @@ pub fn App() -> Element {
                             }
                             Err(error) => {
                                 // 过大或二进制内容不进编辑框，临时文件立即清掉。
-                                let _ = std::fs::remove_file(&local_path);
+                                cleanup_edit_file(&local_path);
                                 current.status = InlineEditStatus::LoadFailed(
                                     inline_edit_load_error_text(&error, language),
                                 );
@@ -343,7 +362,7 @@ pub fn App() -> Element {
                         )));
                     }
                     InlineEditAction::DeleteLocal(path) => {
-                        let _ = std::fs::remove_file(path);
+                        cleanup_edit_file(&path);
                     }
                 }
             }),
@@ -515,7 +534,7 @@ pub fn App() -> Element {
     };
     let on_inline_edit_close = Callback::new(move |_| {
         if let Some(edit) = inline_edit.peek().as_ref() {
-            let _ = std::fs::remove_file(&edit.local_path);
+            cleanup_edit_file(&edit.local_path);
         }
         inline_edit.set(None);
     });
@@ -729,6 +748,10 @@ pub fn App() -> Element {
                             context_menu.set(None);
                         }
                     },
+                    on_sftp_download: move |ctx: SftpEntryContext| {
+                        pending_download.set(Some(ctx));
+                        context_menu.set(None);
+                    },
                     on_sftp_refresh: {
                         let state = Arc::clone(state);
                         move |(session_id, path): (SessionId, String)| {
@@ -816,6 +839,28 @@ pub fn App() -> Element {
                         copy_to_clipboard(&value);
                         context_menu.set(None);
                     },
+                    }
+                }
+            }
+            {render_download_controller(pending_download, language)}
+            if external_edits().iter().any(|edit| edit.status == ExternalEditStatus::Watching) {
+                div { class: "external-edit-sessions",
+                    for edit in external_edits().into_iter().filter(|edit| edit.status == ExternalEditStatus::Watching) {
+                        button {
+                            onclick: move |_| {
+                                let mut edits = external_edits.peek().clone();
+                                if let Some(current) = edits.iter_mut().find(|current| current.id == edit.id) {
+                                    if local_file_modified(&current.local_path) == current.last_seen_modified {
+                                        cleanup_edit_file(&current.local_path);
+                                        edits.retain(|current| current.id != edit.id);
+                                    } else {
+                                        current.status = ExternalEditStatus::PromptPending;
+                                    }
+                                }
+                                external_edits.set(edits);
+                            },
+                            "{texts(language).sftp.end_edit} {edit.file_name}"
+                        }
                     }
                 }
             }
@@ -937,7 +982,7 @@ pub fn App() -> Element {
                                 texts(language).sftp.edit_status_ignored,
                                 edit.file_name
                             )));
-                            let _ = std::fs::remove_file(&edit.local_path);
+                            cleanup_edit_file(&edit.local_path);
                         }
                         edits.retain(|edit| edit.id != edit_id);
                         external_edits.set(edits);
@@ -1549,6 +1594,9 @@ fn start_inline_edit(
     mut inline_edit: Signal<Option<InlineEdit>>,
     language: kt_config::AppLanguage,
 ) -> Result<(), String> {
+    if inline_edit.peek().is_some() {
+        return Err(texts(language).sftp.editor_unsaved.to_string());
+    }
     if ctx.entry.is_dir {
         return Ok(());
     }
@@ -1730,6 +1778,21 @@ pub(crate) fn copy_to_clipboard(value: &str) {
         "#
     );
     dioxus::document::eval(&script);
+}
+
+fn render_download_controller(
+    pending: Signal<Option<SftpEntryContext>>,
+    language: kt_config::AppLanguage,
+) -> Element {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        rsx! { crate::components::sftp_download::DownloadController { pending, language } }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (pending, language);
+        rsx! {}
+    }
 }
 
 #[cfg(test)]

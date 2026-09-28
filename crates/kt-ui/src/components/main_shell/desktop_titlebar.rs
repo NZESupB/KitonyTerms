@@ -253,4 +253,48 @@ mod tests {
             DesktopTitlebarLayout::Standard
         );
     }
+
+    fn css_rule(selector: &str) -> &'static str {
+        include_str!("../../assets/app.css")
+            .split_once(&format!("\n{selector} {{"))
+            .and_then(|(_, rest)| rest.split_once('}'))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("缺少样式规则: {selector}"))
+    }
+
+    fn css_z_index(selector: &str) -> u32 {
+        css_rule(selector)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("z-index:"))
+            .and_then(|value| value.trim().strip_suffix(';'))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("缺少有效层级: {selector}"))
+    }
+
+    #[test]
+    fn desktop_drag_area_stays_above_dialogs_but_below_context_menus() {
+        assert!(css_rule(".desktop-titlebar-drag").contains("position: relative;"));
+        let drag_z_index = css_z_index(".desktop-titlebar-drag");
+        for overlay in [".settings-overlay", ".upload-conflict-overlay"] {
+            assert!(
+                css_z_index(overlay) < drag_z_index,
+                "遮罩不应覆盖窗口拖动区: {overlay}"
+            );
+        }
+        assert!(drag_z_index < css_z_index(".context-menu"));
+        assert!(drag_z_index < css_z_index(".context-submenu-panel"));
+    }
+
+    #[test]
+    fn settings_only_raise_titlebar_controls_without_trapping_the_drag_area() {
+        let controls = ".kt-window:has(.app-settings-overlay.is-desktop) .desktop-titlebar > :not(.desktop-titlebar-drag)";
+        assert!(css_rule(controls).contains("position: relative;"));
+        let controls_z_index = css_z_index(controls);
+        assert!(css_z_index(".settings-overlay") < controls_z_index);
+        assert!(controls_z_index < css_z_index(".upload-conflict-overlay"));
+        assert!(controls_z_index < css_z_index(".desktop-titlebar-drag"));
+        assert!(!css_rule(".desktop-titlebar").contains("z-index:"));
+        assert!(!include_str!("../../assets/app.css")
+            .contains(".kt-window:has(.app-settings-overlay.is-desktop) .desktop-titlebar {"));
+    }
 }

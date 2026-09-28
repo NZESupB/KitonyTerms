@@ -5,6 +5,7 @@
 //! [`SftpRequest`]s and emits [`FromCore`] events (listings, progress, done,
 //! errors). A single failed operation reports an error but keeps the task alive.
 
+mod download;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use std::future::Future;
@@ -79,7 +80,9 @@ async fn handle(
 ) -> Result<(), String> {
     let timeout = match req {
         SftpRequest::Download { .. } | SftpRequest::Upload { .. } => TRANSFER_TIMEOUT,
-        SftpRequest::UploadBatch { .. } => BATCH_TRANSFER_TIMEOUT,
+        SftpRequest::UploadBatch { .. } | SftpRequest::DownloadBatch { .. } => {
+            BATCH_TRANSFER_TIMEOUT
+        }
         _ => QUICK_OP_TIMEOUT,
     };
     let path = request_path(req);
@@ -166,6 +169,25 @@ async fn handle_inner(
             Ok(())
         }
 
+        SftpRequest::DownloadBatch {
+            remote,
+            local,
+            overwrite,
+        } => {
+            download::download_tree(session, id, request_id, remote, local, *overwrite, out)
+                .await?;
+            let _ = send_sftp_event(
+                out,
+                FromCore::SftpDone {
+                    id,
+                    request_id,
+                    op: SftpOp::Download,
+                    path: remote.clone(),
+                },
+            )
+            .await;
+            Ok(())
+        }
         SftpRequest::Download { remote, local } => {
             let name = basename(remote);
             let mut src = session
@@ -473,9 +495,11 @@ async fn download_to_local<R>(
 where
     R: AsyncReadExt + Unpin,
 {
-    let (temp_path, mut dst) = create_private_download_temp(target)
+    let (temp_path, dst) = create_private_download_temp(target)
         .await
         .map_err(|error| format!("创建本地临时文件失败：{error}"))?;
+    let _cleanup = download::LocalTempGuard(temp_path.clone());
+    let mut dst = dst;
     let transfer_result = async {
         copy_with_progress(src, &mut dst, id, request_id, name, total, out).await?;
         dst.flush().await.map_err(|error| error.to_string())?;
@@ -676,6 +700,7 @@ fn request_path(req: &SftpRequest) -> &str {
         | SftpRequest::Mkdir { path }
         | SftpRequest::Remove { path, .. } => path,
         SftpRequest::Download { remote, .. } | SftpRequest::Upload { remote, .. } => remote,
+        SftpRequest::DownloadBatch { remote, .. } => remote,
         SftpRequest::UploadBatch { target_dir, .. } => target_dir,
         SftpRequest::Rename { to, .. } => to,
     }
