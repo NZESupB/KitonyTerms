@@ -50,6 +50,17 @@ struct EchoState {
     channel_closes: Vec<ChannelId>,
     hold_container_start: bool,
     operation_mode: Option<OperationMode>,
+    monitor: Option<MonitorScenario>,
+    connections: usize,
+}
+
+#[derive(Default)]
+struct MonitorScenario {
+    channel: Option<ChannelId>,
+    input: String,
+    delays: std::collections::VecDeque<Option<Duration>>,
+    sample_delay: Duration,
+    stale_marker: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +133,13 @@ impl server::Handler for EchoHandler {
     ) -> Result<(), Self::Error> {
         if let Ok(mut state) = self.state.lock() {
             state.exec_commands.push(data.to_vec());
+        }
+        if data == b"sh" {
+            if let Some(monitor) = self.state.lock().unwrap().monitor.as_mut() {
+                monitor.channel = Some(channel);
+                session.channel_success(channel)?;
+                return Ok(());
+            }
         }
         let hold_container_start = self
             .state
@@ -197,6 +215,44 @@ impl server::Handler for EchoHandler {
         data: &[u8],
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(monitor) = state
+                .monitor
+                .as_mut()
+                .filter(|m| m.channel == Some(channel))
+            {
+                monitor.input.push_str(std::str::from_utf8(data).unwrap());
+                while let Some(end) = monitor.input.find('\n') {
+                    let command: String = monitor.input.drain(..=end).collect();
+                    let (delay, response) = if let Some(body) = command.strip_prefix("printf '") {
+                        let marker = body.strip_suffix("\\n'\n").expect("轻量心跳命令");
+                        assert!(marker.starts_with("__KTM_HEARTBEAT__"));
+                        let response = format!("{marker}\n");
+                        // 旧响应特意留到下一次请求，检验序号匹配。
+                        if let Some(stale) = monitor.stale_marker.take() {
+                            session.data(channel, bytes::Bytes::from(stale))?;
+                        }
+                        match monitor.delays.pop_front().expect("意外的额外心跳") {
+                            Some(delay) => (delay, response),
+                            None => {
+                                monitor.stale_marker = Some(response);
+                                continue;
+                            }
+                        }
+                    } else {
+                        assert!(command.starts_with("echo __KTM_BEGIN__;"));
+                        (monitor.sample_delay, "__KTM_BEGIN__\ncpu 1 0 1 8\n__KTM_SEC__\nMemTotal: 100 kB\nMemAvailable: 50 kB\n__KTM_SEC__\n__KTM_SEC__\n__KTM_SEC__\n0.1\n__KTM_SEC__\n100\n__KTM_SEC__\nhostname=test\n__KTM_END__\n".to_string())
+                    };
+                    let handle = session.handle();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _ = handle.data(channel, bytes::Bytes::from(response)).await;
+                    });
+                }
+                return Ok(());
+            }
+        }
         if self.defer_banner_until_bootstrap && data == BOOTSTRAP_COMMAND.as_bytes() {
             // 模拟最容易触发旧竞态的时序：登录横幅尚在 channel 排队时，客户端已
             // 写入 bootstrap；服务器把 MOTD、prompt、命令回显和完成标记放进同一包。
@@ -273,13 +329,19 @@ async fn start_server_with_state(
     tokio::spawn(async move {
         // Accept exactly one connection and run it.
         if let Ok((stream, _addr)) = listener.accept().await {
+            server_state.lock().unwrap().connections += 1;
             let handler = EchoHandler {
                 defer_banner_until_bootstrap,
-                state: server_state,
+                state: server_state.clone(),
             };
             let _ = server::run_stream(config, stream, handler).await;
-            // Keep the task alive while the session runs.
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            // 接受并计数额外探测连接，确保测试能发现 TCP 探测回归。
+            while let Ok(Ok((stream, _))) =
+                tokio::time::timeout(Duration::from_secs(30), listener.accept()).await
+            {
+                server_state.lock().unwrap().connections += 1;
+                drop(stream);
+            }
         }
     });
 
@@ -1026,5 +1088,75 @@ fn recv_timeout(mgr: &mut SessionManager, timeout: Duration) -> Option<FromCore>
             return None;
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn monitor_latency_tracks_remote_response_and_recovers_after_timeout() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (port, state) = runtime.block_on(start_server_with_state(
+        false,
+        Arc::new(Mutex::new(EchoState {
+            monitor: Some(MonitorScenario {
+                delays: [
+                    Some(Duration::from_millis(80)),
+                    None,
+                    Some(Duration::from_millis(250)),
+                    Some(Duration::ZERO),
+                ]
+                .into(),
+                sample_delay: Duration::from_millis(700),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })),
+    ));
+    let (mut manager, id) = operations_test_manager(port);
+    manager.send(ToCore::StartMonitor { id });
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    let mut latencies = Vec::new();
+    while latencies.len() < 4 && std::time::Instant::now() < deadline {
+        match recv_timeout(&mut manager, Duration::from_millis(100)) {
+            Some(FromCore::Monitor { stats, .. }) => latencies.push(stats.latency_ms),
+            Some(FromCore::MonitorError { message, .. }) => panic!("监控失败: {message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(latencies.len(), 4, "未收到全部采样: {latencies:?}");
+    assert!((80..700).contains(&latencies[0]), "{latencies:?}");
+    assert_eq!(latencies[1], 0, "超时应为未知");
+    assert!(
+        (250..700).contains(&latencies[2]),
+        "旧响应不能满足新心跳: {latencies:?}"
+    );
+    assert!((1..700).contains(&latencies[3]), "{latencies:?}");
+    assert_eq!(
+        state.lock().unwrap().connections,
+        1,
+        "监控不得新建 TCP 连接"
+    );
+    manager.send(ToCore::Disconnect { id });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(FromCore::Closed {
+            id: closed_id,
+            error,
+        }) = recv_timeout(&mut manager, Duration::from_millis(100))
+        {
+            assert_eq!(closed_id, id);
+            assert!(error.is_none(), "{error:?}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "会话未关闭");
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !matches!(
+                recv_timeout(&mut manager, Duration::from_millis(100)),
+                Some(FromCore::Monitor { .. })
+            ),
+            "关闭后不应继续采样"
+        );
     }
 }

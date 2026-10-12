@@ -1758,16 +1758,10 @@ impl SessionTask {
                                         let out = self.out.clone();
                                         let internal_tx = internal_tx.clone();
                                         let (cancel_tx, cancel_rx) = oneshot::channel();
-                                        let latency_target =
-                                            crate::monitor::LatencyProbeTarget::new(
-                                                self.params.host.clone(),
-                                                self.params.port,
-                                            );
                                         let task = tokio::spawn(async move {
                                             let exit = crate::monitor::monitor_task(
                                                 id,
                                                 session,
-                                                latency_target,
                                                 out,
                                                 cancel_rx,
                                             )

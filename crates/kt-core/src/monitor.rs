@@ -1,5 +1,5 @@
 //! 服务器资源监控子任务 —— 通过一条持久 `sh` 通道周期采集远端 `/proc` 等数据。
-//! 监控延迟优先通过 TCP connect 到当前 SSH 端口测量，失败时回退到已连接 SSH 通道心跳。
+//! 监控延迟通过已连接 SSH 通道的轻量心跳测量，沿用实际代理与跳板路径。
 //!
 //! Server resource monitor: drives a persistent `sh` channel, periodically writing
 //! a command bundle and parsing the output into [`MonitorStats`]. CPU% and network
@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 
 use crate::session::{FromCore, SessionEventSender, SessionId};
@@ -19,7 +18,6 @@ use crate::ssh::ChannelCloseGuard;
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(12);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(4);
-const TCP_LATENCY_TIMEOUT: Duration = Duration::from_millis(900);
 const MONITOR_IO_TIMEOUT: Duration = Duration::from_secs(4);
 const MONITOR_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -50,7 +48,6 @@ const BEGIN: &str = "__KTM_BEGIN__";
 const SEC: &str = "__KTM_SEC__";
 const END: &str = "__KTM_END__";
 const HEARTBEAT: &str = "__KTM_HEARTBEAT__";
-const HEARTBEAT_CMD: &str = "printf '__KTM_HEARTBEAT__\\n'\n";
 
 /// 单个挂载点使用情况。Disk usage for one mount point.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,22 +105,6 @@ pub struct MonitorStats {
     pub interfaces: Vec<NetInterfaceStats>,
 }
 
-/// TCP 延迟探测目标。通常就是当前 SSH 会话的 host:port。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LatencyProbeTarget {
-    host: String,
-    port: u16,
-}
-
-impl LatencyProbeTarget {
-    pub(crate) fn new(host: impl Into<String>, port: u16) -> Self {
-        Self {
-            host: host.into(),
-            port,
-        }
-    }
-}
-
 /// CPU 累计 jiffies(busy, total),用于算增量百分比。
 #[derive(Clone, Copy)]
 struct CpuSample {
@@ -163,7 +144,6 @@ enum HeartbeatError {
 pub(crate) async fn monitor_task(
     id: SessionId,
     channel: russh::Channel<russh::client::Msg>,
-    latency_target: LatencyProbeTarget,
     out: SessionEventSender,
     mut cancel_rx: oneshot::Receiver<()>,
 ) -> MonitorExit {
@@ -174,6 +154,7 @@ pub(crate) async fn monitor_task(
     let mut prev_interfaces: HashMap<String, NetInterfaceSample> = HashMap::new();
     let mut prev_at: Option<Instant> = None;
     let mut buf = String::new();
+    let mut heartbeat_sequence = 0_u64;
 
     let exit = loop {
         if matches!(
@@ -182,7 +163,8 @@ pub(crate) async fn monitor_task(
         ) {
             break MonitorExit::Stopped;
         }
-        let latency_ms = match measure_latency(&mut channel, &mut buf, &latency_target).await {
+        heartbeat_sequence = heartbeat_sequence.wrapping_add(1);
+        let latency_ms = match measure_latency(&mut channel, &mut buf, heartbeat_sequence).await {
             Ok(latency_ms) => latency_ms,
             Err(HeartbeatError::Closed) => break MonitorExit::Stopped,
             Err(HeartbeatError::SendFailed) => {
@@ -320,13 +302,9 @@ async fn send_monitor_event(out: &SessionEventSender, event: FromCore) -> bool {
 async fn measure_latency(
     channel: &mut russh::Channel<russh::client::Msg>,
     buf: &mut String,
-    target: &LatencyProbeTarget,
+    sequence: u64,
 ) -> Result<u64, HeartbeatError> {
-    if let Some(latency_ms) = measure_tcp_connect_latency(target).await {
-        return Ok(latency_ms);
-    }
-
-    match measure_heartbeat_latency(channel, buf).await {
+    match measure_heartbeat_latency(channel, buf, sequence).await {
         Ok(latency_ms) => Ok(latency_ms),
         Err(HeartbeatError::Timeout) => {
             tracing::debug!("SSH 心跳延迟探测超时，本轮资源采样继续并标记延迟未知");
@@ -336,48 +314,23 @@ async fn measure_latency(
     }
 }
 
-async fn measure_tcp_connect_latency(target: &LatencyProbeTarget) -> Option<u64> {
-    let started = Instant::now();
-    let connect = TcpStream::connect((target.host.as_str(), target.port));
-
-    match tokio::time::timeout(TCP_LATENCY_TIMEOUT, connect).await {
-        Ok(Ok(stream)) => {
-            drop(stream);
-            Some(elapsed_millis(started))
-        }
-        Ok(Err(error)) => {
-            tracing::debug!(
-                host = %target.host,
-                port = target.port,
-                error = %error,
-                "TCP 延迟探测失败，回退到 SSH 心跳"
-            );
-            None
-        }
-        Err(_) => {
-            tracing::debug!(
-                host = %target.host,
-                port = target.port,
-                "TCP 延迟探测超时，回退到 SSH 心跳"
-            );
-            None
-        }
-    }
-}
-
 async fn measure_heartbeat_latency(
     channel: &mut russh::Channel<russh::client::Msg>,
     buf: &mut String,
+    sequence: u64,
 ) -> Result<u64, HeartbeatError> {
+    // 每轮匹配独立标记，超时后的迟到响应不能满足下一轮探测。
+    let marker = format!("{HEARTBEAT}{sequence}__\n");
+    let command = format!("printf '{HEARTBEAT}{sequence}__\\n'\n");
     let started = Instant::now();
     if matches!(
-        tokio::time::timeout(MONITOR_IO_TIMEOUT, channel.data(HEARTBEAT_CMD.as_bytes())).await,
+        tokio::time::timeout(MONITOR_IO_TIMEOUT, channel.data(command.as_bytes())).await,
         Err(_) | Ok(Err(_))
     ) {
         return Err(HeartbeatError::SendFailed);
     }
 
-    match read_until(channel, buf, HEARTBEAT, HEARTBEAT_TIMEOUT).await {
+    match read_until(channel, buf, &marker, HEARTBEAT_TIMEOUT).await {
         ReadUntil::Found => Ok(elapsed_millis(started)),
         ReadUntil::Closed => Err(HeartbeatError::Closed),
         ReadUntil::Timeout => Err(HeartbeatError::Timeout),
@@ -866,49 +819,9 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_command_stays_lightweight_and_separate_from_resource_sample() {
-        assert!(HEARTBEAT_CMD.contains("printf"));
-        assert!(HEARTBEAT_CMD.contains(HEARTBEAT));
-        assert!(!HEARTBEAT_CMD.contains("/proc"));
-        assert!(!HEARTBEAT_CMD.contains("ps "));
-        assert!(!CMD.contains(HEARTBEAT));
-    }
-
-    #[test]
-    fn latency_probe_target_uses_ssh_host_and_port() {
-        let target = LatencyProbeTarget::new("example.com", 2222);
-
-        assert_eq!(target.host, "example.com");
-        assert_eq!(target.port, 2222);
-    }
-
-    #[tokio::test]
-    async fn tcp_latency_probe_reports_open_ssh_port_latency() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let accept = tokio::spawn(async move {
-            let _ = listener.accept().await.unwrap();
-        });
-
-        let target = LatencyProbeTarget::new("127.0.0.1", port);
-        let latency = measure_tcp_connect_latency(&target).await.unwrap();
-
-        assert!(latency >= 1);
-        accept.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn tcp_latency_probe_failure_can_fall_back_without_sample_error() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        let target = LatencyProbeTarget::new("127.0.0.1", port);
-
-        assert_eq!(measure_tcp_connect_latency(&target).await, None);
+    fn elapsed_latency_preserves_low_values_and_never_means_unknown() {
+        assert!(elapsed_millis(Instant::now()) >= 1);
+        let started = Instant::now() - Duration::from_millis(80);
+        assert!(elapsed_millis(started) >= 80);
     }
 }

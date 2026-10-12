@@ -14,6 +14,7 @@
 
 ## 最近归档
 
+- [SSH 监控延迟](workflow/done/261012-ssh-monitor-latency.md)：延迟统一为带序号的 SSH 心跳 RTT，沿用会话路径，超时为未知；自动检查通过，真实 TUN 环境待验收。
 - [编辑器与紧凑布局](workflow/done/260908-editor-open-density.md)
 - [运维能力探测与取消](workflow/done/260907-operations-capabilities-cancel.md)
 - [设置、主题与字体](workflow/done/260907-fix-settings-theme-fonts.md)
