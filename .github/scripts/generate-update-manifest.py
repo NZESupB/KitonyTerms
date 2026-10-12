@@ -21,7 +21,7 @@ MAX_PACKAGE = 512 * 1024 * 1024
 
 def identity(channel, environment=None, cargo=Path("Cargo.toml")):
     environment = os.environ if environment is None else environment
-    match = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', cargo.read_text(), re.M)
+    match = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', cargo.read_text(encoding="utf-8"), re.M)
     if not match:
         raise ValueError("无法读取 workspace 版本")
     version = match.group(1)
@@ -62,7 +62,7 @@ def generate(dist):
         path = dist / ("build-" + target + ".json")
         if path.is_symlink():
             raise ValueError("构建记录不能是链接")
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
         if record.get("target") != target:
             raise ValueError("构建 target 不一致")
         records[target] = record
@@ -107,19 +107,19 @@ def main():
         record = identity(args.channel)
         record["target"] = args.target
         args.dist.mkdir(parents=True, exist_ok=True)
-        (args.dist / ("build-" + args.target + ".json")).write_text(json.dumps(record, indent=2) + "\n")
+        (args.dist / ("build-" + args.target + ".json")).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         if args.github_env:
-            with args.github_env.open("a") as stream:
+            with args.github_env.open("a", encoding="utf-8", newline="\n") as stream:
                 for key in ("channel", "commit", "build", "attempt", "version"):
                     stream.write("KT_RELEASE_" + key.upper() + "=" + str(record[key]) + "\n")
     else:
         result = generate(args.dist)
         path = args.dist / "update-manifest.json"
         if args.verify:
-            if json.loads(path.read_text()) != result:
+            if json.loads(path.read_text(encoding="utf-8")) != result:
                 raise ValueError("更新清单与实际构建产物不一致")
         else:
-            path.write_text(json.dumps(result, indent=2) + "\n")
+            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

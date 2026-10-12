@@ -156,6 +156,10 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Validate desktop update metadata
+        shell: bash
+        run: python3 -B .github/scripts/test-update-manifest.py
+
       - name: Prepare desktop update identity
         shell: bash
         run: python3 .github/scripts/generate-update-manifest.py metadata --channel auto --target "${{ matrix.target }}" --github-env "$GITHUB_ENV"
