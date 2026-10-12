@@ -112,6 +112,13 @@ if jq -e '.assets[] | select(.size <= 0)' <<<"$staging_json" >/dev/null; then
   fail "staging Alpha Release 包含空资产"
 fi
 
+# 清单必须与本地完整产物及远端实际上传的内容一致，验证后才能公开。
+python3 .github/scripts/generate-update-manifest.py generate --verify
+manifest_sha="$(sha256sum dist/update-manifest.json | cut -d ' ' -f 1)"
+remote_manifest_sha="$(jq -er '.assets[] | select(.name == "update-manifest.json") | .digest' <<<"$staging_json")"
+[[ "$remote_manifest_sha" == "sha256:${manifest_sha}" ]] \
+  || fail "staging Alpha 更新清单摘要与本地不一致"
+
 old_release_path="$work_dir/old-release.json"
 if api_optional "$old_release_path" \
   "repos/${GITHUB_REPOSITORY}/releases/tags/alpha"; then

@@ -25,6 +25,13 @@ tracing-subscriber.workspace = true
 kt-config.workspace = true
 fs2.workspace = true
 rfd.workspace = true
+kt-update.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -35,7 +42,7 @@ toml.workspace = true
 phone-preview = ["kt-ui/phone-preview"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

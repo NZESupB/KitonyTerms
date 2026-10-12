@@ -43,6 +43,7 @@ rqrr.workspace = true
 arboard.workspace = true
 fontdb.workspace = true
 rfd.workspace = true
+kt-update.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

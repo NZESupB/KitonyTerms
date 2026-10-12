@@ -2,7 +2,7 @@
 
 ## 模块边界
 
-[Workspace](../Cargo.toml) 包含六个 crate：
+[Workspace](../Cargo.toml) 包含七个 crate：
 
 | 模块 | 职责 |
 |---|---|
@@ -12,6 +12,7 @@
 | [kt-config](../crates/kt-config/src/lib.rs) | 配置、路径、会话与 known_hosts |
 | [kt-secrets](../crates/kt-secrets/src/lib.rs) | Argon2id + XChaCha20Poly1305 vault |
 | [kt-sync](../crates/kt-sync/src/lib.rs) | WebDAV/LAN 非机密配置同步 |
+| [kt-update](../crates/kt-update/src/lib.rs) | 桌面发布查询、后台下载、归档安全与安装事务；不依赖 UI/core |
 
 ## 会话与协议
 
@@ -91,3 +92,15 @@
 - 桌面窗口无系统装饰；macOS 的 Cmd+C/V/A 由应用菜单派发 `copy:`/`paste:`/`selectAll:`，因此 `desktop_config` 必须在设置无装饰窗口之前注册 Edit 菜单，否则连接对话框、设置与内置编辑器的输入框都无法复制粘贴。
 - [工具链](../rust-toolchain.toml)跟随 stable，[Cargo.lock](../Cargo.lock)记录依赖快照，升级显式更新锁文件。
 - 发布、签名、构建号和 objcopy 的操作入口统一见 [README](../README.zh-CN.md#构建与发布)，具体配置以 workflow 和脚本为准。
+
+## 桌面更新
+
+依据：[后台服务](../crates/kt-update/src/lib.rs)、[安装事务](../crates/kt-update/src/install.rs)、[辅助入口](../crates/kt-app/src/update_launcher.rs)、[更新界面](../crates/kt-ui/src/components/software_update.rs)。
+
+- kt-app 仅在桌面分流内部辅助命令并注入 UpdateContext；GUI 持有单实例锁和安装锁，helper 锁阻止 GUI 介入替换。正常更新和恢复重启都先通过 PID/摘要握手，再退出旧进程。
+- kt-update 自有两线程 Tokio runtime，检查和下载不占用 SSH 事件通道。状态互斥避免重复操作，取消任务收敛后才能启动下一任务。
+- 当前构建嵌入完整 target、渠道、Cargo 版本、commit、GitHub run ID/attempt。正式版按 SemVer，Alpha 按 run ID/attempt 比较；本地缺失身份则开发构建禁用更新。
+- 更新源固定为官方仓库，清单和包绑定 GitHub 资产 ID；缓存用大小/SHA-256 验证。updates/preferences.json 独立于 config.toml，不参与配置同步。
+- ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。macOS `ditto` 的 AppleDouble 载体先校验标识与体积，再丢弃；不得作为普通资源加入签名包。随后以 codesign 验证原始签名和 bundle ID。
+- 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。匹配的 committed 事务在 GUI 启动确认后清理，其他中断事务恢复；Windows 当前 EXE 的恢复在进程退出后执行，安装版恢复限定管理员登记路径。
+- App 提供内置/外部编辑、SFTP pending、下载选择器及同步状态保护；准备期间根界面 inert，握手后再次检查，确认后取消运维并断开连接。Android/iOS 不渲染更新入口。

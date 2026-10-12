@@ -223,6 +223,26 @@ pub fn App() -> Element {
             phone_sheet.set(None);
         }
     });
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let update_restarting = crate::components::software_update::use_software_updates(move || {
+        crate::components::software_update::RestartSafety {
+            editing: inline_edit.peek().is_some()
+                || !external_edits.peek().is_empty()
+                || pending_download.peek().is_some(),
+            transferring: state
+                .lock()
+                .unwrap()
+                .sessions
+                .values()
+                .any(|session| !session.sftp_pending_requests.is_empty()),
+            syncing: *sync_busy.peek() || active_share.peek().is_some(),
+            dialog: *show_dialog.peek()
+                || *show_group_dialog.peek()
+                || *show_sftp_name_dialog.peek(),
+        }
+    });
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let update_restarting = use_signal(|| false);
     let secret_save_signals = SecretSaveSignals { status_notice };
 
     use_state_controller(
@@ -623,9 +643,11 @@ pub fn App() -> Element {
 
     rsx! {
         style { {include_str!("../assets/app.css")} }
+        SoftwareUpdateLayer { language }
 
         div {
             class: "{window_class_name}",
+            inert: update_restarting(),
             style: "--blue: {accent_color}; --accent-rgb: {accent_rgb};",
             "data-theme": "{theme_name}",
             onmousemove: move |evt| {
@@ -1791,6 +1813,19 @@ fn render_download_controller(
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = (pending, language);
+        rsx! {}
+    }
+}
+
+#[component]
+fn SoftwareUpdateLayer(language: kt_config::AppLanguage) -> Element {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        rsx! { crate::components::software_update::SoftwareUpdateOverlay { language } }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        let _ = language;
         rsx! {}
     }
 }

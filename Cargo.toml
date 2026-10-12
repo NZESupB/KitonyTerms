@@ -7,6 +7,7 @@ members = [
     "crates/kt-sync",
     "crates/kt-ui",
     "crates/kt-app",
+    "crates/kt-update",
 ]
 
 [workspace.package]
@@ -25,6 +26,12 @@ kt-secrets = { path = "crates/kt-secrets" }
 kt-core = { path = "crates/kt-core" }
 kt-ui = { path = "crates/kt-ui" }
 kt-sync = { path = "crates/kt-sync" }
+kt-update = { path = "crates/kt-update" }
+semver = "1"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+tempfile = "3"
 
 # --- async runtime ---
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "sync", "macros", "time", "fs"] }

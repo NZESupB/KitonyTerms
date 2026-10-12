@@ -14,6 +14,7 @@
 
 ## 最近归档
 
+- [桌面自动更新](workflow/done/261012-desktop-auto-update.md)：后台服务、确认重启安装与六目标发布清单已实现；本机门禁和 macOS 签名包事务通过，Windows/Linux 原生安装及三端 GUI 验收待对应环境。
 - [SSH 监控延迟](workflow/done/261012-ssh-monitor-latency.md)：延迟统一为带序号的 SSH 心跳 RTT，沿用会话路径，超时为未知；自动检查通过，真实 TUN 环境待验收。
 - [编辑器与紧凑布局](workflow/done/260908-editor-open-density.md)
 - [运维能力探测与取消](workflow/done/260907-operations-capabilities-cancel.md)

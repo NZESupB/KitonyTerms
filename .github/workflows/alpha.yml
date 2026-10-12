@@ -136,6 +136,10 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Prepare desktop update identity
+        shell: bash
+        run: python3 .github/scripts/generate-update-manifest.py metadata --channel alpha --target "${{ matrix.target }}" --github-env "$GITHUB_ENV"
+
       - name: Build release binary
         run: cargo build --locked --release -p kt-app --target ${{ matrix.target }}
 
@@ -162,8 +166,8 @@ jobs:
         shell: bash
         run: |
           version="alpha"
-          # 预发布无语义化版本号,plist 版本段用占位 0.0.0。
-          version_clean="0.0.0"
+          # 应用包版本沿用 workspace；Alpha 的更新顺序使用独立构建编号。
+          version_clean="$KT_RELEASE_VERSION"
           base="kitonyterms-${version}-${{ matrix.name }}"
           app="KitonyTerms.app"
           mkdir -p dist "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -214,10 +218,10 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/kitonyterms.exe" staging
           # 便携版 zip。
           Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
+          "KitonyTerms Inno Setup installation v1" | Set-Content staging/kitonyterms-installation.txt -Encoding ascii
           # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
           choco install innosetup -y --no-progress
-          # 预发布无语义化版本号,安装包版本段用占位 0.0.0。
-          $appVersion = "0.0.0"
+          $appVersion = $env:KT_RELEASE_VERSION
           $languageDir = "installer-languages"
           $chineseLanguageFile = Join-Path $languageDir "ChineseSimplified.isl"
           New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
@@ -243,6 +247,9 @@ jobs:
           $iss = @"
           [Setup]
           AppName=KitonyTerms
+          AppId=KitonyTerms
+          CloseApplications=no
+          RestartApplications=no
           AppVersion=$appVersion
           DefaultDirName={autopf}\KitonyTerms
           DefaultGroupName=KitonyTerms
@@ -262,6 +269,7 @@ jobs:
           chinesesimplified.LaunchProgram=启动 KitonyTerms
           [Files]
           Source: "staging\kitonyterms.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "staging\kitonyterms-installation.txt"; DestDir: "{app}"; Flags: ignoreversion
           [Icons]
           Name: "{group}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
           Name: "{autodesktop}\KitonyTerms"; Filename: "{app}\kitonyterms.exe"
@@ -388,10 +396,28 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  update_manifest:
+    name: validate desktop update manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate update manifest
+        run: python3 .github/scripts/generate-update-manifest.py generate
+      - uses: actions/upload-artifact@v6
+        with:
+          name: update-manifest
+          path: dist/update-manifest.json
+          if-no-files-found: error
+
   # 汇总所有平台产物,更新固定的 Alpha 滚动预发布。
   publish:
     name: publish alpha prerelease
-    needs: [audit, build, mobile_android, mobile_ios]
+    needs: [audit, build, update_manifest, mobile_android, mobile_ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write

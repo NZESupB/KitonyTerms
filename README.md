@@ -10,6 +10,7 @@ A Rust + Dioxus SSH client with saved sessions and groups, password/public-key/k
 - Linux/WSL operations include services, processes, network, Docker/Compose queries and management, capability detection, cancellation, and independent container terminals. Management uses typed commands; some actions require sudo authentication.
 - Compact desktop layout and a separate touch UI for phones; system/light/dark themes, English/Chinese, and terminal font settings.
 - WebDAV and LAN sync only non-secret configuration, excluding vault, vault key, and known_hosts. WebDAV takes a full resource URL; LAN v2 uses a 26-character pairing secret or QR code.
+- Windows, macOS, and Linux x64/aarch64 release builds check and download updates in the background, then install after a confirmed restart.
 - The main binary is a GUI with no-argument, `--gui`, and `--help` entry points. Multi-hop ProxyJump, UI editing of trigger rules, and full syntax highlighting are not provided.
 
 Sources: [app](crates/kt-app/src/main.rs), [UI](crates/kt-ui/src/components/app.rs), [operations](crates/kt-core/src/remote_ops.rs), [sync](crates/kt-sync/src/lib.rs).
@@ -41,6 +42,17 @@ Resize the window below a 600 CSS-pixel short side. Create and save connections 
 - `secrets.vault`: encrypted passwords and passphrases; `secrets.vault.key`: the per-install local key. Keep both private.
 - Android uses app-private `files/config` and `files/data`.
 - Legacy fixed-key vaults migrate automatically; legacy master-password vaults that cannot be opened are backed up as `secrets.vault.legacy*` before replacement.
+- Desktop `updates/` under the application data directory stores local update preferences, cached packages, and installation transactions; WebDAV/LAN sync excludes it.
+
+## Desktop in-app updates
+
+Open **Settings → Software update** to see the current build/channel, target version, last check, progress, and errors. Release builds enable automatic checks and downloads by default. Checks start about five seconds after launch and repeat every six hours, with backoff after failures. You can turn either setting off, check immediately, or download manually.
+
+After a download finishes, select **Restart and update** and confirm that connections will close, or choose **Later**. Save and close inline editors, finish external editing, and wait for SFTP work and configuration sync first. If helper preparation fails, the application stays open. Failed checks, downloads, and validation can be retried from the update page.
+
+Windows portable builds replace the current EXE; installed builds use the system installer and may request UAC approval. macOS replaces the entire `.app`; Linux replaces the executable actually launched. For an unwritable location, DMG, or App Translocation, use the release download link and install into a writable folder. Configuration, vault, and known_hosts are preserved. Failed or interrupted transactions attempt to restore the previous version; backups are removed after the new UI confirms startup.
+
+Stable builds follow higher stable versions; Alpha uses workflow build/attempt numbers. Channels do not switch automatically. Development builds disable updates, and Android/iOS have no updater entry. Existing older versions require one manual installation of a version containing this feature; later releases must include a valid update manifest.
 
 ## Build and release
 
@@ -57,6 +69,8 @@ The workflows define mobile environments and commands: Dioxus CLI, `llvm-tools-p
 
 Both platforms use [com.kitonyterms.app](Dioxus.toml). Android updates retain the signing certificate; iOS replacement depends on re-signing identity and configuration.
 
+Desktop builds embed the channel, commit, build/attempt numbers, and target. The [manifest generator](.github/scripts/generate-update-manifest.py) checks all six desktop packages and records sizes and SHA-256 hashes. Missing packages or inconsistent identities block manifest publishing. Alpha validates the staged manifest before switching the public release; manual builds only produce artifacts.
+
 ## Validation and development
 
 ```bash
@@ -64,9 +78,15 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo audit
+python3 -B .github/scripts/test-update-manifest.py
+bash -n .github/scripts/publish-alpha.sh
 ```
 
 [SSH loopback tests](crates/kt-core/tests/roundtrip.rs) cover exec, PTY, cancellation, and generation isolation. [Mobile packaging contracts](crates/kt-app/tests/mobile_packaging_contract.rs) cover scripts and artifact rules. Test definitions are not evidence of a passing run in the current environment.
+
+[Update tests](crates/kt-update/src/tests.rs) cover local HTTP, cancellation, rate limits, and download validation. The same crate tests installation transactions and archive safety, including signed temporary macOS bundles. Real installation and GUI restart acceptance still requires the corresponding Windows, macOS, and Linux systems.
 
 See [architecture](.agentdocs/architecture.md), [targeted checks](.agentdocs/maintenance.md), and [pending phone input validation](.agentdocs/workflow/260820-mobile-phone-ui.md).
 

@@ -57,6 +57,7 @@ pub enum SettingsSection {
     Terminal,
     Editor,
     Sync,
+    Update,
 }
 
 impl SettingsSection {
@@ -66,6 +67,7 @@ impl SettingsSection {
             Self::Terminal => t.settings_nav_terminal,
             Self::Editor => t.settings_nav_editor,
             Self::Sync => t.settings_nav_sync,
+            Self::Update => t.settings_nav_update,
         }
     }
 
@@ -75,6 +77,7 @@ impl SettingsSection {
             Self::Terminal => "terminal",
             Self::Editor => "edit",
             Self::Sync => "sync",
+            Self::Update => "sync",
         }
     }
 }
@@ -82,20 +85,19 @@ impl SettingsSection {
 /// 可见的分类。手机端没有右键菜单，「打开方式」自定义编辑器列表在移动端不可达，
 /// 因此整个编辑器分类只在桌面显示。
 fn visible_sections(is_phone: bool) -> Vec<SettingsSection> {
-    if is_phone {
-        vec![
-            SettingsSection::General,
-            SettingsSection::Terminal,
-            SettingsSection::Sync,
-        ]
-    } else {
-        vec![
-            SettingsSection::General,
-            SettingsSection::Terminal,
-            SettingsSection::Editor,
-            SettingsSection::Sync,
-        ]
+    let mut sections = vec![SettingsSection::General, SettingsSection::Terminal];
+    if !is_phone {
+        sections.push(SettingsSection::Editor);
     }
+    sections.push(SettingsSection::Sync);
+    if cfg!(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "macos"
+    )) {
+        sections.push(SettingsSection::Update);
+    }
+    sections
 }
 
 /// 把配对码按 4 位分组显示，手抄和核对都更省力。
@@ -344,6 +346,16 @@ fn SettingsBody(props: SettingsBodyProps) -> Element {
         SettingsSection::Terminal => rsx! { TerminalSection { ..props } },
         SettingsSection::Editor => rsx! { EditorSection { ..props } },
         SettingsSection::Sync => rsx! { SyncSection { ..props } },
+        SettingsSection::Update => {
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            {
+                rsx! { crate::components::software_update::SoftwareUpdateSection { language: props.language } }
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+            {
+                rsx! {}
+            }
+        }
     }
 }
 

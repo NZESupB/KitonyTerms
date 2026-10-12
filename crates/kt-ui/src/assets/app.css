@@ -4824,3 +4824,19 @@ select.settings-text-input {
     color: var(--text);
     cursor: pointer;
 }
+
+/* 软件更新沿用主题；安装准备期间主界面由 inert 暂停交互。 */
+.software-update-section { display: grid; gap: 12px; }
+.software-update-section h3, .software-update-section p { margin: 0; }
+.software-update-section p { line-height: 1.6; overflow-wrap: anywhere; }
+.software-update-section progress { width: 100%; accent-color: var(--blue); }
+.software-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.software-update-error { color: var(--red, #d95050); }
+.software-update-overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .55); }
+.software-update-dialog, .software-update-notice { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: 0 12px 40px rgba(0, 0, 0, .28); }
+.software-update-dialog { max-width: 460px; line-height: 1.6; }
+.software-update-dialog h3 { margin-top: 0; }
+.software-update-notice { position: fixed; right: 20px; bottom: 36px; z-index: 1500; max-width: min(520px, calc(100vw - 40px)); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; }
+.software-update-notice p { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
+body:has(.kt-window[data-theme="light"]) .software-update-dialog,
+body:has(.kt-window[data-theme="light"]) .software-update-notice { color: #17212f; background: #ffffff; border-color: #d7e0eb; }

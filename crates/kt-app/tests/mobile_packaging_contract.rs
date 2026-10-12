@@ -752,7 +752,7 @@ fn ios_packager_outputs_a_verified_unsigned_arm64_ipa() {
 #[test]
 fn alpha_publish_stages_assets_then_switches_the_rolling_tag() {
     let alpha = read_workspace_file(".github/workflows/alpha.yml");
-    assert!(alpha.contains("needs: [audit, build, mobile_android, mobile_ios]"));
+    assert!(alpha.contains("needs: [audit, build, update_manifest, mobile_android, mobile_ios]"));
     assert!(alpha.contains("branches:\n      - main"));
     assert!(alpha.contains("cancel-in-progress: false"));
     assert!(alpha.contains("alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}"));
@@ -792,5 +792,5 @@ fn release_notes_explain_that_ios_requires_user_resigning() {
     }
 
     let release = read_workspace_file(".github/workflows/release.yml");
-    assert!(release.contains("needs: [build, mobile_android, mobile_ios]"));
+    assert!(release.contains("needs: [build, update_manifest, mobile_android, mobile_ios]"));
 }

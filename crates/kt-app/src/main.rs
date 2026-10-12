@@ -6,6 +6,8 @@
 mod icon;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod single_instance;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod update_launcher;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -21,6 +23,31 @@ use crate::single_instance::SingleInstanceLock;
 
 fn main() -> ExitCode {
     init_logging();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if std::env::args_os().skip(1).collect::<Vec<_>>()
+        == [std::ffi::OsString::from("--update-info")]
+    {
+        match serde_json::to_string(&kt_update::metadata::BuildInfo::current()) {
+            Ok(info) => {
+                println!("{info}");
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                tracing::error!("构建身份序列化失败: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(result) = update_launcher::internal_command() {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                tracing::error!("更新辅助程序失败: {error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     match startup_command() {
         Ok(AppCommand::Gui) => match run_gui() {
@@ -86,14 +113,39 @@ fn mobile_config() -> dioxus::desktop::Config {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_gui() -> Result<(), String> {
     let paths = Paths::discover().map_err(|err| err.to_string())?;
+    if update_launcher::is_installing(&paths).map_err(|err| format!("{err:#}"))? {
+        return Err(
+            "更新辅助程序正在运行，请稍后启动 / Update helper is running; please try again shortly"
+                .into(),
+        );
+    }
     let Some(_instance_lock) = SingleInstanceLock::try_acquire(&paths.instance_lock_file())
         .map_err(|err| format!("single-instance lock: {err}"))?
     else {
         show_already_running();
         return Ok(());
     };
+    let installation =
+        kt_update::install::Installation::discover().map_err(|err| err.to_string())?;
+    let _installation_gate =
+        match update_launcher::startup(&paths, &installation).map_err(|err| format!("{err:#}"))? {
+            update_launcher::Startup::Ready(gate) => gate,
+            update_launcher::Startup::Relaunch(gate, restore) => {
+                update_launcher::relaunch_after_recovery(&paths, &installation, restore)
+                    .map_err(|err| format!("{err:#}"))?;
+                drop(gate);
+                drop(_instance_lock);
+                return Ok(());
+            }
+        };
+    let service = kt_update::UpdateService::open(update_launcher::root(&paths), installation)
+        .map_err(|err| format!("{err:#}"))?;
     dioxus::LaunchBuilder::desktop()
         .with_cfg(desktop_config())
+        .with_context(kt_update::UpdateContext {
+            service,
+            launch: update_launcher::launch,
+        })
         .launch(App);
     Ok(())
 }

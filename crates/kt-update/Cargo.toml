@@ -1,0 +1,29 @@
+[package]
+name = "kt-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+sha2.workspace = true
+hex.workspace = true
+fs2.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

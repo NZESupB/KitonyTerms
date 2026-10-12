@@ -21,6 +21,8 @@ pub mod sftp;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) mod sftp_download;
 pub mod sidebar;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub mod software_update;
 pub mod state_controller;
 pub mod terminal;
 pub(crate) mod theme;
