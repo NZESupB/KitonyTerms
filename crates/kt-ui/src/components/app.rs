@@ -647,7 +647,8 @@ pub fn App() -> Element {
 
         div {
             class: "{window_class_name}",
-            inert: update_restarting(),
+            // Dioxus 0.7.10 会保留 inert="false"；正常状态必须省略属性。
+            inert: update_restarting().then_some(true),
             style: "--blue: {accent_color}; --accent-rgb: {accent_rgb};",
             "data-theme": "{theme_name}",
             onmousemove: move |evt| {

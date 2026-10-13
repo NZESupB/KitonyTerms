@@ -89,6 +89,7 @@
 - 导入经 Store 原子落盘后 ACK；连接、头缓冲、处理时间和重放缓存有界，失败可回滚，认证失败不全局销毁分享。
 - 扫码使用限频灰度帧，卸载时释放摄像头；移动产物声明相机权限。
 - [启动逻辑](../crates/kt-app/src/main.rs)隔离移动端命令行参数读取；[app.rs](../crates/kt-ui/src/components/app.rs)内嵌 CSS。
+- Dioxus 0.7.10 的原生解释器遗漏了 `inert` 布尔属性，传入 `false` 会保留 `inert="false"` 并禁用整棵界面。根节点使用 `update_restarting().then_some(true)`：正常及准备失败后省略属性，准备更新重启时才设置。SSR 输出不能代替原生 DOM 属性添加与移除链路的验证。
 - 桌面窗口无系统装饰；macOS 的 Cmd+C/V/A 由应用菜单派发 `copy:`/`paste:`/`selectAll:`，因此 `desktop_config` 必须在设置无装饰窗口之前注册 Edit 菜单，否则连接对话框、设置与内置编辑器的输入框都无法复制粘贴。
 - [工具链](../rust-toolchain.toml)跟随 stable，[Cargo.lock](../Cargo.lock)记录依赖快照，升级显式更新锁文件。
 - 发布、签名、构建号和 objcopy 的操作入口统一见 [README](../README.zh-CN.md#构建与发布)，具体配置以 workflow 和脚本为准。
