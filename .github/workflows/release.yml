@@ -4,21 +4,19 @@
 #   - 推送 v* 标签(如 v0.0.2)→ 构建各端产物并创建 GitHub Release
 #   - 手动触发(workflow_dispatch)→ 仅构建并上传 artifacts,便于验证打包流程
 #
-# 产物覆盖:Linux(x64 + aarch64)、macOS(aarch64 + x64)、Windows(x64 + aarch64)、
+# 产物覆盖:Linux(x64 + aarch64)、macOS(arm64)、Windows(AMD64)、
 # Android(aarch64) 与 iOS(aarch64)。
 # 二进制名为 kitonyterms(来自 kt-app crate)。
 #
 # 打包格式:
 #   - Linux  → .tar.gz(可执行文件 + .desktop + hicolor 图标)
-#   - macOS  → .zip 与 .dmg(均内含 KitonyTerms.app 应用包)
+#   - macOS  → ARM64 .dmg(内含 KitonyTerms.app 应用包)
 #   - Windows→ .zip(便携版)与 -setup.exe(Inno Setup 安装包)
 #   - Android→ 使用固定 keystore 签名的 .apk
 #   - iOS    → 未签名 .ipa，下载后由安装者自行重签
 #
 # 备注:
-#   - macOS x64 在 Apple Silicon(macos-14)上交叉编译 —— Intel runner(macos-13)
-#     已进入淘汰期、排队严重,交叉编译可避免长时间 "Waiting for a runner"。
-#   - Linux/Windows ARM 使用原生 ARM 托管 runner,无需交叉工具链。
+#   - macOS 与 Linux ARM 使用原生 ARM 托管 runner。
 name: release
 
 on:
@@ -117,16 +115,9 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
-          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x64。
-          - name: macos-x64
-            os: macos-14
-            target: x86_64-apple-darwin
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-          - name: windows-aarch64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v5
@@ -184,7 +175,7 @@ jobs:
           cp -R "crates/kt-app/assets/linux/hicolor" "$staging/share/icons/"
           tar -czf "dist/${staging}.tar.gz" "$staging"
 
-      # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
+      # macOS:构建 ARM64 KitonyTerms.app，仅输出 .dmg。
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -215,14 +206,11 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x64、
-          # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
-          # 详见 Release 说明。
+          # ad-hoc 签名保证二进制与应用包内部一致；未做 Apple 公证，
+          # 用户首次打开仍需按 Release 说明移除隔离属性。
           codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
           codesign --force --sign - "$app"
           codesign --verify --verbose "$app"
-          # .zip:直接归档应用包(ditto 保留 macOS 元数据)。
-          ditto -c -k --keepParent "$app" "dist/${base}.zip"
           # .dmg:含应用包与 /Applications 软链,便于拖拽安装。
           dmgroot="$(mktemp -d)"
           cp -R "$app" "$dmgroot/"
@@ -242,7 +230,7 @@ jobs:
           # 便携版 zip。
           Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
           "KitonyTerms Inno Setup installation v1" | Set-Content staging/kitonyterms-installation.txt -Encoding ascii
-          # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
+          # 为 AMD64 二进制生成 Inno Setup 安装包。
           choco install innosetup -y --no-progress
           $appVersion = $env:KT_RELEASE_VERSION
           $languageDir = "installer-languages"
@@ -330,7 +318,7 @@ jobs:
           java-version: "17"
 
       - name: Install Android SDK and NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # 该 action 默认安装的 `tools` 包已从 Google SDK 仓库下架，
           # 会让 sdkmanager 直接失败；实际需要的包由下一步显式安装。
@@ -425,7 +413,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -447,13 +435,13 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true

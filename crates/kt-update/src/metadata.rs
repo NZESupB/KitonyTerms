@@ -56,6 +56,7 @@ impl BuildInfo {
 pub enum PackageKind {
     Zip,
     TarGz,
+    Dmg,
     Installer,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +151,8 @@ impl Manifest {
             PackageKind::Installer
         } else if target.contains("linux") {
             PackageKind::TarGz
+        } else if target.contains("apple") {
+            PackageKind::Dmg
         } else {
             PackageKind::Zip
         };
@@ -212,5 +215,53 @@ mod tests {
             .newer_than(&current(Channel::Development), "alpha")
             .is_err());
         assert!(alpha.package("x86_64-pc-windows-msvc", false).is_err());
+    }
+    #[test]
+    fn platform_packages_select_dmg_zip_and_installer() {
+        let mut manifest = manifest(Channel::Stable);
+        for (target, kind, suffix) in [
+            ("aarch64-apple-darwin", PackageKind::Dmg, ".dmg"),
+            ("x86_64-pc-windows-msvc", PackageKind::Zip, ".zip"),
+            ("x86_64-unknown-linux-gnu", PackageKind::TarGz, ".tar.gz"),
+        ] {
+            manifest.targets.insert(
+                target.into(),
+                TargetPackages {
+                    archive: Package {
+                        name: format!("kitonyterms-test{suffix}"),
+                        size: 1,
+                        sha256: "0".repeat(64),
+                        kind,
+                    },
+                    installer: if target.contains("windows") {
+                        Some(Package {
+                            name: "kitonyterms-test-setup.exe".into(),
+                            size: 1,
+                            sha256: "0".repeat(64),
+                            kind: PackageKind::Installer,
+                        })
+                    } else {
+                        None
+                    },
+                },
+            );
+            assert_eq!(manifest.package(target, false).unwrap().kind, kind);
+        }
+        assert_eq!(
+            manifest
+                .package("x86_64-pc-windows-msvc", true)
+                .unwrap()
+                .kind,
+            PackageKind::Installer
+        );
+        assert!(manifest.package("aarch64-pc-windows-msvc", false).is_err());
+        assert!(manifest.package("x86_64-apple-darwin", false).is_err());
+        manifest
+            .targets
+            .get_mut("aarch64-apple-darwin")
+            .unwrap()
+            .archive
+            .kind = PackageKind::Zip;
+        assert!(manifest.package("aarch64-apple-darwin", false).is_err());
     }
 }

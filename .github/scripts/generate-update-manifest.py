@@ -11,9 +11,7 @@ TARGETS = {
     "x86_64-unknown-linux-gnu": "linux-x64",
     "aarch64-unknown-linux-gnu": "linux-aarch64",
     "aarch64-apple-darwin": "macos-aarch64",
-    "x86_64-apple-darwin": "macos-x64",
     "x86_64-pc-windows-msvc": "windows-x64",
-    "aarch64-pc-windows-msvc": "windows-aarch64",
 }
 IDENTITY_KEYS = ("schema", "channel", "version", "commit", "build", "attempt", "label")
 MAX_PACKAGE = 512 * 1024 * 1024
@@ -84,8 +82,13 @@ def generate(dist):
     result["targets"] = {}
     for target, platform in TARGETS.items():
         base = "kitonyterms-" + first["label"] + "-" + platform
-        linux = "linux" in target
-        archive = package(dist, base + (".tar.gz" if linux else ".zip"), "tar_gz" if linux else "zip")
+        if "linux" in target:
+            extension, kind = ".tar.gz", "tar_gz"
+        elif "apple" in target:
+            extension, kind = ".dmg", "dmg"
+        else:
+            extension, kind = ".zip", "zip"
+        archive = package(dist, base + extension, kind)
         installer = package(dist, base + "-setup.exe", "installer") if "windows" in target else None
         result["targets"][target] = dict(archive=archive, installer=installer)
     return result

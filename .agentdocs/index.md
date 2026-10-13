@@ -14,6 +14,7 @@
 
 ## 最近归档
 
+- [发布产物与 Node.js 24](workflow/done/261012-release-artifact-scope-node24.md)：macOS ARM64 DMG、Windows AMD64 ZIP/安装器与四目标更新清单；本机门禁通过，新远端流水线未触发。
 - [桌面自动更新](workflow/done/261012-desktop-auto-update.md)：后台服务、确认重启安装与六目标发布清单已实现；本机门禁和 macOS 签名包事务通过，Windows/Linux 原生安装及三端 GUI 验收待对应环境。
 - [SSH 监控延迟](workflow/done/261012-ssh-monitor-latency.md)：延迟统一为带序号的 SSH 心跳 RTT，沿用会话路径，超时为未知；自动检查通过，真实 TUN 环境待验收。
 - [编辑器与紧凑布局](workflow/done/260908-editor-open-density.md)

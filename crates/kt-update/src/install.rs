@@ -735,8 +735,9 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn signed_bundle_swap_rollback_and_startup_confirmation() {
+    fn signed_dmg_bundle_swap_rollback_and_startup_confirmation() {
         use std::process::Command;
+        let _guard = archive::DMG_TEST_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("updates");
         private_root(&root).unwrap();
@@ -751,6 +752,8 @@ mod tests {
             )
             .unwrap();
             fs::write(bundle.join("Contents/Resources/version"), resource).unwrap();
+            std::os::unix::fs::symlink("version", bundle.join("Contents/Resources/current"))
+                .unwrap();
             fs::write(bundle.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.kitonyterms.app</string><key>CFBundleExecutable</key><string>kitonyterms</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#).unwrap();
             let binary_signature = Command::new("/usr/bin/codesign")
                 .args(["--force", "--sign", "-"])
@@ -783,21 +786,20 @@ mod tests {
                 String::from_utf8_lossy(&verified.stderr)
             );
         }
-        let zip = dir.path().join("bundle.zip");
-        assert!(Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--keepParent"])
-            .arg(&source)
-            .arg(&zip)
-            .status()
-            .unwrap()
-            .success());
+        let image = dir.path().join("bundle.dmg");
+        std::os::unix::fs::symlink(
+            "/Applications",
+            source.parent().unwrap().join("Applications"),
+        )
+        .unwrap();
+        archive::create_test_image(source.parent().unwrap(), &image).unwrap();
         let package = Package {
-            name: "kitonyterms-test-macos.zip".into(),
-            size: fs::metadata(&zip).unwrap().len(),
-            sha256: download::sha256(&zip).unwrap(),
-            kind: PackageKind::Zip,
+            name: "kitonyterms-test-macos.dmg".into(),
+            size: fs::metadata(&image).unwrap().len(),
+            sha256: download::sha256(&image).unwrap(),
+            kind: PackageKind::Dmg,
         };
-        fs::copy(&zip, package_path(&root, &package)).unwrap();
+        fs::copy(&image, package_path(&root, &package)).unwrap();
         let installation =
             Installation::from_executable(app.join("Contents/MacOS/kitonyterms")).unwrap();
         assert!(installation.bundle);
@@ -811,6 +813,11 @@ mod tests {
             parent_pid: 1,
         };
         apply(&root, &task).unwrap();
+        assert!(!root.join(".dmg-mount").exists());
+        assert_eq!(
+            fs::read_link(app.join("Contents/Resources/current")).unwrap(),
+            Path::new("version")
+        );
         assert_eq!(
             fs::read(app.join("Contents/Resources/version")).unwrap(),
             b"new"
@@ -821,6 +828,7 @@ mod tests {
             b"old"
         );
         apply(&root, &task).unwrap();
+        assert!(!root.join(".dmg-mount").exists());
         recover(&root, &task.next, &task.installation.executable, false).unwrap();
         assert!(task.installation.backup().exists());
         recover(&root, &task.next, &task.installation.executable, true).unwrap();

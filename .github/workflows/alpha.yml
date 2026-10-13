@@ -97,16 +97,9 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
-          # Intel runner 紧缺,改在 Apple Silicon 上交叉编译 x64。
-          - name: macos-x64
-            os: macos-14
-            target: x86_64-apple-darwin
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-          - name: windows-aarch64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v5
@@ -164,7 +157,7 @@ jobs:
           cp -R "crates/kt-app/assets/linux/hicolor" "$staging/share/icons/"
           tar -czf "dist/${staging}.tar.gz" "$staging"
 
-      # macOS:构建 KitonyTerms.app 应用包,输出 .zip 与 .dmg。
+      # macOS:构建 ARM64 KitonyTerms.app，仅输出 .dmg。
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -196,14 +189,11 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # ad-hoc 签名:保证可执行文件与应用包签名内部一致(交叉编译的 x64、
-          # strip 后均确定有效)。未做 Apple 公证,用户首次打开仍需移除隔离属性,
-          # 详见预发布说明。
+          # ad-hoc 签名保证二进制与应用包内部一致；未做 Apple 公证，
+          # 用户首次打开仍需按预发布说明移除隔离属性。
           codesign --force --sign - "$app/Contents/MacOS/kitonyterms"
           codesign --force --sign - "$app"
           codesign --verify --verbose "$app"
-          # .zip:直接归档应用包(ditto 保留 macOS 元数据)。
-          ditto -c -k --keepParent "$app" "dist/${base}.zip"
           # .dmg:含应用包与 /Applications 软链,便于拖拽安装。
           dmgroot="$(mktemp -d)"
           cp -R "$app" "$dmgroot/"
@@ -223,7 +213,7 @@ jobs:
           # 便携版 zip。
           Compress-Archive -Path "staging\*" -DestinationPath "dist\$base.zip"
           "KitonyTerms Inno Setup installation v1" | Set-Content staging/kitonyterms-installation.txt -Encoding ascii
-          # 安装包:Inno Setup 编译器为 x86,在 ARM64 上经模拟运行同样可用。
+          # 为 AMD64 二进制生成 Inno Setup 安装包。
           choco install innosetup -y --no-progress
           $appVersion = $env:KT_RELEASE_VERSION
           $languageDir = "installer-languages"
@@ -311,7 +301,7 @@ jobs:
           java-version: "17"
 
       - name: Install Android SDK and NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # 该 action 默认安装的 `tools` 包已从 Google SDK 仓库下架，
           # 会让 sdkmanager 直接失败；实际需要的包由下一步显式安装。
@@ -406,7 +396,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -429,7 +419,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -437,7 +427,7 @@ jobs:
       # 先把完整资产上传到不可见草稿，避免覆盖公开 Alpha 时留下半套资产。
       - name: Stage Alpha prerelease
         id: stage_alpha
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: alpha-stage-${{ github.run_id }}-${{ github.run_attempt }}
           target_commitish: ${{ github.sha }}

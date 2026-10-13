@@ -7,6 +7,14 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
+#[cfg(target_os = "macos")]
+mod dmg;
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use dmg::create_test_image;
+// 原生镜像工具共用系统服务，测试按完整镜像生命周期串行执行。
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) static DMG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn extract(package: &Package, archive: &Path, directory: &Path) -> Result<()> {
     ensure!(
@@ -82,10 +90,20 @@ fn extract_inner(package: &Package, archive: &Path, directory: &Path) -> Result<
                 }
             }
         }
+        PackageKind::Dmg => {
+            #[cfg(target_os = "macos")]
+            return dmg::extract(archive, directory);
+            #[cfg(not(target_os = "macos"))]
+            anyhow::bail!("此平台不支持 DMG 更新包 / DMG updates require macOS");
+        }
         PackageKind::Installer => anyhow::bail!("安装器无需解包 / Installer cannot be extracted"),
     }
+    create_links(directory, &links)
+}
+
+fn create_links(directory: &Path, links: &[(PathBuf, PathBuf)]) -> Result<()> {
     // 所有普通文件落盘后再建立链接，后续写入不会沿链接走出目录。
-    for (relative, target) in &links {
+    for (relative, target) in links {
         let path = directory.join(relative);
         ensure!(
             fs::canonicalize(path.parent().unwrap())?
@@ -104,7 +122,7 @@ fn extract_inner(package: &Package, archive: &Path, directory: &Path) -> Result<
             anyhow::bail!("当前平台不支持归档链接 / Archive links unsupported");
         }
     }
-    for (relative, _) in &links {
+    for (relative, _) in links {
         ensure!(
             fs::canonicalize(directory.join(relative))?
                 .starts_with(fs::canonicalize(directory.join("KitonyTerms.app"))?),

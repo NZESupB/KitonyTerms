@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,22 @@ SPEC = importlib.util.spec_from_file_location("update_manifest", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+DESKTOP_TARGETS = {
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+}
+NODE24_ACTIONS = {
+    "actions/checkout@v5",
+    "actions/upload-artifact@v6",
+    "actions/download-artifact@v8",
+    "actions/setup-java@v5",
+    "android-actions/setup-android@v4",
+    "Swatinem/rust-cache@v2",
+    "softprops/action-gh-release@v3",
+}
+
 
 class ManifestTests(unittest.TestCase):
     def fixtures(self, dist):
@@ -21,7 +38,8 @@ class ManifestTests(unittest.TestCase):
         for target, platform in MODULE.TARGETS.items():
             (dist / ("build-" + target + ".json")).write_text(json.dumps(dict(record, target=target)), encoding="utf-8")
             base = "kitonyterms-alpha-" + platform
-            (dist / (base + (".tar.gz" if "linux" in target else ".zip"))).write_bytes(b"package")
+            suffix = ".tar.gz" if "linux" in target else ".dmg" if "apple" in target else ".zip"
+            (dist / (base + suffix)).write_bytes(b"package")
             if "windows" in target:
                 (dist / (base + "-setup.exe")).write_bytes(b"installer")
 
@@ -30,10 +48,24 @@ class ManifestTests(unittest.TestCase):
             dist = Path(temporary)
             self.fixtures(dist)
             manifest = MODULE.generate(dist)
-            self.assertEqual(len(manifest["targets"]), 6)
+            self.assertEqual(set(MODULE.TARGETS), DESKTOP_TARGETS)
+            self.assertEqual(set(manifest["targets"]), DESKTOP_TARGETS)
+            macos = manifest["targets"]["aarch64-apple-darwin"]
+            self.assertEqual(macos["archive"]["kind"], "dmg")
+            self.assertEqual(macos["archive"]["name"], "kitonyterms-alpha-macos-aarch64.dmg")
+            self.assertIsNone(macos["installer"])
+            self.assertEqual(manifest["targets"]["x86_64-pc-windows-msvc"]["archive"]["kind"], "zip")
             self.assertEqual(manifest["targets"]["x86_64-pc-windows-msvc"]["installer"]["kind"], "installer")
             self.assertEqual(manifest["targets"]["aarch64-unknown-linux-gnu"]["archive"]["size"], 7)
             (dist / "kitonyterms-alpha-windows-x64-setup.exe").unlink()
+            with self.assertRaises(ValueError):
+                MODULE.generate(dist)
+
+    def test_macos_requires_dmg_instead_of_zip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            dist = Path(temporary)
+            self.fixtures(dist)
+            (dist / "kitonyterms-alpha-macos-aarch64.dmg").rename(dist / "kitonyterms-alpha-macos-aarch64.zip")
             with self.assertRaises(ValueError):
                 MODULE.generate(dist)
 
@@ -84,10 +116,10 @@ class ManifestTests(unittest.TestCase):
                 with self.assertRaises(UnicodeDecodeError):
                     cargo.read_text()
                 self.assertEqual(MODULE.identity("auto", environment, cargo)["version"], "0.1.2")
-                self.assertEqual(len(MODULE.generate(root)["targets"]), 6)
+                self.assertEqual(set(MODULE.generate(root)["targets"]), DESKTOP_TARGETS)
 
-    def test_metadata_command_for_windows_targets(self):
-        for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
+    def test_metadata_command_for_supported_targets(self):
+        for target in MODULE.TARGETS:
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 (root / "Cargo.toml").write_text('# 发布构建中文注释\n[workspace.package]\nversion = "0.1.2"\n', encoding="utf-8")
@@ -106,6 +138,13 @@ class ManifestTests(unittest.TestCase):
                     self.assertNotIn(b"\r", contents)
                     self.assertEqual(contents.decode("utf-8"), (prefix + appended * count).decode("utf-8"))
 
+    def test_removed_targets_are_rejected(self):
+        for target in ("x86_64-apple-darwin", "aarch64-pc-windows-msvc"):
+            with self.subTest(target=target):
+                result = subprocess.run([sys.executable, "-B", str(SCRIPT), "metadata", "--channel", "auto", "--target", target], capture_output=True, encoding="utf-8", timeout=15)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("invalid choice", result.stderr)
+
     def test_workflow_contract(self):
         for name, channel in (("release", "auto"), ("alpha", "alpha")):
             workflow = (SCRIPT.parent.parent / "workflows" / (name + ".yml")).read_text(encoding="utf-8")
@@ -117,8 +156,22 @@ class ManifestTests(unittest.TestCase):
             self.assertIn("AppId=KitonyTerms", workflow)
             self.assertIn("CloseApplications=no", workflow)
             self.assertIn("kitonyterms-installation.txt", workflow)
-            for target in MODULE.TARGETS:
-                self.assertIn("target: " + target, workflow)
+            matrix = workflow.split("      matrix:\n", 1)[1].split("    steps:\n", 1)[0]
+            self.assertEqual(set(re.findall(r"target: (\S+)", matrix)), DESKTOP_TARGETS)
+            self.assertEqual(len(re.findall(r"target: (\S+)", matrix)), 4)
+            self.assertNotIn("macos-x64", workflow)
+            self.assertNotIn("windows-aarch64", workflow)
+            macos = workflow.split("- name: Package (macOS)", 1)[1].split("\n      # Windows:", 1)[0]
+            self.assertIn('hdiutil create -volname "KitonyTerms"', macos)
+            self.assertIn('"dist/${base}.dmg"', macos)
+            self.assertNotIn(".zip", macos)
+            self.assertNotIn("ditto", macos)
+            windows = workflow.split("- name: Package (Windows)", 1)[1].split("- name: Upload build artifacts", 1)[0]
+            self.assertIn('Compress-Archive -Path "staging\\*" -DestinationPath "dist\\$base.zip"', windows)
+            self.assertIn("OutputBaseFilename=$base-setup", windows)
+            self.assertLess(windows.index("Compress-Archive"), windows.index("kitonyterms-installation.txt"))
+            actions = set(re.findall(r"uses: (\S+)", workflow))
+            self.assertEqual(actions, NODE24_ACTIONS | {"dtolnay/rust-toolchain@stable"})
 
 
 if __name__ == "__main__":

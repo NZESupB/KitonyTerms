@@ -45,10 +45,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## 桌面更新原生验收
 
-发布清单须包含 Windows/macOS/Linux 的 x64/aarch64 六种 target，Windows 同时包含 ZIP 与安装器。Alpha 使用 GitHub run ID/attempt，正式 tag 必须匹配 Cargo 版本。使用隔离应用副本和数据目录验收，不替换开发环境应用。
+发布清单须包含 macOS ARM64、Windows AMD64、Linux x64/aarch64 四个 target；macOS 仅 DMG，Windows 同时包含便携 ZIP 与安装器。发布契约测试固定该范围及 Node.js 24 Action 版本。Alpha 使用 GitHub run ID/attempt，正式 tag 必须匹配 Cargo 版本。使用隔离应用副本和数据目录验收，不替换开发环境应用。
 
 - Windows：便携 EXE 替换、安装版 UAC 接受/取消、安装路径不漂移、普通权限 GUI 重启、运行中 EXE 的中断恢复、单实例竞争。
-- macOS：签名 `.app` 的整包交换/回滚、UI 启动确认后清理备份、DMG/App Translocation/不可写目录错误；测试已含原生 codesign/ditto 夹具，但不代替 GUI 验收。
+- macOS：签名 `.app` 的整包交换/回滚、UI 启动确认后清理备份、DMG/App Translocation/不可写目录错误；测试包含真实 DMG 的只读挂载、签名包更新/回滚、损坏镜像及越界链接清理和遗留挂载回收。原生镜像测试按完整生命周期互斥执行，镜像创建也使用有超时与输出上限的 hdiutil 调用；不代替 GUI 验收。
 - Linux：实际二进制路径和执行权限、只读目录、旧进程等待、单实例竞争、恢复和重启。
 - 三端：编辑器/外部编辑/SFTP pending/同步阻止重启，后台下载期间终端正常工作，准备失败应用保持运行；断网、限流、Alpha 资产切换可重试。
 
