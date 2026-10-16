@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["KitonyTerms contributors"]
@@ -81,6 +81,7 @@ zeroize = { version = "1", features = ["derive"] }
 # --- UI framework ---
 # 不限制稳定版本线；Cargo.lock 记录每次更新后实际验证的版本。
 dioxus = { version = ">=0", features = ["desktop", "mobile"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # 本机字体枚举（桌面端设置页）。
 fontdb = "0.24"

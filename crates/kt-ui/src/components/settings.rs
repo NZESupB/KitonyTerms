@@ -341,7 +341,10 @@ struct SettingsBodyProps {
 
 #[component]
 fn SettingsBody(props: SettingsBodyProps) -> Element {
-    match props.section {
+    let section = props.section;
+    let title = section.label(&texts(props.language).app);
+    let is_phone = props.is_phone;
+    let content = match section {
         SettingsSection::General => rsx! { GeneralSection { ..props } },
         SettingsSection::Terminal => rsx! { TerminalSection { ..props } },
         SettingsSection::Editor => rsx! { EditorSection { ..props } },
@@ -356,6 +359,12 @@ fn SettingsBody(props: SettingsBodyProps) -> Element {
                 rsx! {}
             }
         }
+    };
+    rsx! {
+        if section != SettingsSection::Update && !is_phone {
+            div { class: "settings-section-heading", h3 { "{title}" } }
+        }
+        {content}
     }
 }
 

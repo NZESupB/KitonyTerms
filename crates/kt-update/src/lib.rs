@@ -38,6 +38,7 @@ pub enum Phase {
     Disabled,
     Idle,
     Checking,
+    Cancelled,
     Available,
     Downloading,
     Ready,
@@ -188,18 +189,30 @@ impl UpdateService {
         let service = Arc::clone(self);
         self.runtime.spawn(async move {
             let cancel = service.state.lock().unwrap().cancellation.clone();
-            let result = tokio::select! { _ = cancel.cancelled() => Err(anyhow::anyhow!("检查已取消 / Check cancelled")), value = service.client.check(&service.current, service.installation.installed) => value };
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                value = service.client.check(&service.current, service.installation.installed) => Some(value),
+            };
             let auto_download = {
                 let mut state = service.state.lock().unwrap();
-                state.snapshot.last_check = Some(client::now());
-                match result {
-                    Ok(available) => {
-                        state.failures = 0; state.next_check = client::now() + 6 * 3600;
-                        state.snapshot.phase = if available.is_some() { Phase::Available } else { Phase::Idle };
-                        state.snapshot.available = available;
-                        state.snapshot.preferences.auto_download && state.snapshot.phase == Phase::Available
+                if cancel.is_cancelled() {
+                    state.snapshot.phase = Phase::Cancelled;
+                    state.snapshot.message = None;
+                    state.next_check = client::now() + 6 * 3600;
+                    false
+                } else {
+                    match result.expect("非取消检查必须返回结果") {
+                        Ok(available) => {
+                            state.failures = 0;
+                            state.next_check = client::now() + 6 * 3600;
+                            state.snapshot.last_check = Some(client::now());
+                            state.snapshot.phase = if available.is_some() { Phase::Available } else { Phase::Idle };
+                            state.snapshot.available = available;
+                            state.snapshot.preferences.auto_download && state.snapshot.phase == Phase::Available
+                        }
+                        Err(error) => { fail(&mut state, &error); false }
                     }
-                    Err(error) => { fail(&mut state, &error); false }
                 }
             };
             if auto_download { let _ = service.download(); }

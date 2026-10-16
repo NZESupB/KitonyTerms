@@ -17,6 +17,7 @@ struct Reply {
     body: Vec<u8>,
     delay: Duration,
     slow: bool,
+    started: Option<std::sync::mpsc::Sender<()>>,
 }
 impl Reply {
     fn ok(path: &'static str, body: Vec<u8>) -> Self {
@@ -27,6 +28,7 @@ impl Reply {
             body,
             delay: Duration::ZERO,
             slow: false,
+            started: None,
         }
     }
 }
@@ -47,6 +49,8 @@ fn server(replies: Vec<Reply>) -> (String, thread::JoinHandle<()>) {
                     }
                     Err(e) => panic!("{e}"),
                 };
+                // macOS 会继承 listener 的非阻塞模式，恢复阻塞后读取超时才能生效。
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .unwrap();
@@ -82,6 +86,9 @@ fn server(replies: Vec<Reply>) -> (String, thread::JoinHandle<()>) {
                 );
                 break stream;
             };
+            if let Some(started) = reply.started {
+                let _ = started.send(());
+            }
             thread::sleep(reply.delay);
             let header = format!(
                 "HTTP/1.1 {}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
@@ -262,6 +269,7 @@ fn cancellation_removes_partial_download_and_allows_retry() {
     let mut reply = Reply::ok("/releases/assets/2", body.to_vec());
     reply.slow = true;
     replies.push(reply);
+    replies.push(Reply::ok("/releases/assets/2", body.to_vec()));
     let (base, server) = server(replies);
     let service = service(dir.path(), base, Channel::Stable, Duration::from_secs(2));
     service.check().unwrap();
@@ -280,6 +288,9 @@ fn cancellation_removes_partial_download_and_allows_retry() {
         .file_name()
         .to_string_lossy()
         .starts_with(".tmp")));
+    service.download().unwrap();
+    wait(&service, Phase::Ready);
+    download::verify(&install::package_path(&service.root, &package), &package).unwrap();
     server.join().unwrap();
 }
 #[test]
@@ -364,4 +375,76 @@ fn valid_package_commits_and_invalid_package_preserves_original() {
     assert!(install::apply(&root, &task).is_err());
     assert_eq!(fs::read(&executable).unwrap(), b"old");
     assert!(!root.join("journal.json").exists());
+}
+
+#[test]
+fn release_notes_metadata_is_optional_and_utf8_bounded() {
+    for metadata in [
+        serde_json::json!({}),
+        serde_json::json!({ "body": null, "published_at": null }),
+        serde_json::json!({ "body": "", "published_at": "invalid" }),
+        serde_json::json!({ "body": "## 改进\n\n- 修复终端", "published_at": "2026-10-16T01:00:00Z" }),
+        serde_json::json!({ "body": "更新".repeat(20_000), "published_at": null }),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut replies, _) = release_replies(Channel::Stable, b"test");
+        let mut release: serde_json::Value = serde_json::from_slice(&replies[0].body).unwrap();
+        for (key, value) in metadata.as_object().unwrap() {
+            release[key] = value.clone();
+        }
+        replies[0].body = serde_json::to_vec(&release).unwrap();
+        let (base, server) = server(replies);
+        let service = service(dir.path(), base, Channel::Stable, Duration::from_secs(2));
+        service.check().unwrap();
+        wait(&service, Phase::Available);
+        let available = service.snapshot().available.unwrap();
+        let original = metadata["body"].as_str().unwrap_or_default();
+        assert_eq!(
+            available.notes_truncated,
+            original.len() > client::MAX_RELEASE_NOTES
+        );
+        assert!(available.notes.len() <= client::MAX_RELEASE_NOTES);
+        assert!(original.starts_with(&available.notes));
+        assert_eq!(available.tag, "v0.1.3");
+        assert_eq!(
+            available.published_at.as_deref(),
+            metadata["published_at"].as_str()
+        );
+        assert!(service.snapshot().last_check.is_some());
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn cancelled_check_is_neutral_and_can_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let (started, received) = std::sync::mpsc::channel();
+    let mut first = Reply::ok("/releases/latest", b"{}".to_vec());
+    first.started = Some(started);
+    first.delay = Duration::from_millis(100);
+    let (next, _) = release_replies(Channel::Stable, b"test");
+    let mut replies = vec![first];
+    replies.extend(next);
+    let (base, server) = server(replies);
+    let service = service(dir.path(), base, Channel::Stable, Duration::from_secs(2));
+    {
+        let mut state = service.state.lock().unwrap();
+        state.snapshot.last_check = Some(123);
+        state.failures = 2;
+    }
+    service.check().unwrap();
+    received.recv_timeout(Duration::from_secs(2)).unwrap();
+    service.cancel();
+    wait(&service, Phase::Cancelled);
+    {
+        let state = service.state.lock().unwrap();
+        assert_eq!(state.failures, 2);
+        assert_eq!(state.snapshot.last_check, Some(123));
+        assert!(state.snapshot.message.is_none());
+        assert!(state.snapshot.available.is_none());
+        assert!(state.next_check >= client::now() + 5 * 3600);
+    }
+    service.check().unwrap();
+    wait(&service, Phase::Available);
+    server.join().unwrap();
 }

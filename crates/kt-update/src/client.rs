@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const REPOSITORY: &str = "nzesupb/KitonyTerms";
 pub const RELEASE_PAGE: &str = "https://github.com/nzesupb/KitonyTerms/releases";
 const META_LIMIT: usize = 2 * 1024 * 1024;
+pub const MAX_RELEASE_NOTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct RetryAfter(pub u64);
 impl std::fmt::Display for RetryAfter {
@@ -34,6 +35,8 @@ struct Release {
     draft: bool,
     prerelease: bool,
     assets: Vec<Asset>,
+    body: Option<String>,
+    published_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Available {
@@ -41,6 +44,10 @@ pub struct Available {
     pub package: Package,
     pub asset_id: u64,
     pub release_id: u64,
+    pub tag: String,
+    pub notes: String,
+    pub notes_truncated: bool,
+    pub published_at: Option<String>,
 }
 #[derive(Clone)]
 pub struct ReleaseClient {
@@ -179,6 +186,15 @@ impl ReleaseClient {
                 "发布摘要不一致 / Asset digest mismatch"
             );
         }
+        let mut notes = release.body.unwrap_or_default();
+        let notes_truncated = notes.len() > MAX_RELEASE_NOTES;
+        if notes_truncated {
+            let mut end = MAX_RELEASE_NOTES;
+            while !notes.is_char_boundary(end) {
+                end -= 1;
+            }
+            notes.truncate(end);
+        }
         Ok(Some(Available {
             info: BuildInfo {
                 channel: manifest.channel,
@@ -191,6 +207,10 @@ impl ReleaseClient {
             package,
             asset_id: asset.id,
             release_id: release.id,
+            tag: release.tag_name,
+            notes,
+            notes_truncated,
+            published_at: release.published_at,
         }))
     }
 }

@@ -80,6 +80,8 @@
 - 桌面固定紧凑布局；旧 density 字段由配置兼容读取并在保存时移除。
 - 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用五列可收缩 Grid，长文本省略并提供完整 title，不再固定 680px 最小宽度。
 - [主题](../crates/kt-ui/src/components/theme.rs)与[样式](../crates/kt-ui/src/assets/app.css)使用变量；默认终端色随主题，显式颜色保留。
+- 视觉共用规则集中于 app.css：设置、连接/安全弹窗、内置编辑器与通知共用按钮和表单表面；终端、文件 Grid 和运维保留紧凑尺寸。依赖其他 CSS 变量的强调色、菜单和悬停 token 在 `:root`、`.kt-window`、`.software-update-layer` 同时声明，确保在当前主题/强调色根节点重新计算，不能只依赖 :root 的已计算继承值。主要按钮复用 `accent_foreground` 计算的前景。
+- 设置内容区以具名 container query 在 480px 以下堆叠表单，640px 以下桌面设置导航横向换行。手机普通输入（含 URL）保持 16px/44px；连接/安全弹窗随键盘 inset 收缩，正文滚动与底部操作区分离。全局可见焦点不覆盖终端输入桥，新增悬停仅用于精确指针，减少动态效果时禁用过渡。
 - 跟随当前会话的组件状态用 `use_reactive(session_id)` 驱动，轮询另以代次收敛旧任务；Dioxus 的 `key` 只在条件渲染/迭代器产生的 Fragment 层比较，普通子节点位的 `key` 不触发重建。
 - 手机输入的待验收场景见[当前任务](workflow/260820-mobile-phone-ui.md)。
 
@@ -105,6 +107,9 @@
 - kt-update 自有两线程 Tokio runtime，检查和下载不占用 SSH 事件通道。状态互斥避免重复操作，取消任务收敛后才能启动下一任务。
 - 当前构建嵌入完整 target、渠道、Cargo 版本、commit、GitHub run ID/attempt。正式版按 SemVer，Alpha 按 run ID/attempt 比较；本地缺失身份则开发构建禁用更新。
 - 更新源固定为官方仓库，清单和包绑定 GitHub 资产 ID；缓存用大小/SHA-256 验证。updates/preferences.json 独立于 config.toml，不参与配置同步。
+- 更新正文、标签与发布时间从同一次 Release 查询携带至 Available；正文按 UTF-8 边界限 64KiB。UI 用 pulldown-cmark 事件构建受控 Dioxus 节点，原始 HTML 显示为文字、图片仅保留替代文字、链接仅 HTTP/HTTPS；无日志不影响更新包。
+- 检查取消为 Cancelled 中性终态，保留上次成功检查时间与失败计数并将自动检查延后 6 小时；手动重试仍可立即执行。下载取消保留 Available 以便重试。
+- 更新展示位于 software_update/view.rs，主页面与独立弹层共享主题变量；弹层显式传入当前主题、强调色与可读前景色，始终位于主界面 inert 之外。software_update_dialog.js 管理默认稍后焦点、Tab 循环、确认时 Esc 与卸载恢复；准备期间只显示真实阶段，不推测辅助安装百分比。
 - ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。macOS 更新包使用 DMG，经 hdiutil 校验并只读挂载到 updates 下固定私有挂载点，仅复制 KitonyTerms.app，沿用路径/链接/体积限制；成功与失败均卸载，重试先回收遗留挂载。复制后以 codesign 验证签名和 bundle ID。ZIP 中的 AppleDouble 载体校验标识与体积后丢弃，不得作为普通资源加入签名包。
 - 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。匹配的 committed 事务在 GUI 启动确认后清理，其他中断事务恢复；Windows 当前 EXE 的恢复在进程退出后执行，安装版恢复限定管理员登记路径。
 - App 提供内置/外部编辑、SFTP pending、下载选择器及同步状态保护；准备期间根界面 inert，握手后再次检查，确认后取消运维并断开连接。Android/iOS 不渲染更新入口。

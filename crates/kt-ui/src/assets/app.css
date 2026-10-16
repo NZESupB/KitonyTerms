@@ -4,30 +4,35 @@
     padding: 0;
 }
 
-:root {
+:root,
+.kt-window,
+.software-update-layer {
     color-scheme: dark;
-    --bg: #080d13;
-    --bg-strong: #0d131b;
-    --panel: #111822;
-    --panel-soft: #151e2a;
-    --panel-raised: #192333;
-    --border: #263140;
-    --border-soft: rgba(148, 163, 184, 0.16);
-    --text: #eef4ff;
-    --muted: #98a6b8;
-    --faint: #657386;
+    --bg: #101214;
+    --bg-strong: #14171b;
+    --panel: #191c21;
+    --panel-soft: #20242a;
+    --panel-raised: #282d35;
+    --border: #383f49;
+    --border-soft: rgba(160, 172, 190, 0.17);
+    --text: #edf1f6;
+    --muted: #a2adbc;
+    --faint: #7e8999;
+    --hover-bg: color-mix(in srgb, var(--text) 6%, transparent);
+    --overlay-bg: rgba(2, 6, 12, 0.6);
+    --accent-ink: var(--update-button-ink, #08121f);
     --blue: #5aa7ff;
     --accent-rgb: 90, 167, 255;
     --accent-soft: rgba(var(--accent-rgb), 0.12);
     --accent-fill: rgba(var(--accent-rgb), 0.28);
     --accent-hover: rgba(var(--accent-rgb), 0.38);
     --accent-border: rgba(var(--accent-rgb), 0.58);
-    --menu-bg: #121a25;
-    --menu-border: rgba(148, 163, 184, 0.24);
-    --menu-shadow: rgba(0, 0, 0, 0.46);
-    --menu-text: #dce7f6;
-    --menu-hover: rgba(var(--accent-rgb), 0.13);
-    --menu-hover-text: #f8fbff;
+    --menu-bg: var(--panel);
+    --menu-border: var(--border-soft);
+    --menu-shadow: rgba(0, 0, 0, 0.32);
+    --menu-text: var(--text);
+    --menu-hover: var(--hover-bg);
+    --menu-hover-text: var(--text);
     --menu-muted: var(--muted);
     --menu-danger: #ffb1b1;
     --menu-danger-hover: #ffd5d5;
@@ -60,17 +65,141 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
     font: inherit;
+    letter-spacing: 0;
 }
 
 button {
     border: 0;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.kt-window button:disabled {
+    cursor: default;
 }
 
 button:disabled {
-    opacity: 0.35;
+    opacity: 0.45;
     cursor: default;
+}
+
+/* 共用控件仅管理表面和状态，各工作区保留自己的紧凑尺寸。 */
+.settings-button,
+.dialog-btn,
+.group-actions button,
+.external-edit-dialog-actions button,
+.inline-editor-button,
+.sftp-download-notice button,
+.external-edit-sessions button {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--panel-soft);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+    transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.settings-button.primary,
+.dialog-btn.primary,
+.group-actions button.primary,
+.external-edit-dialog-actions button.primary,
+.inline-editor-button.is-primary {
+    border-color: transparent;
+    background: var(--blue);
+    color: var(--accent-ink);
+}
+
+.settings-button.danger,
+.inline-editor-button.is-danger {
+    border-color: color-mix(in srgb, var(--red) 22%, transparent);
+    background: color-mix(in srgb, var(--red) 9%, transparent);
+    color: var(--red);
+}
+
+.settings-text-input,
+.settings-number-input,
+.group-form input,
+.dialog-field input,
+.dialog-field select,
+.dialog-field-row input,
+.dialog-select,
+.operations-filter-input,
+.operations-filter-select,
+.phone-path-input {
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-strong);
+    color: var(--text);
+    font-size: 13px;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+:is(.settings-text-input, .group-form input, .dialog-field input, .operations-filter-input)::placeholder {
+    color: var(--faint);
+}
+
+:is(.settings-text-input, .settings-number-input, .group-form input, .dialog-field input, .dialog-field select, .dialog-field-row input, .dialog-select, .operations-filter-input, .operations-filter-select, .phone-path-input):focus {
+    border-color: var(--blue);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.kt-window :is(button, a, input, select, summary, [tabindex]):focus-visible:not(.terminal-surface):not(.phone-keyboard-input) {
+    outline: 2px solid var(--blue);
+    outline-offset: 3px;
+}
+
+.kt-window :is(input, select):disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.kt-window input[type="checkbox"] {
+    accent-color: var(--blue);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    :is(.settings-button, .dialog-btn, .group-actions button, .external-edit-dialog-actions button, .inline-editor-button, .sftp-download-notice button, .external-edit-sessions button):hover:not(:disabled) {
+        border-color: var(--border);
+        background: var(--panel-raised);
+    }
+
+    :is(.settings-button.primary, .dialog-btn.primary, .group-actions button.primary, .external-edit-dialog-actions button.primary, .inline-editor-button.is-primary):hover:not(:disabled) {
+        border-color: transparent;
+        background: color-mix(in srgb, var(--blue) 88%, var(--text));
+    }
+
+    :is(.settings-button.danger, .inline-editor-button.is-danger):hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--red) 40%, transparent);
+        background: color-mix(in srgb, var(--red) 15%, transparent);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .kt-window *, .kt-window *::before, .kt-window *::after {
+        transition: none !important;
+    }
 }
 
 /* ========== 窗口主框架 ========== */
@@ -81,10 +210,8 @@ button:disabled {
     height: 100vh;
     flex-direction: column;
     overflow: hidden;
-    background:
-        radial-gradient(circle at 18% 0%, rgba(56, 96, 132, 0.18), transparent 32%),
-        linear-gradient(180deg, #151a21 0%, #091017 56%, #070b10 100%);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
 }
 
 .desktop-titlebar {
@@ -94,7 +221,7 @@ button:disabled {
     align-items: stretch;
     flex: 0 0 36px;
     color: var(--text);
-    background: rgba(11, 18, 27, 0.94);
+    background: var(--panel);
     border-bottom: 1px solid var(--border-soft);
     user-select: none;
 }
@@ -148,13 +275,6 @@ button:disabled {
     transform: rotate(180deg);
 }
 
-.desktop-topbar-icon:hover,
-.desktop-new-session:hover,
-.desktop-tab-action:hover,
-.desktop-tab-close:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: var(--text);
-}
 
 .desktop-session-tabs {
     display: flex;
@@ -192,14 +312,11 @@ button:disabled {
     font-size: 12px;
 }
 
-.desktop-session-tab:hover {
-    background: rgba(148, 163, 184, 0.1);
-    color: var(--text);
-}
 
 .desktop-session-tab.is-active {
-    border-color: rgba(90, 167, 255, 0.3);
-    background: rgba(90, 167, 255, 0.13);
+    border-color: var(--border-soft);
+    background: var(--panel-raised);
+    box-shadow: inset 0 -2px var(--blue);
     color: var(--text);
 }
 
@@ -253,10 +370,6 @@ button:disabled {
     font-weight: 650;
 }
 
-.desktop-settings-button:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: var(--text);
-}
 
 .desktop-settings-button .kt-icon {
     font-size: 15px;
@@ -298,12 +411,32 @@ button[title]::after {
     content: attr(title);
 }
 
-.tooltip-trigger:hover::after,
 .tooltip-trigger:focus-visible::after,
-button[title]:hover::after,
 button[title]:focus-visible::after {
     opacity: 1;
     transform: translate(-50%, 0);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .tooltip-trigger:hover::after,
+    button[title]:hover::after {
+        opacity: 1;
+        transform: translate(-50%, 0);
+    }
+
+    :is(.desktop-topbar-icon, .desktop-new-session, .desktop-tab-action, .desktop-tab-close, .desktop-settings-button, .icon-button, .connection-actions button, .sidebar-add-btn, .sftp-tree-actions button, .sftp-footer button, .status-notification-close, .inline-editor-close, .operations-tool-button, .operations-close, .operations-refresh, .operations-action-button):hover:not(:disabled) {
+        background: var(--hover-bg);
+        color: var(--text);
+    }
+
+    :is(.icon-button.danger, .operations-action-button.danger):hover:not(:disabled) {
+        background: color-mix(in srgb, var(--red) 10%, transparent);
+        color: var(--red);
+    }
+
+    :is(.sftp-table-row, .sftp-tree-item, .sftp-row, .tree-group-title, .desktop-session-tab:not(.is-active), .connection-card:not(.is-active)):hover {
+        background: var(--hover-bg);
+    }
 }
 
 .desktop-titlebar-controls {
@@ -402,30 +535,26 @@ button[title]:focus-visible::after {
     opacity: 1;
 }
 
-.kt-window.theme-light {
+.kt-window.theme-light,
+.software-update-layer.theme-light {
     color-scheme: light;
-    --bg: #f4f7fb;
+    --bg: #f4f5f7;
     --bg-strong: #ffffff;
     --panel: #ffffff;
-    --panel-soft: #f0f4f8;
-    --panel-raised: #e8eef6;
-    --border: #c8d3df;
-    --border-soft: rgba(75, 91, 109, 0.18);
-    --text: #17212f;
-    --muted: #59687a;
-    --faint: #7b8998;
+    --panel-soft: #f5f6f8;
+    --panel-raised: #edf0f3;
+    --border: #d4d9e1;
+    --border-soft: rgba(36, 49, 66, 0.12);
+    --text: #202734;
+    --muted: #5c6675;
+    --faint: #707b8b;
+    --overlay-bg: rgba(15, 23, 42, 0.32);
+    --accent-ink: var(--update-button-ink, #ffffff);
     --blue: #2563eb;
     --green: #15803d;
     --amber: #b7791f;
     --purple: #7c3aed;
     --red: #dc2626;
-    --menu-bg: rgba(255, 255, 255, 0.98);
-    --menu-border: rgba(75, 91, 109, 0.24);
-    --menu-shadow: rgba(27, 39, 56, 0.22);
-    --menu-text: var(--text);
-    --menu-hover: rgba(var(--accent-rgb), 0.12);
-    --menu-hover-text: var(--text);
-    --menu-muted: var(--muted);
     --menu-danger: #b91c1c;
     --menu-danger-hover: #991b1b;
     --menu-danger-bg: rgba(220, 38, 38, 0.10);
@@ -435,31 +564,8 @@ button[title]:focus-visible::after {
     --terminal-gutter-lineno: #4a5a6e;
     --terminal-gutter-continuation: #78889c;
     --terminal-gutter-time: #3f6591;
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(235, 241, 248, 0.96) 100%);
 }
 
-.kt-window.theme-light .desktop-titlebar {
-    background: rgba(255, 255, 255, 0.96);
-}
-
-.kt-window.theme-light .sidebar,
-.kt-window.theme-light .terminal-panel,
-.kt-window.theme-light .monitor-dock,
-.kt-window.theme-light .sftp-shell {
-    background: rgba(255, 255, 255, 0.9);
-    box-shadow: 0 16px 38px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-/* 设置面板底色由 --panel 提供；这里只补浅色下更柔和的投影。 */
-.kt-window.theme-light .settings-panel {
-    box-shadow: 0 16px 38px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.kt-window.theme-light .session-tabs,
-.kt-window.theme-light .status-bar {
-    background: rgba(248, 250, 252, 0.86);
-}
 
 .kt-window.theme-light .terminal-body,
 .kt-window.theme-light .terminal-surface {
@@ -467,52 +573,10 @@ button[title]:focus-visible::after {
     color: #111827;
 }
 
-.kt-window.theme-light .sidebar-section-head,
-.kt-window.theme-light .tree-group-title,
-.kt-window.theme-light .connection-card,
-.kt-window.theme-light .connection-copy strong,
-.kt-window.theme-light .session-tab.is-active,
 .kt-window.theme-light .terminal-placeholder,
 .kt-window.theme-light .terminal-placeholder pre,
-.kt-window.theme-light .terminal-placeholder p,
-.kt-window.theme-light .empty-workbench h2,
-.kt-window.theme-light .monitor-title,
-.kt-window.theme-light .metric-label,
-.kt-window.theme-light .metric-value-row small,
-.kt-window.theme-light .sftp-table-head-row,
-.kt-window.theme-light .sftp-table-row,
-.kt-window.theme-light .sftp-table-status,
-.kt-window.theme-light .sftp-table-message,
-.kt-window.theme-light .sftp-empty,
-.kt-window.theme-light .sftp-row,
-.kt-window.theme-light .sftp-row span:nth-child(2),
-.kt-window.theme-light .sftp-row span:nth-child(3),
-.kt-window.theme-light .sftp-table-head,
-.kt-window.theme-light .sftp-footer,
-.kt-window.theme-light .metric-value-row strong,
-.kt-window.theme-light .group-form input,
-.kt-window.theme-light .dialog-field span,
-.kt-window.theme-light .dialog-field input {
+.kt-window.theme-light .terminal-placeholder p {
     color: var(--text);
-}
-
-.kt-window.theme-light .connection-card:hover,
-.kt-window.theme-light .sftp-path-line,
-.kt-window.theme-light .sftp-path,
-.kt-window.theme-light .group-form input,
-.kt-window.theme-light .dialog-field input,
-.kt-window.theme-light .segmented-control {
-    background: rgba(241, 245, 249, 0.9);
-}
-
-.kt-window.theme-light .connection-card.is-active {
-    border-color: rgba(37, 99, 235, 0.28);
-    background: linear-gradient(90deg, rgba(219, 234, 254, 0.96), rgba(236, 244, 255, 0.88));
-}
-
-.kt-window.theme-light .session-tab.is-active {
-    border-color: rgba(37, 99, 235, 0.32);
-    background: #ffffff;
 }
 
 .kt-window.theme-light .terminal-caret {
@@ -528,118 +592,7 @@ button[title]:focus-visible::after {
     background: rgba(17, 24, 39, 0.18);
 }
 
-.kt-window.theme-light .sftp-table-head-row,
-.kt-window.theme-light .sftp-table-message,
-.kt-window.theme-light .sftp-table-status,
-.kt-window.theme-light .sftp-row span:nth-child(2),
-.kt-window.theme-light .sftp-row span:nth-child(3),
-.kt-window.theme-light .sftp-table-head,
-.kt-window.theme-light .sftp-footer,
-.kt-window.theme-light .metric-value-row small {
-    color: #425064;
-}
 
-.kt-window.theme-light .sftp-table-row,
-.kt-window.theme-light .sftp-row,
-.kt-window.theme-light .sftp-path-input,
-.kt-window.theme-light .sftp-path-line,
-.kt-window.theme-light .sftp-path {
-    color: #17212f;
-}
-
-.kt-window.theme-light .sftp-table-head-row {
-    background: rgba(248, 250, 252, 0.98);
-}
-
-.kt-window.theme-light .metric-card,
-.kt-window.theme-light .context-menu {
-    background: rgba(255, 255, 255, 0.94);
-}
-
-.kt-window.theme-light .metric-card {
-    background:
-        linear-gradient(
-            90deg,
-            rgba(var(--metric-fill-rgb), 0.18) 0 var(--metric-fill-percent),
-            rgba(var(--metric-fill-rgb), 0.035) var(--metric-fill-percent) 100%
-        ),
-        rgba(255, 255, 255, 0.94);
-}
-
-.kt-window.theme-light .metric-card.latency-warn .metric-label {
-    color: #9a5f12;
-}
-
-.kt-window.theme-light .metric-card.latency-danger .metric-label {
-    color: #c2410c;
-}
-
-.kt-window.theme-light .context-menu button {
-    color: var(--text);
-}
-
-.kt-window.theme-light .settings-overlay {
-    background: rgba(15, 23, 42, 0.22);
-}
-
-.kt-window.theme-light .app-settings-overlay {
-    background: rgba(15, 23, 42, 0.48);
-}
-
-.kt-window.theme-light .app-settings-panel {
-    background: #ffffff;
-}
-
-/* 浅色下面板是纯白，导航栏需要一点灰底才能和内容区分开。 */
-.kt-window.theme-light .settings-nav {
-    background: rgba(241, 245, 249, 0.86);
-}
-
-/* 二维码卡片同理：纯白底上再放白卡片会看不出边界。 */
-.kt-window.theme-light .settings-share-card,
-.kt-window.theme-light .settings-editor-item {
-    background: rgba(241, 245, 249, 0.7);
-}
-
-.kt-window.theme-light .external-edit-overlay {
-    background: rgba(15, 23, 42, 0.48);
-}
-
-.kt-window.theme-light .settings-panel.external-edit-dialog {
-    background: #ffffff;
-}
-
-/* 连接对话框亮色覆盖：输入/下拉/选项卡随主题切换 */
-.kt-window.theme-light .dialog-field select,
-.kt-window.theme-light .dialog-field-row input,
-.kt-window.theme-light .dialog-select,
-.kt-window.theme-light .dialog-field input,
-.kt-window.theme-light .password-toggle {
-    background: var(--panel-soft);
-    color: var(--text);
-}
-
-.kt-window.theme-light .dialog-tab,
-.kt-window.theme-light .dialog-btn,
-.kt-window.theme-light .dialog-check,
-.kt-window.theme-light .dialog-fieldset legend {
-    color: var(--muted);
-}
-
-.kt-window.theme-light .dialog-tab.is-active,
-.kt-window.theme-light .dialog-check {
-    color: var(--text);
-}
-
-.kt-window.theme-light .dialog-btn {
-    background: var(--panel-raised);
-    color: var(--text);
-}
-
-.kt-window.theme-light .dialog-btn.primary {
-    background: var(--accent-fill);
-    color: var(--text);
-}
 
 .kt-content {
     display: flex;
@@ -703,12 +656,10 @@ button[title]:focus-visible::after {
     cursor: pointer;
 }
 
-.operations-tool-button:hover:not(:disabled),
-.operations-tool-button.is-active,
-.operations-close:hover,
-.operations-refresh:hover:not(:disabled) {
-    color: var(--text);
-    background: rgba(90, 167, 255, 0.16);
+.operations-tool-button.is-active {
+    color: var(--blue);
+    background: var(--accent-soft);
+    box-shadow: inset 2px 0 var(--blue);
 }
 
 .operations-tool-button:disabled {
@@ -811,19 +762,24 @@ button[title]:focus-visible::after {
 .operations-error {
     margin-bottom: 10px;
     padding: 8px 10px;
-    border: 1px solid rgba(239, 68, 68, 0.4);
-    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+    border-radius: 8px;
     color: var(--red);
-    background: rgba(239, 68, 68, 0.08);
+    background: color-mix(in srgb, var(--red) 5%, transparent);
     font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
 }
 
 .operations-section {
-    margin-bottom: 14px;
-    padding: 12px;
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.02);
+    margin-bottom: 16px;
+    padding: 0 0 16px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.operations-section:last-child {
+    margin-bottom: 0;
+    border-bottom: 0;
 }
 
 .operations-summary {
@@ -867,7 +823,7 @@ button[title]:focus-visible::after {
 .operations-core,
 .operations-list-row {
     border-radius: 4px;
-    background: rgba(148, 163, 184, 0.1);
+    background: var(--panel-soft);
     font-size: 12px;
 }
 
@@ -939,11 +895,18 @@ button[title]:focus-visible::after {
     font-size: 11px;
 }
 
-.operations-tab:hover,
 .operations-tab.is-active {
-    border-color: var(--blue);
-    background: rgba(90, 167, 255, 0.14);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
     color: var(--text);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .operations-tab:hover:not(:disabled) {
+        border-color: var(--border);
+        background: var(--hover-bg);
+        color: var(--text);
+    }
 }
 
 .operations-filter-bar {
@@ -954,14 +917,9 @@ button[title]:focus-visible::after {
 
 .operations-filter-input,
 .operations-filter-select {
-    min-width: 0;
     height: 30px;
     padding: 0 8px;
-    border: 1px solid var(--border-soft);
-    border-radius: 5px;
-    background: var(--bg-strong);
-    color: var(--text);
-    font: inherit;
+    border-radius: 6px;
     font-size: 12px;
 }
 
@@ -1051,19 +1009,14 @@ button[title]:focus-visible::after {
     cursor: pointer;
 }
 
-.operations-action-button:hover {
-    border-color: var(--border);
-    background: rgba(90, 167, 255, 0.14);
-    color: var(--text);
-}
 
 .operations-action-button.danger {
     color: var(--red);
 }
 
 .operations-action-button.is-confirm {
-    border-color: rgba(239, 68, 68, 0.55);
-    background: rgba(239, 68, 68, 0.16);
+    border-color: color-mix(in srgb, var(--red) 45%, transparent);
+    background: color-mix(in srgb, var(--red) 12%, transparent);
     color: var(--red);
 }
 
@@ -1089,10 +1042,10 @@ button[title]:focus-visible::after {
 
 .operations-action-result {
     padding: 12px;
-    border: 1px solid rgba(74, 222, 128, 0.35);
-    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--green) 25%, transparent);
+    border-radius: 8px;
     color: var(--green);
-    background: rgba(74, 222, 128, 0.08);
+    background: color-mix(in srgb, var(--green) 6%, transparent);
     font-size: 12px;
 }
 
@@ -1125,7 +1078,7 @@ button[title]:focus-visible::after {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: #c6d2e2;
+    color: var(--muted);
     cursor: pointer;
 }
 
@@ -1137,11 +1090,6 @@ button[title]:focus-visible::after {
     font-size: 18px;
 }
 
-.icon-button:hover,
-.connection-actions button:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: #f8fbff;
-}
 
 .icon-button.slim {
     width: 30px;
@@ -1159,7 +1107,7 @@ button[title]:focus-visible::after {
     flex-direction: column;
     overflow: hidden;
     border-right: 1px solid var(--border-soft);
-    background: rgba(12, 18, 25, 0.82);
+    background: var(--panel);
     opacity: 1;
     transition:
         width 200ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -1202,9 +1150,9 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 6px;
     padding: 12px 12px 8px;
-    color: #dce7f6;
-    font-size: 14px;
-    font-weight: 700;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
 }
 
 .sidebar-section-head > .kt-icon {
@@ -1226,10 +1174,6 @@ button[title]:focus-visible::after {
     font-size: 16px;
 }
 
-.sidebar-add-btn:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: #f8fbff;
-}
 
 .sidebar-add-btn + .sidebar-add-btn {
     margin-left: 0;
@@ -1255,16 +1199,25 @@ button[title]:focus-visible::after {
     overflow: hidden;
     margin: 0 10px;
     padding: 0 8px;
-    border: 1px solid rgba(148, 163, 184, 0.16);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: rgba(8, 13, 19, 0.42);
-    color: #dce7f6;
+    background: var(--bg-strong);
+    color: var(--text);
     font-family: "SF Mono", "Menlo", monospace;
     font-size: 12px;
 }
 
+.sftp-path-line:focus-within {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.sftp-path-line .sftp-path-input:focus-visible {
+    outline: none;
+}
+
 .sftp-path-line > .kt-icon {
-    color: #f3c86c;
+    color: var(--amber);
 }
 
 .sftp-path-line span {
@@ -1312,10 +1265,6 @@ button[title]:focus-visible::after {
     font-size: 15px;
 }
 
-.sftp-tree-actions button:hover:not(:disabled) {
-    background: rgba(90, 167, 255, 0.12);
-    color: #f8fbff;
-}
 
 .sftp-auto-sync {
     display: inline-flex;
@@ -1395,9 +1344,9 @@ button[title]:focus-visible::after {
     top: 0;
     height: 28px;
     border-bottom: 1px solid var(--border-soft);
-    background: rgba(12, 18, 25, 0.98);
-    color: #aeb9ca;
-    font-weight: 700;
+    background: var(--panel);
+    color: var(--muted);
+    font-weight: 600;
 }
 
 .sftp-table-head-row span,
@@ -1411,7 +1360,7 @@ button[title]:focus-visible::after {
 .sftp-table-row {
     min-height: 26px;
     border-radius: 5px;
-    color: #dce7f6;
+    color: var(--text);
     cursor: default;
     font-family: "SF Mono", "Menlo", "Consolas", "PingFang SC", monospace;
 }
@@ -1420,9 +1369,6 @@ button[title]:focus-visible::after {
     cursor: pointer;
 }
 
-.sftp-table-row:hover {
-    background: var(--accent-soft);
-}
 
 .sftp-table-row.is-drop-target {
     outline: 1px solid var(--accent-border);
@@ -1437,7 +1383,7 @@ button[title]:focus-visible::after {
 
 .sftp-name-cell .kt-icon {
     flex: 0 0 15px;
-    color: #82bcff;
+    color: var(--blue);
     font-size: 15px;
 }
 
@@ -1447,7 +1393,7 @@ button[title]:focus-visible::after {
 }
 
 .sftp-table-row.is-dir .sftp-name-cell .kt-icon {
-    color: #f3c86c;
+    color: var(--amber);
 }
 
 .sftp-table-message {
@@ -1459,7 +1405,7 @@ button[title]:focus-visible::after {
 }
 
 .sftp-table-message.error {
-    color: #ff9b9b;
+    color: var(--red);
 }
 
 .sftp-table-status {
@@ -1502,7 +1448,7 @@ button[title]:focus-visible::after {
 }
 
 .sftp-tree-message.error {
-    color: #ff9b9b;
+    color: var(--red);
 }
 
 .sftp-tree-item {
@@ -1512,17 +1458,14 @@ button[title]:focus-visible::after {
     gap: 8px;
     padding: 6px 8px;
     border-radius: 6px;
-    color: #dce7f6;
+    color: var(--text);
     font-size: 13px;
     cursor: pointer;
 }
 
-.sftp-tree-item:hover {
-    background: rgba(255, 255, 255, 0.04);
-}
 
 .sftp-tree-item > .kt-icon {
-    color: #f3c86c;
+    color: var(--amber);
     font-size: 16px;
 }
 
@@ -1531,7 +1474,7 @@ button[title]:focus-visible::after {
 }
 
 .sftp-tree-item.is-file > .kt-icon {
-    color: #82bcff;
+    color: var(--blue);
 }
 
 .sftp-tree-item span {
@@ -1555,10 +1498,10 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 6px;
     padding: 5px 6px;
-    color: #dce7f6;
+    color: var(--muted);
     cursor: pointer;
-    font-size: 14px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
 }
 
 .tree-group-title > .kt-icon {
@@ -1582,7 +1525,7 @@ button[title]:focus-visible::after {
 .empty-resource strong {
     display: block;
     margin-bottom: 6px;
-    color: #dce7f6;
+    color: var(--text);
 }
 
 .connection-card {
@@ -1594,17 +1537,15 @@ button[title]:focus-visible::after {
     margin: 1px 0;
     padding: 5px 7px 5px 10px;
     border: 1px solid transparent;
-    border-radius: 8px;
-    color: #d7e1ef;
+    border-radius: 6px;
+    color: var(--text);
 }
 
-.connection-card:hover {
-    background: rgba(255, 255, 255, 0.04);
-}
 
 .connection-card.is-active {
-    border-color: rgba(92, 145, 225, 0.32);
-    background: linear-gradient(90deg, rgba(54, 83, 140, 0.76), rgba(45, 71, 118, 0.5));
+    border-color: var(--border-soft);
+    background: var(--accent-soft);
+    box-shadow: inset 2px 0 var(--blue);
 }
 
 .connection-main {
@@ -1637,8 +1578,8 @@ button[title]:focus-visible::after {
 }
 
 .connection-copy strong {
-    color: #f4f8ff;
-    font-size: 14px;
+    color: var(--text);
+    font-size: 13px;
     line-height: 1.25;
 }
 
@@ -1665,12 +1606,14 @@ button[title]:focus-visible::after {
     transition: opacity 0.14s ease;
 }
 
-.connection-card:hover .connection-actions {
-    opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+    .connection-card:hover .connection-actions {
+        opacity: 1;
+    }
 }
 
 .connection-card.is-active .connection-actions {
-    background: linear-gradient(90deg, transparent, #304d81 22%);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--blue) 12%, var(--panel)) 22%);
 }
 
 .connection-card:focus-within .connection-actions {
@@ -1735,7 +1678,7 @@ button[title]:focus-visible::after {
 .splitter:hover::after,
 .splitter.is-active::after,
 .kt-window.is-resizing .splitter::after {
-    background: rgba(90, 167, 255, 0.38);
+    background: var(--accent-hover);
 }
 
 .sidebar-y-splitter {
@@ -1760,7 +1703,7 @@ button[title]:focus-visible::after {
 .sidebar-y-splitter:hover::after,
 .sidebar-y-splitter.is-active::after,
 .kt-window.is-resizing-y .sidebar-y-splitter::after {
-    background: rgba(90, 167, 255, 0.38);
+    background: var(--accent-hover);
 }
 
 .kt-window.is-resizing,
@@ -1802,10 +1745,10 @@ button[title]:focus-visible::after {
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: rgba(15, 22, 31, 0.86);
-    box-shadow: 0 18px 42px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    border: 0;
+    border-radius: 0;
+    background: var(--panel);
+    box-shadow: none;
     margin: 0;
 }
 
@@ -1816,8 +1759,8 @@ button[title]:focus-visible::after {
     align-items: flex-end;
     gap: 4px;
     padding: 0 8px;
-    border-bottom: 1px solid var(--border);
-    background: rgba(13, 19, 27, 0.72);
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--panel);
 }
 
 .session-tab {
@@ -1839,9 +1782,9 @@ button[title]:focus-visible::after {
 .session-tab.is-active {
     flex: 1 1 360px;
     max-width: min(520px, 68vw);
-    border-color: #315078;
-    background: #1a2534;
-    color: #f4f8ff;
+    border-color: var(--border-soft);
+    background: var(--panel-raised);
+    color: var(--text);
 }
 
 .tab-title {
@@ -1875,11 +1818,13 @@ button[title]:focus-visible::after {
     opacity: 0.78;
 }
 
-.tab-action:hover,
-.tab-close:hover,
-.new-tab-button:hover {
-    background: rgba(90, 167, 255, 0.12);
-    opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+    .tab-action:hover:not(:disabled),
+    .tab-close:hover:not(:disabled),
+    .new-tab-button:hover:not(:disabled) {
+        background: var(--hover-bg);
+        opacity: 1;
+    }
 }
 
 .tab-close,
@@ -1903,7 +1848,7 @@ button[title]:focus-visible::after {
     margin: 0 2px 3px;
     border-radius: 5px;
     background: transparent;
-    color: #bac7d8;
+    color: var(--muted);
     font-size: 22px;
 }
 
@@ -1912,9 +1857,7 @@ button[title]:focus-visible::after {
     min-height: 0;
     flex: 1;
     overflow: hidden;
-    background:
-        radial-gradient(circle at 78% 0%, rgba(50, 89, 130, 0.12), transparent 35%),
-        #080f16;
+    background: #080f16;
 }
 
 .terminal-body.is-split-horizontal {
@@ -2077,14 +2020,14 @@ button[title]:focus-visible::after {
     align-items: flex-start;
     justify-content: center;
     padding: 48px;
-    color: #dce7f6;
+    color: var(--text);
     font-family: "SF Mono", "Menlo", "Consolas", monospace;
 }
 
 .terminal-placeholder pre {
     max-width: 100%;
     overflow: hidden;
-    color: #c7d7ec;
+    color: var(--muted);
     font-size: 14px;
     line-height: 1.05;
     white-space: pre;
@@ -2094,7 +2037,7 @@ button[title]:focus-visible::after {
     margin-top: 14px;
     max-width: 100%;
     overflow-wrap: anywhere;
-    color: #dce7f6;
+    color: var(--text);
     font-size: 15px;
 }
 
@@ -2141,7 +2084,7 @@ button[title]:focus-visible::after {
 
 .empty-workbench h2 {
     margin-bottom: 6px;
-    color: #e8f1ff;
+    color: var(--text);
     font-size: 19px;
 }
 
@@ -2202,11 +2145,10 @@ button[title]:focus-visible::after {
     min-height: 142px;
     flex: 0 0 142px;
     overflow: hidden;
-    margin: 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: rgba(15, 22, 31, 0.86);
-    box-shadow: 0 18px 42px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    margin: 0;
+    border-top: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: var(--panel);
 }
 
 .monitor-panel {
@@ -2275,9 +2217,9 @@ button[title]:focus-visible::after {
     flex: 0 0 18px;
     align-items: center;
     gap: 8px;
-    color: #dce7f6;
-    font-size: 14px;
-    font-weight: 700;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
 }
 
 .monitor-title .icon-button {
@@ -2285,7 +2227,7 @@ button[title]:focus-visible::after {
 }
 
 .monitor-title > .kt-icon {
-    color: #88c8ff;
+    color: var(--blue);
     font-size: 16px;
 }
 
@@ -2311,7 +2253,7 @@ button[title]:focus-visible::after {
 }
 
 .monitor-state-message.error {
-    color: #ff9b9b;
+    color: var(--red);
 }
 
 .monitor-state-message > .kt-icon {
@@ -2329,15 +2271,15 @@ button[title]:focus-visible::after {
     justify-content: space-between;
     overflow: hidden;
     padding: 9px 10px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-soft);
     border-radius: 8px;
     background:
         linear-gradient(
             90deg,
-            rgba(var(--metric-fill-rgb), 0.2) 0 var(--metric-fill-percent),
-            rgba(var(--metric-fill-rgb), 0.04) var(--metric-fill-percent) 100%
+            rgba(var(--metric-fill-rgb), 0.12) 0 var(--metric-fill-percent),
+            rgba(var(--metric-fill-rgb), 0.02) var(--metric-fill-percent) 100%
         ),
-        rgba(17, 24, 34, 0.9);
+        var(--panel);
 }
 
 .metric-card.blue { --metric-fill-rgb: 74, 159, 255; }
@@ -2350,9 +2292,9 @@ button[title]:focus-visible::after {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: #c8d5e6;
+    color: var(--muted);
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 600;
 }
 
 .metric-label .kt-icon {
@@ -2369,7 +2311,7 @@ button[title]:focus-visible::after {
 .metric-value-row strong {
     min-width: 0;
     overflow: hidden;
-    color: #f6f9ff;
+    color: var(--text);
     font-size: 20px;
     line-height: 1;
     text-overflow: ellipsis;
@@ -2379,8 +2321,9 @@ button[title]:focus-visible::after {
 .metric-value-row small {
     min-width: 0;
     overflow: hidden;
-    color: #a7b4c8;
+    color: var(--muted);
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -2419,7 +2362,7 @@ button[title]:focus-visible::after {
 }
 
 .metric-card.latency-warn .metric-label {
-    color: #ffd180;
+    color: var(--amber);
 }
 
 .metric-card.latency-danger {
@@ -2427,7 +2370,7 @@ button[title]:focus-visible::after {
 }
 
 .metric-card.latency-danger .metric-label {
-    color: #ff9b9b;
+    color: var(--red);
 }
 
 .metric-card.latency-unknown .metric-label {
@@ -2461,12 +2404,12 @@ button[title]:focus-visible::after {
 
 .status-dot.online {
     background: var(--green);
-    box-shadow: 0 0 12px rgba(87, 210, 139, 0.56);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 12%, transparent);
 }
 
 .status-dot.connecting {
     background: var(--amber);
-    box-shadow: 0 0 12px rgba(242, 184, 91, 0.42);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 12%, transparent);
 }
 
 .status-dot.idle {
@@ -2481,8 +2424,8 @@ button[title]:focus-visible::after {
     gap: 12px;
     padding: 4px 16px;
     border-top: 1px solid var(--border-soft);
-    background: rgba(10, 16, 23, 0.96);
-    color: #aeb9ca;
+    background: var(--panel);
+    color: var(--muted);
     font-size: 13px;
 }
 
@@ -2502,15 +2445,16 @@ button[title]:focus-visible::after {
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    padding: 9px 9px 9px 12px;
-    border: 1px solid rgba(116, 179, 255, 0.36);
-    border-radius: 6px;
-    background: rgba(17, 27, 39, 0.96);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
-    color: #e7effa;
+    padding: 14px 12px 14px 16px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 12px 40px var(--shadow);
+    color: var(--text);
     font-size: 12px;
     line-height: 1.4;
     pointer-events: auto;
+    overflow-wrap: anywhere;
 }
 
 .status-notification > span {
@@ -2524,14 +2468,10 @@ button[title]:focus-visible::after {
     flex: 0 0 24px;
     border-radius: 5px;
     background: transparent;
-    color: #b7c6d8;
+    color: var(--muted);
     cursor: pointer;
 }
 
-.status-notification-close:hover {
-    background: rgba(148, 163, 184, 0.16);
-    color: #f8fbff;
-}
 
 .status-separator {
     width: 1px;
@@ -2540,13 +2480,13 @@ button[title]:focus-visible::after {
 }
 
 .latency {
-    color: #62dd96;
+    color: var(--green);
 }
 
 .status-detail {
     min-width: 0;
     overflow: hidden;
-    color: #d5dfed;
+    color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -2559,10 +2499,9 @@ button[title]:focus-visible::after {
     min-width: 280px;
     flex: 0 0 330px;
     overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: rgba(15, 22, 31, 0.86);
-    box-shadow: 0 18px 42px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    border-left: 1px solid var(--border-soft);
+    border-radius: 0;
+    background: var(--panel);
 }
 
 .sftp-panel {
@@ -2610,8 +2549,8 @@ button[title]:focus-visible::after {
     padding: 0 12px;
     border: 1px solid var(--border);
     border-radius: 7px;
-    background: rgba(8, 13, 19, 0.42);
-    color: #dce7f6;
+    background: var(--bg-strong);
+    color: var(--text);
     font-family: "SF Mono", "Menlo", monospace;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2637,7 +2576,7 @@ button[title]:focus-visible::after {
     min-height: 38px;
     padding: 0 10px;
     border-bottom: 1px solid var(--border-soft);
-    color: #a7b4c8;
+    color: var(--muted);
     font-size: 13px;
     font-weight: 700;
 }
@@ -2645,17 +2584,14 @@ button[title]:focus-visible::after {
 .sftp-row {
     min-height: 34px;
     padding: 0 10px;
-    color: #dbe6f5;
+    color: var(--text);
     cursor: default;
     font-size: 14px;
 }
 
-.sftp-row:hover {
-    background: rgba(90, 167, 255, 0.09);
-}
 
 .sftp-row.is-parent {
-    color: #bcd1ea;
+    color: var(--muted);
     cursor: pointer;
 }
 
@@ -2674,17 +2610,17 @@ button[title]:focus-visible::after {
     width: 18px;
     align-items: center;
     justify-content: center;
-    color: #82bcff;
+    color: var(--blue);
     font-size: 16px;
 }
 
 .file-icon.folder {
-    color: #f3c86c;
+    color: var(--amber);
 }
 
 .sftp-row span:nth-child(2),
 .sftp-row span:nth-child(3) {
-    color: #a7b4c8;
+    color: var(--muted);
     font-size: 13px;
 }
 
@@ -2694,7 +2630,7 @@ button[title]:focus-visible::after {
 }
 
 .sftp-message.error {
-    color: #ff9b9b;
+    color: var(--red);
 }
 
 .sftp-footer {
@@ -2705,7 +2641,7 @@ button[title]:focus-visible::after {
     gap: 8px;
     padding: 0 14px;
     border-top: 1px solid var(--border);
-    color: #a7b4c8;
+    color: var(--muted);
     font-size: 13px;
 }
 
@@ -2717,15 +2653,11 @@ button[title]:focus-visible::after {
     height: 28px;
     border-radius: 6px;
     background: transparent;
-    color: #c6d2e2;
+    color: var(--muted);
     cursor: pointer;
     font-size: 17px;
 }
 
-.sftp-footer button:hover {
-    background: rgba(90, 167, 255, 0.12);
-    color: #f8fbff;
-}
 
 /* ========== 右键菜单与分组弹窗 ========== */
 
@@ -2747,7 +2679,7 @@ button[title]:focus-visible::after {
 .context-menu button {
     display: flex;
     width: 100%;
-    height: 30px;
+    min-height: 32px;
     align-items: center;
     gap: 8px;
     padding: 0 9px;
@@ -2759,13 +2691,15 @@ button[title]:focus-visible::after {
     text-align: left;
 }
 
-.context-menu button:hover:not(:disabled) {
-    background: var(--menu-hover);
-    color: var(--menu-hover-text);
+@media (hover: hover) and (pointer: fine) {
+    .context-menu button:hover:not(:disabled) {
+        background: var(--menu-hover);
+        color: var(--menu-hover-text);
+    }
 }
 
 .context-menu button:disabled {
-    color: rgba(174, 185, 202, 0.38);
+    color: var(--menu-muted);
     cursor: default;
 }
 
@@ -2773,9 +2707,11 @@ button[title]:focus-visible::after {
     color: var(--menu-danger);
 }
 
-.context-menu button.danger:hover:not(:disabled) {
-    background: var(--menu-danger-bg);
-    color: var(--menu-danger-hover);
+@media (hover: hover) and (pointer: fine) {
+    .context-menu button.danger:hover:not(:disabled) {
+        background: var(--menu-danger-bg);
+        color: var(--menu-danger-hover);
+    }
 }
 
 .context-menu .kt-icon {
@@ -2784,6 +2720,8 @@ button[title]:focus-visible::after {
 
 .context-menu span {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .context-menu small {
@@ -2823,11 +2761,8 @@ button[title]:focus-visible::after {
     pointer-events: auto;
 }
 
-.context-submenu:hover .context-submenu-panel {
-    display: block;
-}
-
-.context-submenu-panel:hover {
+.context-submenu:hover .context-submenu-panel,
+.context-submenu:focus-within .context-submenu-panel {
     display: block;
 }
 
@@ -2845,47 +2780,16 @@ button[title]:focus-visible::after {
 
 .group-form input {
     width: 100%;
-    height: 36px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    outline: none;
-    background: var(--panel-soft);
-    color: var(--text);
-}
-
-.group-form input:focus {
-    border-color: var(--accent-border);
 }
 
 .group-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
-    padding: 0 18px 18px;
+    padding: 0 20px 20px;
 }
 
-.group-actions button {
-    height: 32px;
-    padding: 0 14px;
-    border-radius: 7px;
-    background: var(--panel-raised);
-    color: var(--text);
-    cursor: pointer;
-}
-
-.group-actions button:hover {
-    background: var(--accent-soft);
-}
-
-.group-actions button.primary {
-    background: var(--accent-fill);
-    color: var(--text);
-}
-
-.group-actions button.primary:hover {
-    background: var(--accent-hover);
-}
 
 .upload-conflict-overlay {
     z-index: 1100;
@@ -2918,26 +2822,38 @@ button[title]:focus-visible::after {
 }
 
 .settings-panel.external-edit-dialog {
+    display: flex;
     width: min(520px, 100%);
-    background: #111822;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--panel);
 }
 
 .external-edit-overlay {
-    background: rgba(2, 6, 12, 0.78);
+    background: var(--overlay-bg);
 }
 
 .external-edit-dialog-body {
     display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
     gap: 14px;
-    padding: 18px;
+    overflow-y: auto;
+    padding: 20px;
 }
 
 .external-edit-dialog-body > .kt-icon {
     width: 34px;
     height: 34px;
     flex: 0 0 34px;
-    color: #88c8ff;
+    color: var(--blue);
     font-size: 22px;
+}
+
+.external-edit-dialog-body > div {
+    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
 }
 
 .external-edit-dialog-body strong,
@@ -2947,7 +2863,7 @@ button[title]:focus-visible::after {
 }
 
 .external-edit-dialog-body strong {
-    color: #f4f8ff;
+    color: var(--text);
     font-size: 15px;
 }
 
@@ -2961,19 +2877,20 @@ button[title]:focus-visible::after {
 .external-edit-dialog-body code {
     max-width: 100%;
     margin-top: 10px;
-    overflow: hidden;
-    padding: 6px 8px;
+    overflow: auto;
+    padding: 8px 10px;
     border-radius: 6px;
-    background: rgba(8, 13, 19, 0.64);
-    color: #bfd0e5;
+    background: var(--bg-strong);
+    color: var(--text);
     font-family: "SF Mono", "Menlo", monospace;
     font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .dialog-field {
     display: grid;
+    min-width: 0;
     gap: 6px;
     margin-top: 14px;
 }
@@ -2981,20 +2898,15 @@ button[title]:focus-visible::after {
 .dialog-field span {
     color: var(--text);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
 }
 
 .dialog-field input,
 .dialog-field select,
 .dialog-field-row input,
 .dialog-select {
-    width: min(340px, 100%);
-    min-height: 34px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--panel-soft);
-    color: var(--text);
-    font-size: 13px;
+    width: 100%;
+    min-height: 36px;
 }
 
 .dialog-field-row {
@@ -3006,14 +2918,6 @@ button[title]:focus-visible::after {
     width: 100%;
 }
 
-.dialog-field input:focus,
-.dialog-field select:focus,
-.dialog-select:focus,
-.password-toggle:focus-visible {
-    border-color: var(--accent-border);
-    outline: none;
-    box-shadow: 0 0 0 2px var(--accent-soft);
-}
 
 .dialog-fieldset {
     border: 1px solid var(--border-soft);
@@ -3040,28 +2944,31 @@ button[title]:focus-visible::after {
 .password-input-wrap {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 34px;
-    width: min(340px, 100%);
+    width: 100%;
 }
 
 .password-input-wrap input {
     width: 100%;
-    border-radius: 7px 0 0 7px;
+    border-radius: 8px 0 0 8px;
 }
 
 .password-toggle {
     display: grid;
     place-items: center;
-    min-height: 34px;
+    min-height: 36px;
     border: 1px solid var(--border);
     border-left: 0;
-    border-radius: 0 7px 7px 0;
-    background: var(--panel-soft);
+    border-radius: 0 8px 8px 0;
+    background: var(--bg-strong);
     color: var(--muted);
     cursor: pointer;
 }
 
-.password-toggle:hover {
-    color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+    .password-toggle:hover:not(:disabled) {
+        color: var(--text);
+        background: var(--hover-bg);
+    }
 }
 
 .password-toggle .kt-icon {
@@ -3099,9 +3006,10 @@ button[title]:focus-visible::after {
 .dialog-tabs {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 10px 8px;
+    gap: 4px;
+    padding: 12px 8px;
     border-right: 1px solid var(--border-soft);
+    background: var(--panel-soft);
     min-width: 116px;
 }
 
@@ -3117,19 +3025,23 @@ button[title]:focus-visible::after {
     text-align: left;
 }
 
-.dialog-tab:hover {
-    color: var(--text);
-    background: var(--accent-soft);
+@media (hover: hover) and (pointer: fine) {
+    .dialog-tab:hover:not(:disabled) {
+        color: var(--text);
+        background: var(--hover-bg);
+    }
 }
 
 .dialog-tab.is-active {
     color: var(--text);
     border-left-color: var(--blue);
     background: var(--accent-soft);
+    font-weight: 600;
 }
 
 .dialog-body {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -3140,37 +3052,17 @@ button[title]:focus-visible::after {
 
 .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
     justify-content: flex-end;
     gap: 8px;
-    padding: 12px 18px 18px;
+    padding: 14px 20px;
     border-top: 1px solid var(--border-soft);
 }
 
-.dialog-btn {
-    min-height: 32px;
-    padding: 0 14px;
-    border-radius: 7px;
-    background: var(--panel-raised);
-    color: var(--text);
-    cursor: pointer;
-    font-size: 13px;
-}
-
-.dialog-btn:hover {
-    background: var(--accent-soft);
-}
-
-.dialog-btn.primary {
-    background: var(--accent-fill);
-    color: var(--text);
-}
-
-.dialog-btn.primary:hover {
-    background: var(--accent-hover);
-}
 
 .external-edit-dialog-body p.dialog-error {
-    color: #ffb0a8;
+    color: var(--red);
 }
 
 .external-edit-dialog-actions {
@@ -3181,28 +3073,6 @@ button[title]:focus-visible::after {
     padding: 0 18px 18px;
 }
 
-.external-edit-dialog-actions button {
-    min-height: 32px;
-    padding: 0 12px;
-    border-radius: 7px;
-    background: #263445;
-    color: #dce7f6;
-    cursor: pointer;
-    font-size: 12px;
-}
-
-.external-edit-dialog-actions button:hover {
-    background: #33465d;
-}
-
-.external-edit-dialog-actions button.primary {
-    background: #23649c;
-    color: #f8fbff;
-}
-
-.external-edit-dialog-actions button.primary:hover {
-    background: #2d7bbd;
-}
 
 /* ========== 设置面板 ========== */
 
@@ -3214,12 +3084,9 @@ button[title]:focus-visible::after {
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(2, 6, 12, 0.58);
+    background: var(--overlay-bg);
 }
 
-.app-settings-overlay {
-    background: rgba(2, 6, 12, 0.76);
-}
 
 .app-settings-overlay.is-desktop {
     inset: 36px 0 0;
@@ -3235,11 +3102,11 @@ button[title]:focus-visible::after {
     width: min(520px, 100%);
     max-height: calc(100vh - 48px);
     overflow-y: auto;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     background: var(--panel);
     color: var(--text);
-    box-shadow: 0 24px 70px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    box-shadow: 0 24px 80px var(--shadow);
 }
 
 .app-settings-panel {
@@ -3249,7 +3116,7 @@ button[title]:focus-visible::after {
     flex-direction: column;
     overflow: hidden;
     background: var(--panel);
-    box-shadow: 0 24px 70px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    box-shadow: 0 24px 80px var(--shadow);
 }
 
 .settings-head {
@@ -3258,21 +3125,24 @@ button[title]:focus-visible::after {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 14px 16px;
+    padding: 16px 20px;
     border-bottom: 1px solid var(--border-soft);
+    min-width: 0;
 }
 
 .settings-head h2 {
     flex: 1;
     color: var(--text);
-    font-size: 16px;
+    font-size: 15px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
 }
 
 .settings-version {
     flex: 0 0 auto;
     color: var(--faint);
     font-size: 12px;
-    letter-spacing: 0.02em;
+    letter-spacing: 0;
     user-select: text;
 }
 
@@ -3289,9 +3159,9 @@ button[title]:focus-visible::after {
     width: 168px;
     flex: 0 0 168px;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     overflow-y: auto;
-    padding: 10px;
+    padding: 12px 10px;
     border-right: 1px solid var(--border-soft);
     background: var(--panel-soft);
 }
@@ -3310,15 +3180,18 @@ button[title]:focus-visible::after {
     text-align: left;
 }
 
-.settings-nav-item:hover {
-    background: rgba(148, 163, 184, 0.12);
-    color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+    .settings-nav-item:hover:not(:disabled) {
+        background: var(--hover-bg);
+        color: var(--text);
+    }
 }
 
 .settings-nav-item.is-active {
-    background: rgba(90, 167, 255, 0.16);
+    background: var(--accent-soft);
     color: var(--text);
-    font-weight: 650;
+    box-shadow: inset 2px 0 var(--blue);
+    font-weight: 600;
 }
 
 .settings-nav-item .kt-icon {
@@ -3332,7 +3205,22 @@ button[title]:focus-visible::after {
     flex: 1;
     flex-direction: column;
     overflow-y: auto;
-    padding: 4px 0;
+    padding: 0;
+    container-type: inline-size;
+    container-name: settings;
+    overscroll-behavior: contain;
+}
+
+.settings-section-heading {
+    flex: 0 0 auto;
+    padding: 24px 24px 4px;
+}
+
+.settings-section-heading h3 {
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: 0;
 }
 
 /* 手机：一级分类列表，点进去才是二级页面。 */
@@ -3376,14 +3264,16 @@ button[title]:focus-visible::after {
 
 .settings-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);
+    min-width: 0;
+    flex: 0 0 auto;
+    grid-template-columns: minmax(0, 1fr) minmax(156px, 240px);
     align-items: center;
-    gap: 18px;
-    padding: 16px 18px;
+    gap: 20px;
+    padding: 20px 24px;
 }
 
 .settings-row:not(.settings-row-stacked) > :last-child {
-    max-width: 280px;
+    max-width: 240px;
     justify-self: end;
 }
 
@@ -3401,7 +3291,8 @@ button[title]:focus-visible::after {
 
 .settings-row strong {
     color: var(--text);
-    font-size: 14px;
+    font-size: 13px;
+    font-weight: 600;
 }
 
 .settings-row p {
@@ -3411,6 +3302,7 @@ button[title]:focus-visible::after {
     color: var(--muted);
     font-size: 12px;
     line-height: 1.5;
+    overflow-wrap: anywhere;
 }
 
 .segmented-control {
@@ -3418,15 +3310,18 @@ button[title]:focus-visible::after {
     flex: 0 0 auto;
     gap: 2px;
     padding: 3px;
-    border: 1px solid var(--border);
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--border-soft);
     border-radius: 8px;
-    background: var(--bg);
+    background: var(--panel-soft);
 }
 
 .segmented-control button {
-    min-width: 86px;
-    height: 30px;
-    padding: 0 10px;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 30px;
+    padding: 6px 10px;
     border-radius: 6px;
     background: transparent;
     color: var(--muted);
@@ -3436,9 +3331,17 @@ button[title]:focus-visible::after {
 }
 
 .segmented-control button.is-selected {
-    background: var(--accent-fill);
+    background: var(--panel);
     color: var(--text);
-    font-weight: 650;
+    box-shadow: 0 1px 4px var(--shadow), inset 0 0 0 1px var(--border-soft);
+    font-weight: 600;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .segmented-control button:hover:not(.is-selected):not(:disabled) {
+        color: var(--text);
+        background: var(--hover-bg);
+    }
 }
 
 /* 设置：堆叠行 / 编辑器与终端显示项 */
@@ -3459,6 +3362,7 @@ button[title]:focus-visible::after {
 .settings-control-stack {
     display: flex;
     width: 100%;
+    min-width: 0;
     flex-direction: column;
     gap: 10px;
 }
@@ -3481,40 +3385,13 @@ button[title]:focus-visible::after {
     white-space: pre;
 }
 
-/* 输入框与下拉统一：字号、高度、配色全部跟随主题变量，
-   避免浅色模式下出现深底深字或字号不一致。 */
-.settings-text-input,
-select.settings-text-input {
+.settings-text-input {
     width: 100%;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-strong);
-    color: var(--text);
-    font-family: inherit;
-    font-size: 13px;
-}
-
-.settings-text-input::placeholder {
-    color: var(--faint);
-}
-
-.settings-text-input:focus-visible {
-    border-color: var(--blue);
-    outline: none;
 }
 
 .settings-number-input {
     width: 120px;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-strong);
-    color: var(--text);
-    font: inherit;
-    font-size: 13px;
+    max-width: 100%;
 }
 
 .settings-color-input {
@@ -3527,9 +3404,18 @@ select.settings-text-input {
     cursor: pointer;
 }
 
-.settings-number-input:focus-visible {
-    border-color: var(--blue);
-    outline: none;
+.settings-color-input::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.settings-color-input::-webkit-color-swatch {
+    border: 0;
+    border-radius: 3px;
+}
+
+.settings-color-input::-moz-color-swatch {
+    border: 0;
+    border-radius: 3px;
 }
 
 .settings-select-compact {
@@ -3551,7 +3437,6 @@ select.settings-text-input {
     margin-top: 10px;
 }
 
-/* 设置内所有按钮共用一套尺寸与字体，消除此前 WebDAV/局域网按钮的样式漂移。 */
 .settings-actions {
     display: flex;
     flex-wrap: wrap;
@@ -3559,43 +3444,10 @@ select.settings-text-input {
     margin-top: 10px;
 }
 
-.settings-button {
-    display: inline-flex;
-    min-height: 34px;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 0 14px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--panel-raised);
-    color: var(--text);
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 650;
-    white-space: nowrap;
-}
-
-.settings-button:hover:not(:disabled) {
-    border-color: var(--blue);
-}
-
-.settings-button.primary {
-    border-color: transparent;
-    background: var(--blue);
-    color: #f8fbff;
-}
-
-.settings-button.danger {
-    border-color: transparent;
-    background: rgba(255, 111, 111, 0.16);
-    color: var(--red);
-}
 
 .settings-button.slim {
     min-height: 28px;
-    padding: 0 10px;
+    padding: 5px 10px;
     font-size: 12px;
     font-weight: 600;
 }
@@ -3606,8 +3458,9 @@ select.settings-text-input {
 
 .settings-toggle-group {
     display: inline-flex;
-    flex: 0 0 auto;
-    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px 14px;
 }
 
 .settings-toggle {
@@ -3691,7 +3544,7 @@ select.settings-text-input {
 .settings-editor-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
     margin-top: 10px;
 }
 
@@ -3699,14 +3552,16 @@ select.settings-text-input {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    background: var(--panel-soft);
+    min-width: 0;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-soft);
 }
 
 .settings-editor-name {
-    flex: 0 0 auto;
+    min-width: 0;
+    max-width: 45%;
+    flex: 0 1 auto;
+    overflow-wrap: anywhere;
     color: var(--text);
     font-size: 13px;
     font-weight: 600;
@@ -3714,6 +3569,7 @@ select.settings-text-input {
 
 .settings-editor-command {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     color: var(--muted);
     font-family: "SF Mono", "Menlo", monospace;
@@ -3834,7 +3690,7 @@ select.settings-text-input {
     justify-content: center;
     inset: 0;
     padding: 24px;
-    background: rgba(3, 6, 10, 0.66);
+    background: var(--overlay-bg);
 }
 
 .inline-editor-panel {
@@ -3905,10 +3761,6 @@ select.settings-text-input {
     cursor: pointer;
 }
 
-.inline-editor-close:hover:not(:disabled) {
-    background: var(--panel-raised);
-    color: var(--text);
-}
 
 .inline-editor-banner {
     flex: 0 0 auto;
@@ -3944,6 +3796,7 @@ select.settings-text-input {
     display: flex;
     min-height: 56px;
     align-items: center;
+    flex-wrap: wrap;
     flex: 0 0 auto;
     gap: 10px;
     padding: 10px 16px;
@@ -3958,6 +3811,8 @@ select.settings-text-input {
 
 .inline-editor-hint {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
     color: var(--muted);
     font-size: 12px;
 }
@@ -3968,28 +3823,6 @@ select.settings-text-input {
 
 .inline-editor-button {
     min-width: 88px;
-    height: 38px;
-    padding: 0 16px;
-    border-radius: 6px;
-    background: var(--panel-raised);
-    color: var(--text);
-    cursor: pointer;
-    font-size: 14px;
-}
-
-.inline-editor-button:hover:not(:disabled) {
-    background: var(--border);
-}
-
-.inline-editor-button.is-primary {
-    background: var(--blue);
-    color: #06121f;
-    font-weight: 600;
-}
-
-.inline-editor-button.is-danger {
-    background: rgba(255, 111, 111, 0.16);
-    color: var(--red);
 }
 
 .inline-editor-status {
@@ -4255,7 +4088,7 @@ select.settings-text-input {
     color: var(--muted);
     font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
@@ -4263,23 +4096,23 @@ select.settings-text-input {
 
 .phone-toolbar-button {
     display: inline-flex;
-    width: 40px;
-    min-width: 40px;
-    height: 40px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
     align-items: center;
     justify-content: center;
     border-radius: var(--radius);
-    background: var(--panel-raised);
+    background: transparent;
     color: var(--muted);
 }
 
 .phone-toolbar-button.is-primary {
-    background: rgba(90, 167, 255, 0.16);
+    background: var(--accent-soft);
     color: var(--blue);
 }
 
 .phone-toolbar-button:active:not(:disabled) {
-    background: rgba(90, 167, 255, 0.26);
+    background: var(--hover-bg);
     color: var(--text);
 }
 
@@ -4303,7 +4136,7 @@ select.settings-text-input {
     color: var(--faint);
     font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -4316,7 +4149,7 @@ select.settings-text-input {
 }
 
 .phone-row.is-active {
-    background: rgba(90, 167, 255, 0.1);
+    background: var(--accent-soft);
 }
 
 .phone-row-main {
@@ -4358,7 +4191,7 @@ select.settings-text-input {
 
 .phone-row-copy small {
     overflow: hidden;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -4386,7 +4219,7 @@ select.settings-text-input {
 
 .phone-path-bar {
     display: flex;
-    min-height: 46px;
+    min-height: 56px;
     align-items: center;
     flex: 0 0 auto;
     gap: 8px;
@@ -4398,21 +4231,12 @@ select.settings-text-input {
 
 .phone-path-input {
     min-width: 0;
-    height: 34px;
+    height: 44px;
     flex: 1;
-    padding: 0 8px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: var(--panel-raised);
-    color: var(--text);
-    /* iOS 在 font-size < 16px 的输入框上会自动放大页面。 */
+    padding: 0 10px;
     font-size: 16px;
 }
 
-.phone-path-input:focus {
-    border-color: var(--blue);
-    outline: 0;
-}
 
 .phone-auto-sync {
     display: inline-flex;
@@ -4507,7 +4331,7 @@ select.settings-text-input {
 
 .phone-key {
     min-width: 44px;
-    height: 34px;
+    min-height: 44px;
     flex: 0 0 auto;
     padding: 0 10px;
     border-radius: 6px;
@@ -4518,11 +4342,11 @@ select.settings-text-input {
 }
 
 .phone-key:active {
-    background: rgba(90, 167, 255, 0.28);
+    background: var(--hover-bg);
 }
 
 .phone-key.is-armed {
-    background: rgba(90, 167, 255, 0.24);
+    background: var(--accent-soft);
     color: var(--blue);
     box-shadow: inset 0 0 0 1px var(--blue);
 }
@@ -4531,7 +4355,7 @@ select.settings-text-input {
     flex: 0 0 auto;
     padding: 4px 12px;
     color: var(--blue);
-    background: rgba(90, 167, 255, 0.1);
+    background: var(--accent-soft);
     font-size: 12px;
     text-align: center;
 }
@@ -4663,7 +4487,7 @@ select.settings-text-input {
     inset: 0;
     padding-right: env(safe-area-inset-right, 0);
     padding-left: env(safe-area-inset-left, 0);
-    background: rgba(3, 6, 10, 0.6);
+    background: var(--overlay-bg);
 }
 
 .phone-sheet {
@@ -4673,7 +4497,7 @@ select.settings-text-input {
     flex-direction: column;
     padding-bottom: env(safe-area-inset-bottom, 0);
     overflow-y: auto;
-    background: var(--panel-raised);
+    background: var(--panel);
     border-top-left-radius: 16px;
     border-top-right-radius: 16px;
     box-shadow: 0 -12px 32px var(--shadow);
@@ -4713,7 +4537,7 @@ select.settings-text-input {
 }
 
 .phone-sheet-action:active:not(:disabled) {
-    background: rgba(90, 167, 255, 0.14);
+    background: var(--hover-bg);
 }
 
 .phone-sheet-action.is-danger {
@@ -4736,15 +4560,17 @@ select.settings-text-input {
     gap: 8px;
     padding: 10px 12px;
     color: var(--text);
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     box-shadow: 0 10px 24px var(--shadow);
     font-size: 13px;
 }
 
 .phone-status-notification span {
+    min-width: 0;
     flex: 1;
+    overflow-wrap: anywhere;
 }
 
 .phone-status-close {
@@ -4761,15 +4587,19 @@ select.settings-text-input {
 
 /* ---- 手机上的对话框与设置面板铺满屏幕 ---- */
 
-.kt-window.is-phone .dialog-content,
+.kt-window.is-phone .settings-overlay {
+    padding: 0;
+    align-items: stretch;
+}
+
 .kt-window.is-phone .connection-dialog,
 .kt-window.is-phone .group-dialog,
 .kt-window.is-phone .external-edit-dialog,
 .kt-window.is-phone .app-settings-panel {
     width: 100%;
     max-width: 100vw;
-    max-height: 100dvh;
-    height: 100dvh;
+    max-height: calc(100dvh - var(--kt-keyboard-inset, 0px));
+    height: calc(100dvh - var(--kt-keyboard-inset, 0px));
     padding-top: env(safe-area-inset-top, 0);
     padding-right: env(safe-area-inset-right, 0);
     padding-bottom: env(safe-area-inset-bottom, 0);
@@ -4778,11 +4608,49 @@ select.settings-text-input {
 }
 
 /* iOS 会对 font-size < 16px 的输入框自动放大页面，手机上统一放大到 16px。 */
-.kt-window.is-phone input[type="text"],
-.kt-window.is-phone input[type="password"],
-.kt-window.is-phone input[type="number"],
+.kt-window.is-phone input:not([type="checkbox"]):not([type="color"]),
 .kt-window.is-phone select {
     font-size: 16px;
+}
+
+.kt-window.is-phone .settings-head {
+    padding: 8px 12px;
+}
+
+.kt-window.is-phone .group-form input {
+    min-height: 44px;
+}
+
+.kt-window.is-phone .dialog-actions {
+    padding: 10px 16px;
+}
+
+.kt-window.is-phone .external-edit-dialog-actions {
+    flex: 0 0 auto;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.kt-window.is-phone :is(.settings-text-input, .settings-number-input, .settings-color-input, .dialog-field input, .dialog-field select, .dialog-field-row input, .dialog-select, .settings-button, .dialog-btn, .group-actions button, .external-edit-dialog-actions button, .settings-toggle, .segmented-control button) {
+    min-height: 44px;
+}
+
+.kt-window.is-phone .settings-head .icon-button {
+    width: 44px;
+    height: 44px;
+}
+
+.kt-window.is-phone .connection-dialog .dialog-content {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.kt-window.is-phone .connection-dialog .dialog-body {
+    max-height: none;
+}
+
+.kt-window.is-phone .password-toggle {
+    min-height: 44px;
 }
 
 /* 手机端设置面板铺满屏幕，两级导航各自占满高度。 */
@@ -4796,7 +4664,7 @@ select.settings-text-input {
 }
 
 .kt-window.is-phone .settings-row:not(.settings-row-stacked) {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
 }
 
@@ -4831,35 +4699,209 @@ select.settings-text-input {
     bottom: 36px;
     z-index: 900;
     display: flex;
-    gap: 12px;
-    max-width: min(680px, 90vw);
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: min(680px, calc(100vw - 32px));
+    padding: 14px 16px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
     background: var(--panel);
     color: var(--text);
     overflow-wrap: anywhere;
+    box-shadow: 0 12px 40px var(--shadow);
 }
 .external-edit-sessions { bottom: 96px; flex-direction: column; }
-.sftp-download-notice button, .external-edit-sessions button {
-    padding: 4px 8px;
-    background: var(--panel-raised);
+
+/* 软件更新：展示层与主界面共享主题，重启准备时弹层仍可访问。 */
+.software-update-section {
+    --update-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    display: grid;
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 20px;
+    padding: 24px;
     color: var(--text);
-    cursor: pointer;
+    container-type: inline-size;
+    font-size: 13px;
+    line-height: 1.6;
 }
 
-/* 软件更新沿用主题；安装准备期间主界面由 inert 暂停交互。 */
-.software-update-section { display: grid; gap: 12px; }
-.software-update-section h3, .software-update-section p { margin: 0; }
-.software-update-section p { line-height: 1.6; overflow-wrap: anywhere; }
-.software-update-section progress { width: 100%; accent-color: var(--blue); }
-.software-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.software-update-error { color: var(--red, #d95050); }
-.software-update-overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .55); }
-.software-update-dialog, .software-update-notice { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: 0 12px 40px rgba(0, 0, 0, .28); }
-.software-update-dialog { max-width: 460px; line-height: 1.6; }
-.software-update-dialog h3 { margin-top: 0; }
-.software-update-notice { position: fixed; right: 20px; bottom: 36px; z-index: 1500; max-width: min(520px, calc(100vw - 40px)); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; }
-.software-update-notice p { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
-body:has(.kt-window[data-theme="light"]) .software-update-dialog,
-body:has(.kt-window[data-theme="light"]) .software-update-notice { color: #17212f; background: #ffffff; border-color: #d7e0eb; }
+.update-page-heading h3 { font-size: 18px; font-weight: 650; letter-spacing: 0; }
+.update-page-heading p { margin-top: 4px; color: var(--muted); }
+.update-card { min-width: 0; border: 1px solid var(--border-soft); border-radius: 14px; background: var(--bg-strong); }
+.update-status-card { padding: 22px; background: linear-gradient(145deg, var(--accent-soft), transparent 68%), var(--bg-strong); }
+.update-status-heading { display: flex; align-items: flex-start; gap: 14px; }
+.update-state-icon, .update-dialog-icon, .update-notice-icon { display: grid; flex: 0 0 auto; place-items: center; color: var(--blue); background: var(--accent-soft); border: 1px solid var(--border-soft); }
+.update-state-icon { width: 42px; height: 42px; border-radius: 12px; }
+.update-state-icon .kt-icon { width: 22px; height: 22px; }
+.update-status-card.is-success .update-state-icon, .update-notice-icon { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.update-status-card.is-error .update-state-icon { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.update-status-card.is-neutral .update-state-icon { color: var(--muted); background: var(--panel-soft); }
+.update-status-copy { min-width: 0; }
+.update-status-copy h4 { font-size: 20px; font-weight: 650; line-height: 1.35; letter-spacing: 0; overflow-wrap: anywhere; }
+.update-status-copy p { margin-top: 7px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.update-version-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 20px; }
+.update-channel { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--muted); background: var(--panel); font-size: 11px; font-weight: 600; }
+.update-current-version, .update-last-check, .update-package-size { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.update-current-version, .update-target-line strong { overflow-wrap: anywhere; }
+.update-target-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.update-target-line > span:first-child { color: var(--muted); font-size: 12px; }
+.update-target-line strong { min-width: 0; font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.update-package-size { margin-left: auto; }
+.update-card-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; margin-top: 22px; }
+.software-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.update-button { min-height: 38px; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; line-height: 1.4; white-space: normal; text-align: center; transition: transform 160ms var(--update-ease-out, cubic-bezier(0.23, 1, 0.32, 1)), opacity 160ms ease; }
+.update-button .kt-icon { flex: 0 0 auto; }
+.update-button.primary { background: var(--blue); color: var(--update-button-ink, #08121f); }
+.update-button:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.update-button:focus-visible, .update-text-button:focus-visible, .update-release-link:focus-visible, .update-toggle:focus-visible, .update-markdown:focus-visible, .software-update-error summary:focus-visible, .update-markdown a:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.update-button:disabled { opacity: 0.5; }
+.update-toggle:focus-visible::before { transition: none; }
+.update-card-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.update-card-heading h4 { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; }
+.update-card-heading h4 .kt-icon { color: var(--muted); font-size: 16px; }
+.update-card-heading > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.update-notes-card { display: grid; gap: 16px; padding: 18px 20px; }
+.update-markdown { min-width: 0; max-height: 220px; overflow: auto; color: var(--text); font-size: 13px; line-height: 1.75; scrollbar-gutter: stable; }
+.update-markdown.is-expanded { max-height: none; }
+.update-markdown > :first-child { margin-top: 0; }
+.update-markdown p, .update-markdown h4, .update-markdown ul, .update-markdown ol, .update-markdown pre, .update-markdown blockquote { margin-top: 10px; }
+.update-markdown h4 { font-size: 13px; font-weight: 650; }
+.update-markdown ul, .update-markdown ol { padding-left: 20px; }
+.update-markdown li + li { margin-top: 5px; }
+.update-markdown li p { margin-top: 4px; }
+.update-markdown p, .update-markdown li, .update-markdown a { overflow-wrap: anywhere; }
+.update-markdown code { padding: 2px 4px; border-radius: 4px; background: var(--panel-soft); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.update-markdown pre { max-width: 100%; overflow-x: auto; padding: 10px 12px; border-radius: 8px; background: var(--panel-soft); }
+.update-markdown pre code { padding: 0; white-space: pre-wrap; }
+.update-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border); color: var(--muted); }
+.update-markdown hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border-soft); }
+.update-empty-notes, .update-notes-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.update-release-link, .update-markdown a { color: var(--blue); text-decoration: none; }
+.update-release-link { display: inline-flex; width: fit-content; max-width: 100%; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.update-text-button { justify-self: start; padding: 3px 0; background: transparent; color: var(--blue); cursor: pointer; font-size: 12px; font-weight: 600; }
+.update-page-link { justify-self: center; }
+.update-preferences { display: grid; min-width: 0; gap: 10px; }
+.update-preferences > h4 { padding-left: 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.update-preferences-card { overflow: hidden; }
+.update-preference-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; cursor: pointer; }
+.update-preference-row + .update-preference-row { border-top: 1px solid var(--border-soft); }
+.update-preference-copy { display: grid; min-width: 0; gap: 3px; }
+.update-preference-copy strong { font-size: 13px; font-weight: 600; }
+.update-preference-copy > span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.settings-toggle input[type="checkbox"], .update-toggle { appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 36px; width: 36px; height: 21px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-raised); cursor: pointer; }
+.settings-toggle input[type="checkbox"]::before, .update-toggle::before { content: ""; display: block; position: absolute; width: 15px; height: 15px; top: 2px; left: 2px; border-radius: 50%; background: var(--muted); transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+.settings-toggle input[type="checkbox"]:checked, .update-toggle:checked { border-color: var(--blue); background: var(--blue); }
+.settings-toggle input[type="checkbox"]:checked::before, .update-toggle:checked::before { transform: translateX(15px); background: var(--accent-ink); }
+.settings-toggle input[type="checkbox"]:disabled, .update-toggle:disabled { opacity: 0.45; cursor: default; }
+.update-local-hint { padding-left: 2px; color: var(--muted); font-size: 11px; }
+.update-progress-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.update-progress-meta strong { color: var(--text); font-weight: 600; }
+.update-download-progress { display: grid; gap: 8px; margin-top: 18px; }
+.update-download-progress > p { color: var(--muted); font-size: 12px; }
+.update-download-progress progress { display: block; appearance: none; -webkit-appearance: none; width: 100%; height: 6px; overflow: hidden; border: 0; border-radius: 5px; background: var(--border-soft); accent-color: var(--blue); }
+.update-download-progress progress::-webkit-progress-bar { background: var(--border-soft); border-radius: 5px; }
+.update-download-progress progress::-webkit-progress-value { background: var(--blue); border-radius: 5px; }
+.update-download-progress progress::-moz-progress-bar { background: var(--blue); border-radius: 5px; }
+.update-indeterminate { height: 4px; margin-top: 18px; overflow: hidden; border-radius: 3px; background: var(--accent-soft); }
+.update-indeterminate > span { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--blue); animation: update-indeterminate 1.3s linear infinite; }
+.is-spinning > .kt-icon, .update-mini-spinner { animation: update-spin 0.8s linear infinite; }
+.update-mini-spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid var(--border); border-top-color: var(--blue); border-radius: 50%; }
+.update-install-steps { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 18px; font-size: 12px; color: var(--muted); }
+.update-install-steps > div { display: flex; align-items: center; gap: 7px; }
+.update-install-steps > div > span { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border-soft); border-radius: 50%; font-size: 10px; }
+.update-install-steps .kt-icon { width: 12px; height: 12px; }
+.update-install-steps .is-complete { color: var(--green); }
+.update-install-steps .is-active { color: var(--text); }
+.software-update-error { min-width: 0; margin-top: 16px; padding: 12px; border: 1px solid color-mix(in srgb, var(--red) 25%, transparent); border-radius: 8px; color: var(--red); background: color-mix(in srgb, var(--red) 5%, transparent); font-size: 12px; line-height: 1.6; }
+.software-update-error > p { font-weight: 600; }
+.software-update-error summary { width: fit-content; margin-top: 4px; cursor: pointer; }
+.software-update-error details p { margin-top: 8px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.software-update-layer { --update-ease-out: cubic-bezier(0.23, 1, 0.32, 1); color: var(--text); font-size: 13px; }
+.software-update-overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: rgba(2, 6, 12, 0.6); }
+.software-update-layer.theme-light .software-update-overlay { background: rgba(15, 23, 42, 0.32); }
+.software-update-dialog { width: min(440px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: 0 24px 80px var(--shadow); line-height: 1.65; overflow-wrap: anywhere; }
+.software-update-dialog:focus { outline: none; }
+.update-dialog-icon { width: 48px; height: 48px; margin-bottom: 18px; border-radius: 14px; }
+.update-dialog-icon .kt-icon { width: 24px; height: 24px; }
+.software-update-dialog h3 { font-size: 21px; font-weight: 650; line-height: 1.35; letter-spacing: 0; }
+.update-dialog-target { margin-top: 7px; color: var(--text); font-weight: 600; font-size: 13px; }
+#update-dialog-description { margin-top: 10px; color: var(--muted); font-size: 13px; }
+.update-restart-warning { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--amber) 20%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); color: var(--text); font-size: 12px; }
+.update-restart-warning > .kt-icon { flex: 0 0 auto; margin-top: 2px; color: var(--amber); width: 16px; height: 16px; }
+.update-dialog-actions { justify-content: space-between; margin-top: 24px; }
+.software-update-notice { position: fixed; right: 20px; bottom: 44px; z-index: 1500; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; width: max-content; max-width: min(560px, calc(100vw - 40px)); padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: 0 12px 40px var(--shadow); }
+.software-update-notice[hidden] { display: none; }
+.update-notice-icon { width: 34px; height: 34px; border-radius: 10px; }
+.update-notice-icon .kt-icon { width: 18px; height: 18px; }
+.update-notice-copy { display: grid; min-width: 0; flex: 1; gap: 2px; overflow-wrap: anywhere; }
+.update-notice-copy strong { font-size: 13px; font-weight: 600; }
+.update-notice-copy span { color: var(--muted); font-size: 12px; }
+.software-update-notice > .software-update-error { flex-basis: 100%; margin-top: 0; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@keyframes update-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(386%); } }
+@media (hover: hover) and (pointer: fine) {
+    .update-button:hover:not(:disabled) { opacity: 0.88; }
+    .update-release-link:hover, .update-text-button:hover, .update-markdown a:hover { text-decoration: underline; text-underline-offset: 3px; }
+}
+@container (max-width: 400px) {
+    .update-status-card { padding: 18px; }
+    .update-status-heading { gap: 10px; }
+    .update-status-copy h4 { font-size: 18px; }
+    .update-card-footer { align-items: flex-start; flex-direction: column; }
+    .update-notes-card { padding: 16px; }
+    .update-preference-row { gap: 12px; padding: 14px 16px; }
+}
+@container settings (max-width: 480px) {
+    .settings-row:not(.settings-row-stacked) { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .settings-row:not(.settings-row-stacked) > :last-child { max-width: 100%; justify-self: stretch; }
+    .settings-toggle-group { justify-content: flex-start; }
+    .settings-row .segmented-control { width: 100%; }
+    .settings-row .segmented-control button { flex: 1 1 0; }
+    .settings-editor-add { flex-wrap: wrap; }
+    .settings-editor-add .settings-text-input { flex-basis: 100%; }
+}
+
+@media (max-width: 640px) {
+    .settings-overlay { padding: 12px; }
+    .app-settings-overlay.is-desktop { padding: 12px; }
+    .settings-panel { max-height: calc(100dvh - 24px); }
+    .app-settings-overlay.is-desktop .app-settings-panel { max-height: calc(100dvh - 60px); }
+    .settings-section-heading { padding: 20px 20px 0; }
+    .settings-row { padding: 18px 20px; }
+    .settings-head { padding: 12px 16px; }
+    .settings-head .settings-window-drag { min-width: 24px; }
+    .dialog-content { flex-direction: column; }
+    .dialog-tabs { flex-direction: row; flex-wrap: wrap; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+    .dialog-tab { border-left: 0; border-bottom: 2px solid transparent; padding: 8px 10px; }
+    .dialog-tab.is-active { border-bottom-color: var(--blue); }
+    .dialog-body { max-height: none; min-height: 0; padding: 4px 20px 20px; }
+    .settings-panel.connection-dialog { overflow: hidden; }
+    .dialog-content { overflow: hidden; }
+    .group-actions, .dialog-actions, .external-edit-dialog-actions { gap: 8px; }
+    .group-actions button, .dialog-actions button, .external-edit-dialog-actions button { flex: 1 1 100px; }
+    .app-settings-panel .settings-layout { flex-direction: column; }
+    .app-settings-panel .settings-nav { width: 100%; flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; overflow-x: hidden; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+    .app-settings-panel .settings-nav-item { flex: 0 0 auto; white-space: nowrap; }
+    .app-settings-panel .settings-body { flex: 1 1 auto; min-height: 0; }
+    .software-update-section { padding: 16px; gap: 16px; }
+    .software-update-overlay { padding: 16px; }
+    .software-update-dialog { padding: 24px; max-height: calc(100dvh - 32px); }
+    .software-update-notice { right: 12px; max-width: calc(100vw - 24px); }
+    .update-dialog-actions { align-items: stretch; }
+    .update-dialog-actions > button { flex: 1 1 120px; }
+}
+
+@media (max-width: 480px) {
+    .inline-editor-overlay { padding: 12px; }
+    .inline-editor-head { gap: 6px; padding-left: 12px; }
+    .inline-editor-footer { padding: 12px; gap: 8px; }
+    .inline-editor-hint, .inline-editor-footer.is-confirm span { flex-basis: 100%; }
+    .inline-editor-button { flex: 1 1 90px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .is-spinning > .kt-icon, .update-mini-spinner, .update-indeterminate > span { animation: none; }
+    .update-indeterminate > span { width: 100%; opacity: 0.4; }
+    .update-button, .update-toggle::before { transition: opacity 160ms ease; }
+    .update-button:active:not(:disabled):not(:focus-visible) { transform: none; }
+}

@@ -48,7 +48,7 @@ use crate::components::settings::{ActiveShare, SettingsPanel, SyncAction};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
 use crate::components::state_controller::{use_state_controller, EditSignals, StoreSignals};
-use crate::components::theme::{concrete_theme_name, use_system_theme};
+use crate::components::theme::{accent_foreground, concrete_theme_name, use_system_theme};
 use crate::device::use_device_class;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
@@ -501,6 +501,7 @@ pub fn App() -> Element {
     let open_with_editors = editor_menu_entries(&current_settings.editors, &(detected_editors)());
     let accent_color = normalized_accent_color(&current_settings.accent_color);
     let accent_rgb = accent_color_rgb(accent_color);
+    let update_button_ink = accent_foreground(accent_color);
     let sessions_snapshot = all_sessions();
     let active_session_ref = active_session(&sessions_snapshot, active_session_id());
     let active_status_session = active_session_ref.cloned();
@@ -679,13 +680,13 @@ pub fn App() -> Element {
 
     rsx! {
         style { {include_str!("../assets/app.css")} }
-        SoftwareUpdateLayer { language }
+        SoftwareUpdateLayer { language, theme: theme_name.to_string(), accent: accent_color.to_string(), accent_rgb: accent_rgb.clone() }
 
         div {
             class: "{window_class_name}",
             // Dioxus 0.7.10 会保留 inert="false"；正常状态必须省略属性。
             inert: update_restarting().then_some(true),
-            style: "--blue: {accent_color}; --accent-rgb: {accent_rgb};",
+            style: "--blue: {accent_color}; --accent-rgb: {accent_rgb}; --update-button-ink: {update_button_ink};",
             "data-theme": "{theme_name}",
             onmousemove: move |evt| {
                 match active_resize() {
@@ -1855,14 +1856,19 @@ fn render_download_controller(
 }
 
 #[component]
-fn SoftwareUpdateLayer(language: kt_config::AppLanguage) -> Element {
+fn SoftwareUpdateLayer(
+    language: kt_config::AppLanguage,
+    theme: String,
+    accent: String,
+    accent_rgb: String,
+) -> Element {
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     {
-        rsx! { crate::components::software_update::SoftwareUpdateOverlay { language } }
+        rsx! { crate::components::software_update::SoftwareUpdateOverlay { language, theme, accent, accent_rgb } }
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
-        let _ = language;
+        let _ = (language, theme, accent, accent_rgb);
         rsx! {}
     }
 }

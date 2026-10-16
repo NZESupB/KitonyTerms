@@ -1,4 +1,9 @@
 //! 更新界面及重启前收尾，后台工作由 kt-update 负责。
+mod release_notes;
+mod view;
+
+use self::view::{RestartDialog, UpdateAction, UpdateError, UpdateView};
+use crate::components::icons::Icon;
 use crate::{components::app::get_state, i18n::texts};
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
@@ -176,106 +181,104 @@ fn restart(mut ui: UpdateUi, language: AppLanguage) {
     });
 }
 
+fn act(mut ui: UpdateUi, action: UpdateAction, language: AppLanguage) {
+    ui.error.set(None);
+    let result = match action {
+        UpdateAction::Check => ui.context.service.check(),
+        UpdateAction::Download => ui.context.service.download(),
+        UpdateAction::Cancel => {
+            ui.context.service.cancel();
+            Ok(())
+        }
+        UpdateAction::Restart => {
+            request_restart(ui.clone(), language);
+            Ok(())
+        }
+    };
+    if let Err(error) = result {
+        ui.error.set(Some(error.to_string()));
+    }
+    ui.snapshot.set(ui.context.service.snapshot());
+}
+
 #[component]
 pub fn SoftwareUpdateSection(language: AppLanguage) -> Element {
     let ui = use_context::<UpdateUi>();
     let snapshot = (ui.snapshot)();
-    let t = texts(language).app;
-    let disabled = snapshot.phase == Phase::Disabled;
-    let busy = snapshot.phase.busy() || (ui.restarting)();
-    let current = ui.context.service.current.label();
-    let target = snapshot.available.as_ref().map(|a| a.info.label());
-    let last = snapshot
-        .last_check
-        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds as i64, 0))
-        .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|| "—".into());
-    let status = match snapshot.phase {
-        Phase::Disabled => t.update_development,
-        Phase::Idle if snapshot.last_check.is_some() => t.update_latest,
-        Phase::Idle => t.update_not_checked,
-        Phase::Checking => t.update_checking,
-        Phase::Available => t.update_available,
-        Phase::Downloading => t.update_downloading,
-        Phase::Ready => t.update_ready,
-        Phase::Preparing => t.update_preparing,
-        Phase::Error => t.update_failed,
-    };
-    let error = (ui.error)().or(snapshot.message);
+    let error = (ui.error)().or_else(|| snapshot.message.clone());
     rsx! {
-        div { class: "software-update-section",
-            h3 { "{current}" }
-            p { "{t.update_hint}" }
-            div { class: "settings-row",
-                label { "{t.update_auto_check}" }
-                input { r#type: "checkbox", checked: snapshot.preferences.auto_check, disabled: disabled || busy,
-                    onchange: { let mut ui = ui.clone(); move |event: Event<FormData>| { let mut prefs = ui.context.service.snapshot().preferences; prefs.auto_check = event.checked(); if let Err(e) = ui.context.service.preferences(prefs) { ui.error.set(Some(e.to_string())); } } }
+        UpdateView {
+            language,
+            snapshot,
+            current: ui.context.service.current.clone(),
+            error,
+            restarting: (ui.restarting)(),
+            on_action: { let ui = ui.clone(); move |action| act(ui.clone(), action, language) },
+            on_preferences: { let mut ui = ui.clone(); move |preferences| {
+                ui.error.set(None);
+                if let Err(error) = ui.context.service.preferences(preferences) {
+                    ui.error.set(Some(error.to_string()));
                 }
-            }
-            div { class: "settings-row",
-                label { "{t.update_auto_download}" }
-                input { r#type: "checkbox", checked: snapshot.preferences.auto_download, disabled: disabled || busy,
-                    onchange: { let mut ui = ui.clone(); move |event: Event<FormData>| { let mut prefs = ui.context.service.snapshot().preferences; prefs.auto_download = event.checked(); if let Err(e) = ui.context.service.preferences(prefs) { ui.error.set(Some(e.to_string())); } } }
-                }
-            }
-            p { "{t.update_last_check}: {last}" }
-            p { role: "status", "{status}" }
-            if let Some(target) = target { p { "{t.update_target}: {target}" } }
-            if snapshot.phase == Phase::Downloading {
-                progress { max: snapshot.available.as_ref().map(|a| a.package.size).unwrap_or(1), value: snapshot.received }
-                p { "{snapshot.received} / {snapshot.available.as_ref().map(|a| a.package.size).unwrap_or(0)} bytes" }
-            }
-            if let Some(error) = error { p { class: "software-update-error", role: "alert", "{error}" } }
-            div { class: "software-update-actions",
-                button { class: "secondary", disabled: disabled || busy || snapshot.phase == Phase::Ready,
-                    onclick: { let mut ui = ui.clone(); move |_| { ui.error.set(None); if let Err(e) = ui.context.service.check() { ui.error.set(Some(e.to_string())); } } }, "{t.update_check}"
-                }
-                if snapshot.available.is_some() && !matches!(snapshot.phase, Phase::Ready | Phase::Preparing | Phase::Downloading) {
-                    button { disabled: busy, onclick: { let mut ui = ui.clone(); move |_| { ui.error.set(None); if let Err(e) = ui.context.service.download() { ui.error.set(Some(e.to_string())); } } }, "{t.update_download}" }
-                }
-                if matches!(snapshot.phase, Phase::Checking | Phase::Downloading) {
-                    button { class: "secondary", onclick: { let ui = ui.clone(); move |_| ui.context.service.cancel() }, {texts(language).dialog.cancel} }
-                }
-                if snapshot.phase == Phase::Ready {
-                    button { disabled: busy, onclick: { let ui = ui.clone(); move |_| request_restart(ui.clone(), language) }, "{t.update_restart}" }
-                }
-            }
-            a { href: kt_update::client::RELEASE_PAGE, target: "_blank", rel: "noopener noreferrer", "{t.update_release_page}" }
+                ui.snapshot.set(ui.context.service.snapshot());
+            } },
         }
     }
 }
+
 #[component]
-pub fn SoftwareUpdateOverlay(language: AppLanguage) -> Element {
+pub fn SoftwareUpdateOverlay(
+    language: AppLanguage,
+    theme: String,
+    accent: String,
+    accent_rgb: String,
+) -> Element {
     let ui = use_context::<UpdateUi>();
-    let mut dismissed = use_signal(|| false);
+    let mut dismissed = use_signal(|| None::<kt_update::metadata::BuildInfo>);
+    let confirm = ui.confirm;
+    let restarting = ui.restarting;
+    use_effect(move || {
+        if confirm() || restarting() {
+            dioxus::document::eval(include_str!("../assets/software_update_dialog.js"));
+        }
+    });
+    use_drop(|| {
+        dioxus::document::eval("window.ktUpdateDialogCleanup?.();");
+    });
+    let snapshot = (ui.snapshot)();
+    let target = snapshot
+        .available
+        .as_ref()
+        .map(|release| release.info.clone());
+    let label = target.as_ref().map(|info| info.label()).unwrap_or_default();
     let t = texts(language).app;
-    if (ui.restarting)() {
-        return rsx! { div { class: "software-update-overlay", role: "dialog", aria_modal: "true", aria_label: t.update_preparing, div { class: "software-update-dialog", p { role: "status", "{t.update_preparing}" } } } };
-    }
-    if (ui.confirm)() {
-        return rsx! { div { class: "software-update-overlay", role: "dialog", aria_modal: "true", aria_label: t.update_restart,
-            div { class: "software-update-dialog",
-                h3 { "{t.update_restart}" } p { "{t.update_restart_hint}" }
-                div { class: "software-update-actions",
-                    button { onclick: { let ui = ui.clone(); move |_| restart(ui.clone(), language) }, "{t.update_restart}" }
-                    button { onclick: { let mut ui = ui.clone(); move |_| ui.confirm.set(false) }, "{t.update_later}" }
+    let modal = confirm() || restarting();
+    let notice = snapshot.phase == Phase::Ready && target.is_some() && dismissed() != target;
+    let ink = crate::components::theme::accent_foreground(&accent);
+    rsx! {
+        div {
+            class: if theme == "light" { "software-update-layer theme-light" } else { "software-update-layer" },
+            style: "--blue: {accent}; --accent-rgb: {accent_rgb}; --update-button-ink: {ink};",
+            if modal {
+                RestartDialog {
+                    language,
+                    target: label.clone(),
+                    preparing: restarting(),
+                    on_later: { let mut ui = ui.clone(); move |_| { if !(ui.restarting)() { ui.confirm.set(false); } } },
+                    on_restart: { let ui = ui.clone(); move |_| restart(ui.clone(), language) },
                 }
             }
-        } };
-    }
-    if (ui.snapshot)().phase == Phase::Ready && !dismissed() {
-        rsx! { div { class: "software-update-notice", role: "status",
-            span { "{t.update_ready}" }
-            button { onclick: { let ui = ui.clone(); move |_| request_restart(ui.clone(), language) }, "{t.update_restart}" }
-            button { onclick: move |_| dismissed.set(true), "{t.update_later}" }
-            if let Some(error) = (ui.error)() { p { role: "alert", "{error}" } }
-        } }
-    } else {
-        rsx! {}
+            if notice {
+                aside { class: "software-update-notice", hidden: modal, aria_label: t.update_notice_title,
+                    div { class: "update-notice-icon", aria_hidden: "true", Icon { name: "check" } }
+                    div { class: "update-notice-copy", role: "status", strong { "{t.update_notice_title}" } span { "KitonyTerms {label}" } }
+                    div { class: "software-update-actions",
+                        button { class: "settings-button update-button", r#type: "button", onclick: move |_| dismissed.set(target.clone()), "{t.update_later}" }
+                        button { class: "settings-button primary update-button", r#type: "button", onclick: { let ui = ui.clone(); move |_| request_restart(ui.clone(), language) }, "{t.update_restart}" }
+                    }
+                    if let Some(error) = (ui.error)().or(snapshot.message) { UpdateError { message: error, language } }
+                }
+            }
+        }
     }
 }
 
