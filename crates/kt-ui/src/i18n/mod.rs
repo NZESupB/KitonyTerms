@@ -225,6 +225,7 @@ pub struct AppText {
     pub resize_explorer: &'static str,
     pub close_session: &'static str,
     pub reconnect: &'static str,
+    pub reconnect_enter_hint: &'static str,
     pub disconnected: &'static str,
     pub split_horizontal: &'static str,
     pub split_vertical: &'static str,

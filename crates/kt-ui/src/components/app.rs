@@ -19,7 +19,8 @@ use kt_sync::{
 
 use crate::components::app_logic::{
     active_monitor_view, active_session, active_sftp_view, active_terminal_view,
-    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views, DEFAULT_GROUP_NAME,
+    auth_challenge_view, clamp_dimension, duplicate_profile, session_tab_views,
+    sidebar_width_limit, DEFAULT_GROUP_NAME,
 };
 use crate::components::app_runtime::{KnownHostsVerifier, StoreAuthFactory};
 use crate::components::dialog::{
@@ -203,6 +204,7 @@ pub fn App() -> Element {
     let all_sessions = use_signal(Vec::<SessionState>::new);
     let mut saved_tick = use_signal(|| 0u64);
     let mut sidebar_width = use_signal(|| SIDEBAR_DEFAULT_WIDTH);
+    let mut sidebar_max_width = use_signal(|| SIDEBAR_MAX_WIDTH);
     let mut sftp_height = use_signal(|| None::<f64>);
     let mut active_resize = use_signal(|| None::<ResizeDrag>);
     let mut context_menu = use_signal(|| None::<ContextMenuState>);
@@ -222,6 +224,40 @@ pub fn App() -> Element {
         if !is_phone {
             phone_sheet.set(None);
         }
+    });
+    use_effect(move || {
+        let is_phone = device_class().is_phone();
+        spawn(async move {
+            if is_phone {
+                dioxus::document::eval("window.__ktSidebarLayoutCleanup?.();");
+                active_resize.set(None);
+                return;
+            }
+            let mut eval = dioxus::document::eval(include_str!("../assets/sidebar_layout.js"));
+            while let Ok(payload) = eval.recv::<Vec<f64>>().await {
+                // 空消息表示窗口失焦；尺寸消息由同一观察器处理窗口与运维区变化。
+                if payload.is_empty() {
+                    if active_resize.peek().is_some() {
+                        active_resize.set(None);
+                    }
+                    continue;
+                }
+                let [content, operations, splitter] = payload.as_slice() else {
+                    continue;
+                };
+                let limit = sidebar_width_limit(*content, *operations, *splitter);
+                if *sidebar_max_width.peek() != limit {
+                    sidebar_max_width.set(limit);
+                }
+                let width = clamp_dimension(*sidebar_width.peek(), SIDEBAR_MIN_WIDTH, limit);
+                if *sidebar_width.peek() != width {
+                    sidebar_width.set(width);
+                }
+            }
+        });
+    });
+    use_drop(move || {
+        dioxus::document::eval("window.__ktSidebarLayoutCleanup?.();");
     });
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     let update_restarting = crate::components::software_update::use_software_updates(move || {
@@ -658,7 +694,7 @@ pub fn App() -> Element {
                         sidebar_width.set(clamp_dimension(
                             start_width + delta,
                             SIDEBAR_MIN_WIDTH,
-                            SIDEBAR_MAX_WIDTH,
+                            sidebar_max_width(),
                         ));
                     }
                     Some(ResizeDrag::SftpHeight { start_y, start_height }) => {

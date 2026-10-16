@@ -56,6 +56,9 @@ pub fn Terminal(
     exec_id: Option<ExecId>,
     /// 是否在右键菜单里提供分屏入口。手机屏幕放不下两个终端，手机 Shell 传 `false`。
     allow_split: bool,
+    /// 桌面宿主终端管理焦点；手机输入桥和容器终端保留各自的焦点策略。
+    #[props(default)]
+    desktop_focus: bool,
 ) -> Element {
     let snapshot = &snapshot.0;
     let rows = snapshot.rows;
@@ -73,10 +76,20 @@ pub fn Terminal(
         None => format!("terminal-{}-{}", session_id.0, pane_id),
     };
     let terminal_id_for_key = terminal_id.clone();
+    let terminal_id_for_click = terminal_id.clone();
     let terminal_id_for_horizontal_scroll = terminal_id.clone();
     let terminal_screen_id = terminal_screen_id(&terminal_id);
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
+
+    use_effect(use_reactive((&terminal_id, &desktop_focus), {
+        let primary = pane_id == "primary";
+        move |(terminal_id, desktop_focus)| {
+            if desktop_focus && primary {
+                focus_terminal(&terminal_id, true);
+            }
+        }
+    }));
 
     // 行号/时间戳 gutter：用非响应式内部状态跨帧保存每行内容签名与首见时刻，
     // 避免在 render 中写响应式信号造成重渲染循环。时间戳为尽力而为的近似值。
@@ -250,12 +263,11 @@ pub fn Terminal(
             class: "{surface_class}",
             style: "{surface_style}",
             tabindex: "0",
-            autofocus: true,
-
-            // 点击时获得焦点（暂时注释掉，Dioxus 会自动处理）
             onclick: move |_| {
                 terminal_context_menu.set(None);
-                // 尝试让终端获得焦点
+                if desktop_focus {
+                    focus_terminal(&terminal_id_for_click, false);
+                }
             },
 
             oncontextmenu: move |evt| {
@@ -296,6 +308,28 @@ pub fn Terminal(
                 terminal_context_menu.set(None);
 
                 let modifiers = evt.modifiers();
+                // 在同一锁内检查并提交，覆盖 Closed 已到达但 DOM 尚未切换的窗口。
+                if exec_id.is_none() && evt.key() == Key::Enter {
+                    if let Ok(mut app_state) = state_for_input.lock() {
+                        let connected = app_state.sessions.get(&session_id)
+                            .is_some_and(|session| session.connected);
+                        if !connected {
+                            evt.prevent_default();
+                            evt.stop_propagation();
+                            if is_reconnect_enter(&evt.data()) {
+                                if let Err(error) = app_state.reconnect_disconnected_session(session_id) {
+                                    tracing::error!("会话重连失败: {error}");
+                                }
+                            }
+                            return;
+                        }
+                        if !evt.is_composing() {
+                            evt.prevent_default();
+                            app_state.send_terminal_input(session_id, vec![b'\r']);
+                        }
+                    }
+                    return;
+                }
                 if let Some(scroll_x) = terminal_horizontal_key_delta(
                     &evt.key(),
                     terminal_in_history,
@@ -775,6 +809,22 @@ pub(crate) fn select_terminal_contents(terminal_screen_id: &str) {
     dioxus::document::eval(&script);
 }
 
+/// 占位页和宿主终端共用重连键策略，避免把 IME 确认或修饰键当作重连。
+pub(super) fn is_reconnect_enter(event: &KeyboardData) -> bool {
+    event.key() == Key::Enter
+        && event.modifiers().is_empty()
+        && !event.is_auto_repeating()
+        && !event.is_composing()
+}
+
+pub(super) fn focus_terminal(terminal_id: &str, restore_only: bool) {
+    let script = format!(
+        "const terminalId = {terminal_id:?}; const restoreOnly = {restore_only};\n{}",
+        include_str!("../assets/terminal_focus.js"),
+    );
+    dioxus::document::eval(&script);
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum TerminalKeyAction {
     Copy,
@@ -1120,6 +1170,59 @@ fn terminal_cell_text(cell: &SnapshotCell) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dioxus::html::{Code, Location, Modifiers, SerializedKeyboardData};
+
+    #[test]
+    fn reconnect_enter_ignores_modifiers_repeats_and_composition() {
+        let event = |key, modifiers, repeat, composing| {
+            KeyboardData::from(SerializedKeyboardData::new(
+                key,
+                Code::Enter,
+                Location::Standard,
+                repeat,
+                modifiers,
+                composing,
+            ))
+        };
+        assert!(is_reconnect_enter(&event(
+            Key::Enter,
+            Modifiers::empty(),
+            false,
+            false
+        )));
+        for modifiers in [
+            Modifiers::CONTROL,
+            Modifiers::SHIFT,
+            Modifiers::ALT,
+            Modifiers::META,
+        ] {
+            assert!(!is_reconnect_enter(&event(
+                Key::Enter,
+                modifiers,
+                false,
+                false
+            )));
+        }
+        assert!(!is_reconnect_enter(&event(
+            Key::Enter,
+            Modifiers::empty(),
+            true,
+            false
+        )));
+        assert!(!is_reconnect_enter(&event(
+            Key::Enter,
+            Modifiers::empty(),
+            false,
+            true
+        )));
+        assert!(!is_reconnect_enter(&event(
+            Key::Escape,
+            Modifiers::empty(),
+            false,
+            false
+        )));
+        assert_eq!(terminal_input_for_key(&Key::Enter, false), vec![b'\r']);
+    }
 
     #[test]
     fn line_trigger_matching_is_case_insensitive_and_ignores_empty_rules() {

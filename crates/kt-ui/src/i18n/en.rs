@@ -27,6 +27,7 @@ pub const TEXTS: Texts = Texts {
         resize_explorer: "Drag to resize Explorer",
         close_session: "Close session",
         reconnect: "Reconnect",
+        reconnect_enter_hint: "Press Enter to reconnect",
         disconnected: "Disconnected",
         split_horizontal: "Horizontal split",
         split_vertical: "Vertical split",

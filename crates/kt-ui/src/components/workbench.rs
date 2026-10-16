@@ -2,19 +2,34 @@
 
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
+use kt_core::SessionId;
 
 use crate::components::app_logic::SessionConnectionStatus;
 use crate::components::icons::{AppLogo, Icon};
+use crate::components::terminal::{focus_terminal, is_reconnect_enter};
 use crate::i18n::texts;
 
 #[component]
 pub fn TerminalPlaceholder(
+    session_id: SessionId,
     status: SessionConnectionStatus,
     title: String,
     error: Option<String>,
     language: AppLanguage,
+    #[props(default)] desktop_focus: bool,
 ) -> Element {
     let t = texts(language).app;
+    let state = crate::components::app::get_state().clone();
+    let terminal_id = format!("terminal-placeholder-{}", session_id.0);
+    let terminal_id_for_click = terminal_id.clone();
+    use_effect(use_reactive(
+        (&session_id, &status, &desktop_focus),
+        move |(id, status, desktop_focus)| {
+            if desktop_focus && status == SessionConnectionStatus::Disconnected {
+                focus_terminal(&format!("terminal-placeholder-{}", id.0), true);
+            }
+        },
+    ));
     let state_line = if let Some(error) = error.as_deref() {
         error
     } else {
@@ -31,6 +46,25 @@ pub fn TerminalPlaceholder(
     rsx! {
         div {
             class: "terminal-placeholder",
+            id: "{terminal_id}",
+            tabindex: desktop_focus.then_some(0),
+            onclick: move |_| {
+                if desktop_focus {
+                    focus_terminal(&terminal_id_for_click, false);
+                }
+            },
+            onkeydown: move |evt| {
+                if !is_reconnect_enter(&evt.data()) {
+                    return;
+                }
+                evt.prevent_default();
+                evt.stop_propagation();
+                if let Ok(mut app_state) = state.lock() {
+                    if let Err(error) = app_state.reconnect_disconnected_session(session_id) {
+                        tracing::error!("会话重连失败: {error}");
+                    }
+                }
+            },
             pre {
                 r#"
  _  ___ _                         _____
@@ -45,6 +79,9 @@ pub fn TerminalPlaceholder(
             }
             p { "{t.session_label}: {title}" }
             p { "{state_line}" }
+            if desktop_focus && status == SessionConnectionStatus::Disconnected {
+                p { class: "terminal-reconnect-hint", "{t.reconnect_enter_hint}" }
+            }
             span { class: "terminal-caret" }
         }
     }

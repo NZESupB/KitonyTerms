@@ -57,6 +57,7 @@
 - 输入推断仅作有限兜底，不猜测任意脚本或别名；百分号路径解码仍需注意兼容性。
 - 历史视口收到非空输入先恢复实时底部；双宽字符保留占位语义，显式 ANSI 色不被主题覆盖。
 - 桌面粘贴优先[原生剪贴板](../crates/kt-ui/src/clipboard.rs)，失败再回退 WebView。
+- 桌面断线 Enter 复用 `AppState::reconnect_disconnected_session`，在状态锁内检查并切入连接中；认证/主机密钥确认阶段和重复/IME 按键不发起重连。`terminal_focus.js` 共享桌面终端与占位页的焦点恢复策略，避开输入框、编辑器、弹窗和 inert 区域；手机继续由输入桥管理焦点。
 
 ## 运维
 
@@ -77,6 +78,7 @@
 - 软键盘使用真实 textarea，IME 组合期间不清空输入；键序列复用终端映射，键盘高度由 device 写入统一 CSS 变量。
 - 软键盘输入框用固定 DOM id 且桥接脚本常驻，目标会话每次渲染同步到本地 `Cell`：组件在会话切换时不重建，靠 `key` 无法改目标。
 - 桌面固定紧凑布局；旧 density 字段由配置兼容读取并在保存时移除。
+- 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用五列可收缩 Grid，长文本省略并提供完整 title，不再固定 680px 最小宽度。
 - [主题](../crates/kt-ui/src/components/theme.rs)与[样式](../crates/kt-ui/src/assets/app.css)使用变量；默认终端色随主题，显式颜色保留。
 - 跟随当前会话的组件状态用 `use_reactive(session_id)` 驱动，轮询另以代次收敛旧任务；Dioxus 的 `key` 只在条件渲染/迭代器产生的 Fragment 层比较，普通子节点位的 `key` 不触发重建。
 - 手机输入的待验收场景见[当前任务](workflow/260820-mobile-phone-ui.md)。

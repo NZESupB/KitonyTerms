@@ -149,6 +149,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     split_mode,
                                     exec_id: None,
                                     allow_split: true,
+                                    desktop_focus: true,
                                 }
                             }
                             if split_mode().is_some() {
@@ -169,11 +170,14 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         split_mode,
                                         exec_id: None,
                                         allow_split: true,
+                                        desktop_focus: true,
                                     }
                                 }
                             }
                         } else {
                             TerminalPlaceholder {
+                                session_id: sess.id,
+                                desktop_focus: true,
                                 status: sess.status,
                                 title: sess.title.clone(),
                                 error: sess.connection_error.clone(),

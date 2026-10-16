@@ -716,11 +716,11 @@ pub fn SidebarSftpTree(
 
                     div {
                         class: "sftp-table-head-row",
-                        span { class: "sftp-name-col", "{t.name}" }
-                        span { "{t.modified}" }
-                        span { "{t.size}" }
-                        span { "{t.permissions}" }
-                        span { "{t.owner_group}" }
+                        span { class: "sftp-name-col", title: "{t.name}", "{t.name}" }
+                        span { title: "{t.modified}", "{t.modified}" }
+                        span { title: "{t.size}", "{t.size}" }
+                        span { title: "{t.permissions}", "{t.permissions}" }
+                        span { title: "{t.owner_group}", "{t.owner_group}" }
                     }
 
                     if loading {
@@ -962,12 +962,12 @@ pub fn SidebarSftpEntry(
             span {
                 class: "sftp-name-cell",
                 Icon { name: icon }
-                span { "{name}" }
+                span { title: "{name}", "{name}" }
             }
-            span { "{modified}" }
-            span { "{size}" }
-            span { "{permissions}" }
-            span { "{owner}" }
+            span { title: "{modified}", "{modified}" }
+            span { title: "{size}", "{size}" }
+            span { title: "{permissions}", "{permissions}" }
+            span { title: "{owner}", "{owner}" }
         }
     }
 }

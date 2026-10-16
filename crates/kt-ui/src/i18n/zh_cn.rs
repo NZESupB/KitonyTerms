@@ -27,6 +27,7 @@ pub const TEXTS: Texts = Texts {
         resize_explorer: "拖动调整资源管理器宽度",
         close_session: "关闭会话",
         reconnect: "重新连接",
+        reconnect_enter_hint: "按 Enter 重新连接",
         disconnected: "未连接",
         split_horizontal: "水平分屏",
         split_vertical: "垂直分屏",

@@ -11,6 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use kt_config::{
     resolve_theme_name, AppLanguage, AppSettings, AuthMethod, SessionProfile, DEFAULT_LIGHT_THEME,
@@ -36,7 +37,8 @@ use crate::store::Store;
 
 pub const SIDEBAR_DEFAULT_WIDTH: f64 = 220.0;
 pub const SIDEBAR_MIN_WIDTH: f64 = 176.0;
-pub const SIDEBAR_MAX_WIDTH: f64 = 320.0;
+pub const SIDEBAR_MAX_WIDTH: f64 = 720.0;
+pub const TERMINAL_RESERVED_WIDTH: f64 = 420.0;
 pub const SFTP_DEFAULT_HEIGHT: f64 = 320.0;
 pub const SFTP_MIN_HEIGHT: f64 = 120.0;
 pub const SFTP_MAX_HEIGHT: f64 = 420.0;
@@ -395,6 +397,11 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
             })}
 
             div {
+                id: "sidebar-width-splitter",
+                role: "separator",
+                aria_orientation: "vertical",
+                aria_label: "{t.resize_explorer}",
+                aria_controls: "resource-sidebar",
                 class: if sidebar_collapsed() {
                     "splitter is-collapsed"
                 } else if active_resize().is_some() {
@@ -404,6 +411,9 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
                 },
                 title: "{t.resize_explorer}",
                 onmousedown: move |evt| {
+                    if evt.trigger_button() != Some(MouseButton::Primary) {
+                        return;
+                    }
                     evt.stop_propagation();
                     evt.prevent_default();
                     if sidebar_collapsed() {

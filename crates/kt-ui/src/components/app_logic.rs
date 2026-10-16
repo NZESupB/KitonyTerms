@@ -6,6 +6,9 @@ use kt_config::{lookup_ssh_config, normalize_group_name, ConnectParams, SessionP
 use kt_core::term::GridSnapshot;
 use kt_core::{AuthChallenge, PtySize, SessionId, SftpEntry};
 
+use crate::components::main_shell::{
+    SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TERMINAL_RESERVED_WIDTH,
+};
 use crate::state::SessionState;
 
 pub const DEFAULT_GROUP_NAME: &str = "NoBrand";
@@ -261,6 +264,21 @@ pub fn clamp_dimension(value: f64, min: f64, max: f64) -> f64 {
     }
 }
 
+/// 按真实布局保留终端空间，窄窗口仍保证侧栏下限，终端可继续收缩。
+pub fn sidebar_width_limit(content: f64, operations: f64, splitter: f64) -> f64 {
+    if [content, operations, splitter]
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return SIDEBAR_MIN_WIDTH;
+    }
+    clamp_dimension(
+        content - operations - splitter - TERMINAL_RESERVED_WIDTH,
+        SIDEBAR_MIN_WIDTH,
+        SIDEBAR_MAX_WIDTH,
+    )
+}
+
 pub fn duplicate_profile(profile: &SessionProfile, existing: &[SessionProfile]) -> SessionProfile {
     let mut next = profile.clone();
     let names = existing
@@ -452,9 +470,32 @@ mod tests {
 
     #[test]
     fn sidebar_drag_is_clamped() {
-        assert_eq!(clamp_dimension(100.0, 176.0, 320.0), 176.0);
-        assert_eq!(clamp_dimension(400.0, 176.0, 320.0), 320.0);
-        assert_eq!(clamp_dimension(250.0, 176.0, 320.0), 250.0);
+        let limit = sidebar_width_limit(1200.0, 48.0, 2.0);
+        assert_eq!(clamp_dimension(100.0, SIDEBAR_MIN_WIDTH, limit), 176.0);
+        assert_eq!(clamp_dimension(900.0, SIDEBAR_MIN_WIDTH, limit), 720.0);
+        assert_eq!(clamp_dimension(480.0, SIDEBAR_MIN_WIDTH, limit), 480.0);
+    }
+
+    #[test]
+    fn sidebar_limit_reserves_terminal_and_tracks_operations_width() {
+        assert_eq!(sidebar_width_limit(1200.0, 48.0, 2.0), 720.0);
+        assert_eq!(sidebar_width_limit(1200.0, 408.0, 2.0), 370.0);
+        assert_eq!(sidebar_width_limit(820.0, 48.0, 2.0), 350.0);
+        assert_eq!(sidebar_width_limit(600.0, 48.0, 2.0), 176.0);
+        assert_eq!(sidebar_width_limit(400.0, 48.0, 2.0), 176.0);
+        assert_eq!(sidebar_width_limit(1200.0, 48.0, 0.0), 720.0);
+        for dimensions in [
+            (f64::NAN, 0.0, 2.0),
+            (1200.0, f64::INFINITY, 2.0),
+            (1200.0, -1.0, 2.0),
+        ] {
+            assert_eq!(
+                sidebar_width_limit(dimensions.0, dimensions.1, dimensions.2),
+                176.0
+            );
+        }
+        let narrowed = sidebar_width_limit(820.0, 408.0, 2.0);
+        assert_eq!(clamp_dimension(720.0, SIDEBAR_MIN_WIDTH, narrowed), 176.0);
     }
 
     #[test]

@@ -548,6 +548,23 @@ impl AppState {
         }
     }
 
+    /// 仅重连已断线的会话；在调用方持有的同一状态锁内完成检查与状态切换。
+    pub fn reconnect_disconnected_session(&mut self, id: SessionId) -> Result<bool, String> {
+        let session = self
+            .sessions
+            .get(&id)
+            .ok_or_else(|| "会话不存在，无法重新连接".to_string())?;
+        if session.connected
+            || session.connection_error.is_none()
+            || session.auth_challenge.is_some()
+            || session.host_key_pending
+        {
+            return Ok(false);
+        }
+        self.connect_session(id)?;
+        Ok(true)
+    }
+
     pub fn set_sftp_auto_sync(&mut self, id: SessionId, enabled: bool) -> Result<(), String> {
         let follow_path = {
             let Some(session) = self.sessions.get_mut(&id) else {
@@ -2357,6 +2374,8 @@ mod tests {
         let mut app_state = app_state();
         let mut sess = session_state(false);
         sess.connection_error = Some("连接已断开".to_string());
+        sess.connect_params.host = "127.0.0.1".to_string();
+        sess.connect_params.port = 0;
         sess.sftp_path = "/var/log".to_string();
         sess.sftp_entries.push(SftpEntry {
             name: "old.log".to_string(),
@@ -2375,7 +2394,8 @@ mod tests {
         let id = sess.id;
         app_state.sessions.insert(id, sess);
 
-        assert!(app_state.connect_session(id).is_ok());
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(true));
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
         let sess = app_state.sessions.get(&id).unwrap();
         assert!(sess.snapshot.is_none());
         assert!(sess.connection_error.is_none());
@@ -2384,6 +2404,72 @@ mod tests {
         assert!(sess.terminal_cwd.is_none());
         assert!(sess.sftp_auto_sync);
         assert!(sess.monitor.is_none());
+        assert_eq!(sess.title, "demo");
+        assert_eq!(sess.connect_params.host, "127.0.0.1");
+        assert_eq!(sess.connect_params.user, "root");
+        assert_eq!(sess.pty.cols, 100);
+        assert_eq!(sess.pty.rows, 30);
+    }
+
+    #[test]
+    fn reconnect_ignores_connected_connecting_auth_and_host_key_pending() {
+        let mut app_state = app_state();
+        let mut session = session_state(true);
+        let id = session.id;
+        session.connection_error = Some("旧错误".to_string());
+        app_state.sessions.insert(id, session);
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
+
+        let session = app_state.sessions.get_mut(&id).unwrap();
+        session.connected = false;
+        session.connection_error = None;
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
+
+        let session = app_state.sessions.get_mut(&id).unwrap();
+        session.connection_error = Some("旧错误".to_string());
+        session.auth_challenge = Some(AuthChallenge::Password {
+            user: "root".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        });
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
+        assert!(app_state.sessions[&id].auth_challenge.is_some());
+
+        let session = app_state.sessions.get_mut(&id).unwrap();
+        session.auth_challenge = None;
+        session.host_key_pending = true;
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
+        assert!(app_state.sessions[&id].host_key_pending);
+    }
+
+    #[test]
+    fn reconnect_missing_session_returns_error() {
+        assert!(app_state()
+            .reconnect_disconnected_session(SessionId(999))
+            .is_err());
+    }
+
+    #[test]
+    fn reconnect_queue_failure_remains_visible_and_allows_retry() {
+        let mut app_state = app_state();
+        let mut session = session_state(false);
+        let id = session.id;
+        session.connection_error = Some("连接已断开".to_string());
+        session.connect_params.host = "127.0.0.1".to_string();
+        session.connect_params.port = 0;
+        app_state.sessions.insert(id, session);
+        // 预留全部槽位而不提交命令，稳定复现命令队列满，不依赖线程调度。
+        let sender = app_state.manager.raw_sender();
+        let permits = sender.try_reserve_many(sender.max_capacity()).unwrap();
+        let error = app_state.reconnect_disconnected_session(id).unwrap_err();
+        assert_eq!(
+            app_state.sessions[&id].connection_error.as_deref(),
+            Some(error.as_str())
+        );
+        assert!(!app_state.sessions[&id].connected);
+        drop(permits);
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(true));
+        assert_eq!(app_state.reconnect_disconnected_session(id), Ok(false));
     }
 
     #[test]

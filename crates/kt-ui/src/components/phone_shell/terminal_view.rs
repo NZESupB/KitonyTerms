@@ -65,6 +65,7 @@ pub(super) fn render_terminal_view(args: TerminalViewArgs) -> Element {
                     }
                 } else {
                     TerminalPlaceholder {
+                        session_id,
                         status: session.status,
                         title: session.title.clone(),
                         error: session.connection_error.clone(),
