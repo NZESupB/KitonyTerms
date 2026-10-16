@@ -9,12 +9,12 @@
 
 ## 当前任务
 
-- [发布 v0.1.4 与本机更新](workflow/261016-release-v014.md)：发布本次 Enter/侧栏修复，推送 dev 和版本标签，并更新本机正式版应用。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
 
 ## 最近归档
 
+- [发布 v0.1.4 与本机更新](workflow/done/261016-release-v014.md)：dev 与标签已推送，12 个产物发布成功；本机 ARM64 正式版已更新并通过身份和签名校验，原生交互端到端待验收。
 - [断线重连与文件侧栏](workflow/done/261015-reconnect-sidebar-layout.md)：Enter 状态门禁、桌面焦点和侧栏自适应已实现；Rust 门禁与 40 项浏览器检查通过，原生键鼠端到端操作待验收。
 - [发布产物与 Node.js 24](workflow/done/261012-release-artifact-scope-node24.md)：macOS ARM64 DMG、Windows AMD64 ZIP/安装器与四目标更新清单；本机门禁通过，新远端流水线未触发。
 - [桌面自动更新](workflow/done/261012-desktop-auto-update.md)：后台服务、确认重启安装与六目标发布清单已实现；本机门禁和 macOS 签名包事务通过，Windows/Linux 原生安装及三端 GUI 验收待对应环境。
