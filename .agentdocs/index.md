@@ -9,12 +9,12 @@
 
 ## 当前任务
 
-- [发布 v0.1.5](workflow/261016-release-v015.md)：版本与本地门禁已通过，待提交、推送 dev 与标签并核验 GitHub Release。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
 
 ## 最近归档
 
+- [发布 v0.1.5](workflow/done/261016-release-v015.md)：发布提交 49be49b；dev 与标签已推送，流水线 38862414531 的 10 项任务全部成功。12 个资产发布并设为 Latest，桌面构建身份、大小和 SHA-256 摘要一致；本机应用未替换。
 - [全局视觉统一](workflow/done/261016-ui-consistency.md)：共用控件、主题、设置/弹窗、工作区及手机端表面已统一；既有浏览器检查见归档。v0.1.5 已修复 macOS 回环 HTTP 测试 socket 模式，512 项串行及默认并发 Rust 测试通过；原生键鼠/SSH/软键盘仍待验收。
 - [更新界面](workflow/done/261016-update-ui.md)：状态卡片、发布日志、真实下载进度、主题及确认交互已实现；Rust 门禁与 915 项浏览器检查通过，原生 WebView 下载/终端/重启端到端待验收。
 - [发布 v0.1.4 与本机更新](workflow/done/261016-release-v014.md)：dev 与标签已推送，12 个产物发布成功；本机 ARM64 正式版已更新并通过身份和签名校验，原生交互端到端待验收。
