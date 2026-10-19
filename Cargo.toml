@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["KitonyTerms contributors"]
@@ -105,6 +105,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Console"] }
+windows = "0.62.2"
+windows-future = "0.3.2"
 
 # --- headless example helpers ---
 rpassword = "7"

@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod components;
 pub mod device;
 pub mod i18n;
+pub mod operations_state;
 pub(crate) mod os_auth;
 pub mod state;
 

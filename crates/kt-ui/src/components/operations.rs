@@ -19,6 +19,7 @@ use kt_core::{
     ProcessAction, PtySize, ServiceAction, SessionId,
 };
 
+use super::docker_usage::{usage_for_container, DockerUsage};
 use crate::components::icons::Icon;
 use crate::components::main_shell::SplitMode;
 use crate::components::metrics_format::{format_bytes, format_rate, format_uptime, percent};
@@ -26,6 +27,9 @@ use crate::components::terminal::{SnapshotWrapper, Terminal};
 use crate::i18n::{
     operations_cpu_summary, operations_error_message, operations_result_count_message,
     operations_updated_message, texts,
+};
+use crate::operations_state::{
+    DetailTarget, DockerUsageCache, ListContext, OperationKey, OperationsList, OperationsPage,
 };
 use crate::state::{AppState, ContainerTerminalState, OperationsViewState};
 
@@ -91,35 +95,32 @@ fn request_refresh(
     state: &Arc<Mutex<AppState>>,
     session_id: Option<SessionId>,
     tool: OperationsTool,
-    docker_resource: DockerResource,
+    _docker_resource: DockerResource,
 ) {
     let (Some(session_id), Some(domain)) = (session_id, tool.domain()) else {
         return;
     };
     if let Ok(mut app_state) = state.lock() {
         app_state.probe_operations(session_id, false);
-        if !probe_allows_refresh(
+        if let Some(session) = app_state.sessions.get_mut(&session_id) {
+            session
+                .operations_ui
+                .retry
+                .retain(|key, _| key.domain() != domain);
+        }
+        let compose = app_state.sessions.get(&session_id).is_some_and(|session| {
+            session.operations_ui.page(domain).parent()
+                == OperationsList::Docker(DockerResource::Compose)
+        });
+        if probe_allows_refresh(
             app_state
                 .sessions
                 .get(&session_id)
-                .and_then(|session| session.operations.get(&OperationsDomain::Capabilities)),
+                .and_then(|s| s.operations.get(&OperationKey::Capabilities)),
             domain,
-            docker_resource == DockerResource::Compose,
+            compose,
         ) {
-            return;
-        }
-        let already_loading = app_state
-            .sessions
-            .get(&session_id)
-            .and_then(|session| session.operations.get(&domain))
-            .is_some_and(|view| view.loading);
-        if !already_loading {
-            let request = if tool == OperationsTool::Docker {
-                OperationsRequest::DockerList(docker_resource)
-            } else {
-                OperationsRequest::Refresh(domain)
-            };
-            let _ = app_state.request_operation(session_id, request);
+            app_state.refresh_operation_page(session_id, domain);
         }
     }
 }
@@ -133,6 +134,29 @@ fn request_operation(
         return;
     };
     if let Ok(mut app_state) = state.lock() {
+        let key = OperationKey::for_request(&request);
+        match &key {
+            OperationKey::Detail(target) => app_state.navigate_operation(
+                session_id,
+                OperationsPage::Detail {
+                    parent: target.parent(),
+                    target: target.clone(),
+                },
+            ),
+            OperationKey::List(list) => {
+                app_state.navigate_operation(session_id, OperationsPage::List(*list))
+            }
+            _ => {}
+        }
+        if matches!(key, OperationKey::Detail(_) | OperationKey::List(_)) {
+            for background in [
+                OperationKey::DockerRuntime,
+                OperationKey::DockerStorage,
+                OperationKey::DockerImageSizes,
+            ] {
+                app_state.cancel_operation_key(session_id, &background);
+            }
+        }
         let _ = app_state.request_operation(session_id, request);
     }
 }
@@ -156,7 +180,12 @@ pub fn OperationsPanel(
     let mut snapshot_owner = use_signal(|| None::<SessionId>);
     let mut snapshot_tool = use_signal(|| OperationsTool::Metrics);
     let mut container_terminal = use_signal(|| None::<ContainerTerminalState>);
-    let docker_resource = use_signal(|| DockerResource::Containers);
+    let mut docker_resource = use_signal(|| DockerResource::Containers);
+    let mut page = use_signal(|| None::<OperationsPage>);
+    let mut list_context = use_signal(ListContext::default);
+    let mut docker_cache = use_signal(DockerUsageCache::default);
+    let mut docker_error = use_signal(|| None::<String>);
+    let mut action = use_signal(|| None::<OperationsViewState>);
     let container_split_mode = use_signal(|| None::<SplitMode>);
     let poll_generation = use_hook(|| Rc::new(Cell::new(0_u64)));
     let previous_session = use_hook(|| Rc::new(Cell::new(None::<SessionId>)));
@@ -184,6 +213,21 @@ pub fn OperationsPanel(
         operations.set(None);
         capabilities.set(None);
         container_terminal.set(None);
+        page.set(None);
+        docker_cache.set(DockerUsageCache::default());
+        action.set(None);
+        docker_error.set(None);
+        list_context.set(ListContext::default());
+        if let (Some(id), Some(domain), Ok(mut state)) =
+            (session_id, tool().domain(), state_for_effect.lock())
+        {
+            if let Some(session) = state.sessions.get_mut(&id) {
+                session
+                    .operations_ui
+                    .retry
+                    .retain(|key, _| key.domain() != domain);
+            }
+        }
         let generation = poll_generation.get().wrapping_add(1);
         poll_generation.set(generation);
         let state = state_for_effect.clone();
@@ -202,9 +246,7 @@ pub fn OperationsPanel(
                         let next_capabilities = app_state
                             .sessions
                             .get(&id)
-                            .and_then(|session| {
-                                session.operations.get(&OperationsDomain::Capabilities)
-                            })
+                            .and_then(|session| session.operations.get(&OperationKey::Capabilities))
                             .cloned();
                         if *capabilities.peek() != next_capabilities {
                             capabilities.set(next_capabilities.clone());
@@ -231,32 +273,83 @@ pub fn OperationsPanel(
                         }
 
                         if let Some(domain) = active_tool.domain() {
-                            let should_refresh = should_refresh_operations(
-                                app_state
-                                    .sessions
-                                    .get(&id)
-                                    .and_then(|session| session.operations.get(&domain)),
-                                active_tool.refresh_interval(),
-                            );
-                            let available = probe_allows_refresh(
-                                next_capabilities.as_ref(),
-                                domain,
-                                docker_resource() == DockerResource::Compose,
-                            );
-                            if should_refresh && available {
-                                let request = if active_tool == OperationsTool::Docker {
-                                    OperationsRequest::DockerList(docker_resource())
-                                } else {
-                                    OperationsRequest::Refresh(domain)
-                                };
-                                let _ = app_state.request_operation(id, request);
+                            let current = app_state
+                                .sessions
+                                .get(&id)
+                                .map(|s| s.operations_ui.page(domain));
+                            let compose = current.as_ref().is_some_and(|page| {
+                                page.parent() == OperationsList::Docker(DockerResource::Compose)
+                            });
+                            if probe_allows_refresh(next_capabilities.as_ref(), domain, compose) {
+                                app_state.poll_operation_page(
+                                    id,
+                                    domain,
+                                    active_tool.refresh_interval(),
+                                );
+                            }
+                            if *page.peek() != current {
+                                page.set(current.clone());
+                            }
+                            if let Some(session) = app_state.sessions.get(&id) {
+                                let context = current
+                                    .as_ref()
+                                    .and_then(|p| session.operations_ui.contexts.get(&p.parent()))
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if *list_context.peek() != context {
+                                    list_context.set(context);
+                                }
+                                if *docker_cache.peek() != session.operations_ui.docker {
+                                    docker_cache.set(session.operations_ui.docker.clone());
+                                }
+                                let next_action = session
+                                    .operations
+                                    .get(&OperationKey::Action(domain))
+                                    .cloned();
+                                if *action.peek() != next_action {
+                                    action.set(next_action);
+                                }
+                                let next_error = [
+                                    OperationKey::DockerRuntime,
+                                    OperationKey::DockerStorage,
+                                    OperationKey::DockerImageSizes,
+                                ]
+                                .iter()
+                                .find_map(|key| {
+                                    session
+                                        .operations
+                                        .get(key)
+                                        .and_then(|v| v.error.as_ref())
+                                        .map(|e| {
+                                            operations_error_message(language, e.kind).to_string()
+                                        })
+                                });
+                                if *docker_error.peek() != next_error {
+                                    docker_error.set(next_error);
+                                }
+                            }
+                            if let Some(
+                                OperationsPage::List(OperationsList::Docker(resource))
+                                | OperationsPage::Detail {
+                                    parent: OperationsList::Docker(resource),
+                                    ..
+                                },
+                            ) = current.as_ref()
+                            {
+                                if *docker_resource.peek() != *resource {
+                                    docker_resource.set(*resource);
+                                }
                             }
                         }
                         let next_operations = active_tool.domain().and_then(|domain| {
                             app_state
                                 .sessions
                                 .get(&id)
-                                .and_then(|session| session.operations.get(&domain))
+                                .and_then(|session| {
+                                    session
+                                        .operations
+                                        .get(&session.operations_ui.page(domain).key())
+                                })
                                 .cloned()
                         });
                         if operations.peek().as_ref() != next_operations.as_ref() {
@@ -269,8 +362,12 @@ pub fn OperationsPanel(
                         if container_terminal.peek().as_ref() != next_container.as_ref() {
                             container_terminal.set(next_container);
                         }
-                        snapshot_owner.set(Some(id));
-                        snapshot_tool.set(active_tool);
+                        if *snapshot_owner.peek() != Some(id) {
+                            snapshot_owner.set(Some(id));
+                        }
+                        if *snapshot_tool.peek() != active_tool {
+                            snapshot_tool.set(active_tool);
+                        }
                     }
                 } else {
                     if panel_visible {
@@ -351,6 +448,7 @@ pub fn OperationsPanel(
                                         state.cancel_operations(id);
                                     }
                                 } else {
+                                    if let (Some(id), Ok(mut state)) = (session_id, action_state.lock()) { state.cancel_operations(id); }
                                     tool.set(item);
                                     open.set(true);
                                     request_refresh(&action_state, session_id, item, docker_resource());
@@ -390,6 +488,9 @@ pub fn OperationsPanel(
                                     onclick: move |_| {
                                         if let (Some(id), Ok(mut state)) = (session_id, cancel_state.lock()) {
                                             state.cancel_operations(id);
+                                            if let Some(session) = state.sessions.get_mut(&id) {
+                                                for key in session.operations.keys() { session.operations_ui.retry.entry(key.clone()).or_default().failed(kt_core::OperationsErrorKind::Cancelled); }
+                                            }
                                         }
                                     },
                                     Icon { name: "close" }
@@ -403,7 +504,7 @@ pub fn OperationsPanel(
                                     disabled: !can_use || pending,
                                     onclick: move |_| {
                                         if let (Some(id), Ok(mut state)) = (session_id, refresh_state.lock()) {
-                                            state.probe_operations(id, true);
+                                            if let Some(domain) = active_tool.domain() { state.refresh_operation_page(id, domain); }
                                         }
                                     },
                                     Icon { name: "refresh" }
@@ -458,6 +559,11 @@ pub fn OperationsPanel(
                                 session_id,
                                 language,
                                 docker_resource,
+                                page: page().filter(|_| same_session && snapshot_tool() == active_tool),
+                                context: list_context(),
+                                docker_cache: docker_cache(),
+                                docker_error: docker_error().filter(|_| same_session && snapshot_tool() == active_tool),
+                                action: action().filter(|_| same_session && snapshot_tool() == active_tool),
                             }
                         }
                     }
@@ -535,11 +641,87 @@ fn OperationsDetail(
     session_id: Option<SessionId>,
     language: AppLanguage,
     mut docker_resource: Signal<DockerResource>,
+    page: Option<OperationsPage>,
+    context: ListContext,
+    docker_cache: DockerUsageCache,
+    docker_error: Option<String>,
+    action: Option<OperationsViewState>,
 ) -> Element {
     let t = texts(language).operations;
     let mut filter = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut process_sort = use_signal(|| ProcessSort::Cpu);
+    let list = page
+        .as_ref()
+        .map(OperationsPage::parent)
+        .unwrap_or_else(|| match tool {
+            OperationsTool::Services => OperationsList::Services,
+            OperationsTool::Processes => OperationsList::Processes,
+            OperationsTool::Network => OperationsList::Network,
+            _ => OperationsList::Docker(DockerResource::Containers),
+        });
+    let is_list = matches!(page, Some(OperationsPage::List(_)));
+    use_effect(use_reactive(
+        (&session_id, &list),
+        move |(session_id, list)| {
+            let saved = crate::components::app::get_state()
+                .lock()
+                .ok()
+                .and_then(|state| {
+                    session_id
+                        .and_then(|id| state.sessions.get(&id))
+                        .and_then(|s| s.operations_ui.contexts.get(&list))
+                        .cloned()
+                })
+                .unwrap_or_default();
+            filter.set(saved.filter);
+            status_filter.set(saved.status_filter);
+            process_sort.set(if saved.memory_sort {
+                ProcessSort::Memory
+            } else {
+                ProcessSort::Cpu
+            });
+        },
+    ));
+    use_effect(use_reactive(
+        (&session_id, &page),
+        move |(session_id, page)| {
+            let Some(page) = page else {
+                return;
+            };
+            let list = page.parent();
+            let restore_list = matches!(page, OperationsPage::List(_));
+            let top = if restore_list {
+                crate::components::app::get_state()
+                    .lock()
+                    .ok()
+                    .and_then(|state| {
+                        session_id
+                            .and_then(|id| state.sessions.get(&id))
+                            .and_then(|s| s.operations_ui.contexts.get(&list))
+                            .map(|c| c.scroll_top)
+                    })
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let script = format!(
+                "const restoreTop = {top}; const restoreList = {restore_list};\n{}",
+                include_str!("../assets/operations_viewport.js")
+            );
+            let mut eval = dioxus::document::eval(&script);
+            spawn(async move {
+                while let Ok(top) = eval.recv::<f64>().await {
+                    if restore_list && top.is_finite() && top >= 0.0 {
+                        update_list_context(session_id, list, |context| context.scroll_top = top);
+                    }
+                }
+            });
+        },
+    ));
+    use_drop(|| {
+        dioxus::document::eval("window.__ktOperationsViewportCleanup?.();");
+    });
     let loading = view.as_ref().is_some_and(|value| value.loading);
     let error = view
         .as_ref()
@@ -567,6 +749,18 @@ fn OperationsDetail(
     };
 
     rsx! {
+        div { class: "operations-page-marker", hidden: true, "data-selected": context.selected.clone().unwrap_or_default() }
+        if let Some(page) = page.as_ref() {
+            OperationsBreadcrumb { page: page.clone(), session_id, language }
+        }
+        if let Some(action) = action {
+            if action.loading { p { role: "status", "{t.refreshing}" } }
+            if let Some(error) = action.error { p { class: "operations-error", role: "status", "{operations_error_message(language, error.kind)}" } }
+            if let Some(OperationsResult::Action { message }) = action.result { p { class: "operations-action-result", role: "status", "{message}" } }
+        }
+        if tool == OperationsTool::Docker {
+            if let Some(error) = docker_error { p { class: "operations-error", role: "status", "{error}" } }
+        }
         if let Some((state, label)) = failure_status {
             p { class: "operations-error", "data-state": state, role: "status", "{label}" }
         }
@@ -595,14 +789,14 @@ fn OperationsDetail(
             }
         }
 
-        if matches!(tool, OperationsTool::Services | OperationsTool::Processes | OperationsTool::Network) {
+        if is_list {
             div { class: "operations-filter-bar",
                 input {
                     class: "operations-filter-input",
                     r#type: "search",
                     placeholder: "{t.search}",
                     value: "{filter()}",
-                    oninput: move |evt: Event<FormData>| filter.set(evt.value()),
+                    oninput: move |evt: Event<FormData>| { let value = evt.value(); filter.set(value.clone()); update_list_context(session_id, list, |context| context.filter = value); },
                 }
                 if tool == OperationsTool::Services {
                     input {
@@ -610,7 +804,7 @@ fn OperationsDetail(
                         r#type: "search",
                         placeholder: "{t.status_filter}",
                         value: "{status_filter()}",
-                        oninput: move |evt: Event<FormData>| status_filter.set(evt.value()),
+                        oninput: move |evt: Event<FormData>| { let value = evt.value(); status_filter.set(value.clone()); update_list_context(session_id, list, |context| context.status_filter = value); },
                     }
                 }
                 if tool == OperationsTool::Processes {
@@ -619,6 +813,7 @@ fn OperationsDetail(
                         value: if process_sort() == ProcessSort::Cpu { "cpu" } else { "memory" },
                         onchange: move |evt: Event<FormData>| {
                             process_sort.set(if evt.value() == "memory" { ProcessSort::Memory } else { ProcessSort::Cpu });
+                            update_list_context(session_id, list, |context| context.memory_sort = evt.value() == "memory");
                         },
                         option { value: "cpu", "{t.sort_cpu}" }
                         option { value: "memory", "{t.sort_memory}" }
@@ -643,7 +838,7 @@ fn OperationsDetail(
                             (needle.is_empty() || row.name.to_ascii_lowercase().contains(&needle) || row.description.to_ascii_lowercase().contains(&needle))
                                 && (status.is_empty() || row.active_state.to_ascii_lowercase().contains(&status) || row.sub_state.to_ascii_lowercase().contains(&status))
                         }) {
-                            ServiceRow { service: service.clone(), session_id, language }
+                            ServiceRow { key: "{service.name}", service: service.clone(), session_id, language }
                         }
                     }
                 },
@@ -653,7 +848,7 @@ fn OperationsDetail(
                             let needle = filter().trim().to_ascii_lowercase();
                             needle.is_empty() || row.command.to_ascii_lowercase().contains(&needle) || row.pid.to_string() == needle
                         }) {
-                            ProcessRow { process: process.clone(), session_id, language }
+                            ProcessRow { key: "{process.pid}", process: process.clone(), session_id, language }
                         }
                     }
                 },
@@ -672,36 +867,36 @@ fn OperationsDetail(
                 },
                 OperationsResult::DockerContainers(rows) => rsx! {
                     div { class: "operations-list operations-resource-list",
-                        for container in rows.iter() {
-                            ContainerRow { container: container.clone(), session_id, language }
+                        for container in rows.iter().filter(|row| { let needle = filter().trim().to_ascii_lowercase(); needle.is_empty() || row.name.to_ascii_lowercase().contains(&needle) || row.id.contains(&needle) || row.image.as_deref().unwrap_or_default().to_ascii_lowercase().contains(&needle) }) {
+                            ContainerRow { key: "{container.id}", container: container.clone(), usage: usage_for_container(&docker_cache, container), session_id, language }
                         }
                     }
                 },
                 OperationsResult::DockerImages(rows) => rsx! {
                     div { class: "operations-list operations-resource-list",
                         for image in rows.iter().filter(|row| filter().trim().is_empty() || row.repository.to_ascii_lowercase().contains(&filter().trim().to_ascii_lowercase()) || row.id.contains(filter().trim())) {
-                            DockerImageRow { image: image.clone(), session_id, language }
+                            DockerImageRow { key: "{image.id}", image: image.clone(), session_id, language }
                         }
                     }
                 },
                 OperationsResult::DockerVolumes(rows) => rsx! {
                     div { class: "operations-list operations-resource-list",
                         for volume in rows.iter().filter(|row| filter().trim().is_empty() || row.name.to_ascii_lowercase().contains(&filter().trim().to_ascii_lowercase())) {
-                            DockerVolumeRow { volume: volume.clone(), session_id, language }
+                            DockerVolumeRow { key: "{volume.name}", volume: volume.clone(), session_id, language }
                         }
                     }
                 },
                 OperationsResult::DockerNetworks(rows) => rsx! {
                     div { class: "operations-list operations-resource-list",
                         for network in rows.iter().filter(|row| filter().trim().is_empty() || row.name.to_ascii_lowercase().contains(&filter().trim().to_ascii_lowercase())) {
-                            DockerNetworkRow { network: network.clone(), session_id, language }
+                            DockerNetworkRow { key: "{network.id}", network: network.clone(), session_id, language }
                         }
                     }
                 },
                 OperationsResult::DockerCompose(rows) => rsx! {
                     div { class: "operations-list operations-resource-list",
                         for project in rows.iter().filter(|row| filter().trim().is_empty() || row.name.to_ascii_lowercase().contains(&filter().trim().to_ascii_lowercase())) {
-                            DockerComposeRow { project: project.clone(), session_id, language }
+                            DockerComposeRow { key: "{project.name}", project: project.clone(), session_id, language }
                         }
                     }
                 },
@@ -711,6 +906,13 @@ fn OperationsDetail(
                         pre { "{content}" }
                     }
                 },
+                OperationsResult::DockerRuntime(_) => rsx! {
+                    if let Some(OperationsPage::Detail { target: DetailTarget::DockerResources { id }, .. }) = page.as_ref() {
+                        DockerUsage { value: super::docker_usage::usage_for_id(&docker_cache, id), language }
+                    }
+                    p { class: "operations-storage-hint", "{t.storage_hint}" }
+                },
+                OperationsResult::DockerStorage(_) | OperationsResult::DockerImageSizes(_) => rsx! {},
                 OperationsResult::Action { message } => rsx! {
                     div { class: "operations-action-result", "{message}" }
                 },
@@ -763,6 +965,9 @@ fn result_count(result: &OperationsResult) -> usize {
         OperationsResult::DockerVolumes(rows) => rows.len(),
         OperationsResult::DockerNetworks(rows) => rows.len(),
         OperationsResult::DockerCompose(rows) => rows.len(),
+        OperationsResult::DockerRuntime(rows) => rows.len(),
+        OperationsResult::DockerStorage(rows) => rows.len(),
+        OperationsResult::DockerImageSizes(rows) => rows.len(),
         OperationsResult::Details { content, .. } => usize::from(!content.is_empty()),
         OperationsResult::Action { .. } => 1,
     }
@@ -776,6 +981,64 @@ fn submit_operation(session_id: Option<SessionId>, request: OperationsRequest) {
     );
 }
 
+fn update_list_context(
+    session_id: Option<SessionId>,
+    list: OperationsList,
+    update: impl FnOnce(&mut ListContext),
+) {
+    if let Some(id) = session_id {
+        if let Ok(mut state) = crate::components::app::get_state().lock() {
+            if let Some(session) = state.sessions.get_mut(&id) {
+                update(session.operations_ui.contexts.entry(list).or_default());
+            }
+        }
+    }
+}
+
+fn list_label(list: OperationsList, language: AppLanguage) -> &'static str {
+    let t = texts(language).operations;
+    match list {
+        OperationsList::Docker(DockerResource::Containers) => t.docker_containers,
+        OperationsList::Docker(DockerResource::Images) => t.docker_images,
+        OperationsList::Docker(DockerResource::Volumes) => t.docker_volumes,
+        OperationsList::Docker(DockerResource::Networks) => t.docker_networks,
+        OperationsList::Docker(DockerResource::Compose) => t.docker_compose,
+        OperationsList::Services => t.tool_services,
+        OperationsList::Processes => t.tool_processes,
+        OperationsList::Network => t.tool_network,
+    }
+}
+
+#[component]
+fn OperationsBreadcrumb(
+    page: OperationsPage,
+    session_id: Option<SessionId>,
+    language: AppLanguage,
+) -> Element {
+    let t = texts(language).operations;
+    let parent = page.parent();
+    let label = list_label(parent, language);
+    let OperationsPage::Detail { target, .. } = page else {
+        return rsx! {};
+    };
+    let title = match &target {
+        DetailTarget::DockerLogs { .. } | DetailTarget::ServiceLogs { .. } => t.logs,
+        DetailTarget::DockerNetwork { .. } => t.network,
+        DetailTarget::DockerResources { .. } => t.resources,
+        _ => t.details,
+    };
+    rsx! {
+        nav { class: "operations-breadcrumb", aria_label: "{t.back}",
+            button { r#type: "button", class: "operations-back", title: "{t.back}", aria_label: "{t.back}",
+                onclick: move |_| { if let Some(id) = session_id { if let Ok(mut state) = crate::components::app::get_state().lock() { state.navigate_operation(id, OperationsPage::List(parent)); } } },
+                Icon { name: "back" }
+                span { "{label}" }
+            }
+            span { class: "operations-breadcrumb-target", title: target.identity(), "{target.identity()} / {title}" }
+        }
+    }
+}
+
 #[component]
 fn ServiceRow(
     service: kt_core::ServiceSummary,
@@ -787,6 +1050,7 @@ fn ServiceRow(
     let mut confirm_stop = use_signal(|| false);
     rsx! {
         div { class: "operations-resource-row",
+            "data-resource-id": service.name.clone(),
             div { class: "operations-resource-primary", strong { "{service.name}" }, small { "{service.description}" } }
             div { class: "operations-resource-meta",
                 span { class: "operations-status", "{service.active_state}" }
@@ -818,6 +1082,7 @@ fn ProcessRow(
     let mut confirm_kill = use_signal(|| false);
     rsx! {
         div { class: "operations-resource-row",
+            "data-resource-id": process.pid.to_string(),
             div { class: "operations-resource-primary", strong { "{process.command}" }, small { "{t.process_id} {process.pid} · {t.parent_process_id} {process.ppid} · {t.user_id} {process.uid} · {process.elapsed}" } }
             div { class: "operations-resource-meta",
                 span { "{t.cpu} {process.cpu_percent:.1}%" }
@@ -843,6 +1108,7 @@ fn NetworkRow(connection: kt_core::NetworkConnection, language: AppLanguage) -> 
 #[component]
 fn ContainerRow(
     container: kt_core::DockerContainer,
+    usage: super::docker_usage::DockerUsageView,
     session_id: Option<SessionId>,
     language: AppLanguage,
 ) -> Element {
@@ -851,7 +1117,9 @@ fn ContainerRow(
     let id = container.id.clone();
     rsx! {
         div { class: "operations-resource-row",
+            "data-resource-id": container.id.clone(),
             div { class: "operations-resource-primary", strong { "{container.name}" }, small { "{container.image.clone().unwrap_or_else(|| t.unknown_image.to_string())}" }, small { "{container.id}" } }
+            DockerUsage { value: usage, language }
             div { class: "operations-resource-meta",
                 if let Some(status) = container.status { span { class: "operations-status", "{status}" } }
                 if session_id.is_some() { div { class: "operations-row-actions",
@@ -862,7 +1130,8 @@ fn ContainerRow(
                     button { class: "operations-action-button", title: "{t.stop}", onclick: { let id = id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Containers, id: id.clone(), action: DockerAction::Stop }) }, Icon { name: "stop" } }
                     button { class: "operations-action-button", title: "{t.restart}", onclick: { let id = id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Containers, id: id.clone(), action: DockerAction::Restart }) }, Icon { name: "refresh" } }
                     button { class: if confirm_remove() { "operations-action-button is-confirm" } else { "operations-action-button danger" }, title: if confirm_remove() { t.confirm_action } else { t.remove }, onclick: { let id = id.clone(); move |_| if confirm_remove() { submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Containers, id: id.clone(), action: DockerAction::Remove }); confirm_remove.set(false); } else { confirm_remove.set(true); } }, Icon { name: "trash" } }
-                    button { class: "operations-action-button", title: "{t.network}", onclick: { let id = id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerStats { container: Some(id.clone()) }) }, Icon { name: "monitor" } }
+                    button { class: "operations-action-button", title: "{t.resources}", onclick: { let id = id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerStats { container: Some(id.clone()) }) }, Icon { name: "monitor" } }
+                    button { class: "operations-action-button", title: "{t.network}", onclick: { let id = id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerContainerNetwork { container: id.clone() }) }, Icon { name: "network" } }
                 } }
             }
         }
@@ -877,7 +1146,7 @@ fn DockerImageRow(
 ) -> Element {
     let t = texts(language).operations;
     let mut confirm_remove = use_signal(|| false);
-    rsx! { div { class: "operations-resource-row", div { class: "operations-resource-primary", strong { "{image.repository}:{image.tag}" }, small { "{image.id} · {image.size} · {image.created}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
+    rsx! { div { class: "operations-resource-row", "data-resource-id": image.id.clone(), div { class: "operations-resource-primary", strong { "{image.repository}:{image.tag}" }, small { "{image.id} · {image.size} · {image.created}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
         button { class: "operations-action-button", title: "{t.details}", onclick: { let id = image.id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerInspect { resource: DockerResource::Images, id: id.clone() }) }, Icon { name: "list" } }
         button { class: if confirm_remove() { "operations-action-button is-confirm" } else { "operations-action-button danger" }, title: if confirm_remove() { t.confirm_action } else { t.remove }, onclick: { let id = image.id.clone(); move |_| if confirm_remove() { submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Images, id: id.clone(), action: DockerAction::Remove }); confirm_remove.set(false); } else { confirm_remove.set(true); } }, Icon { name: "trash" } }
     } } } } }
@@ -891,7 +1160,7 @@ fn DockerVolumeRow(
 ) -> Element {
     let t = texts(language).operations;
     let mut confirm_remove = use_signal(|| false);
-    rsx! { div { class: "operations-resource-row", div { class: "operations-resource-primary", strong { "{volume.name}" }, small { "{volume.driver} · {volume.scope}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
+    rsx! { div { class: "operations-resource-row", "data-resource-id": volume.name.clone(), div { class: "operations-resource-primary", strong { "{volume.name}" }, small { "{volume.driver} · {volume.scope}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
         button { class: "operations-action-button", title: "{t.details}", onclick: { let name = volume.name.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerInspect { resource: DockerResource::Volumes, id: name.clone() }) }, Icon { name: "list" } }
         button { class: if confirm_remove() { "operations-action-button is-confirm" } else { "operations-action-button danger" }, title: if confirm_remove() { t.confirm_action } else { t.remove }, onclick: { let name = volume.name.clone(); move |_| if confirm_remove() { submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Volumes, id: name.clone(), action: DockerAction::Remove }); confirm_remove.set(false); } else { confirm_remove.set(true); } }, Icon { name: "trash" } }
     } } } } }
@@ -905,7 +1174,7 @@ fn DockerNetworkRow(
 ) -> Element {
     let t = texts(language).operations;
     let mut confirm_remove = use_signal(|| false);
-    rsx! { div { class: "operations-resource-row", div { class: "operations-resource-primary", strong { "{network.name}" }, small { "{network.id} · {network.driver} · {network.scope}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
+    rsx! { div { class: "operations-resource-row", "data-resource-id": network.id.clone(), div { class: "operations-resource-primary", strong { "{network.name}" }, small { "{network.id} · {network.driver} · {network.scope}" } }, div { class: "operations-resource-meta", if session_id.is_some() { div { class: "operations-row-actions",
         button { class: "operations-action-button", title: "{t.details}", onclick: { let id = network.id.clone(); move |_| submit_operation(session_id, OperationsRequest::DockerInspect { resource: DockerResource::Networks, id: id.clone() }) }, Icon { name: "list" } }
         button { class: if confirm_remove() { "operations-action-button is-confirm" } else { "operations-action-button danger" }, title: if confirm_remove() { t.confirm_action } else { t.remove }, onclick: { let id = network.id.clone(); move |_| if confirm_remove() { submit_operation(session_id, OperationsRequest::DockerAction { resource: DockerResource::Networks, id: id.clone(), action: DockerAction::Remove }); confirm_remove.set(false); } else { confirm_remove.set(true); } }, Icon { name: "trash" } }
     } } } } }
@@ -1124,17 +1393,6 @@ fn display_or_dash(value: &str) -> String {
     }
 }
 
-fn should_refresh_operations(view: Option<&OperationsViewState>, interval: Duration) -> bool {
-    match view {
-        None => true,
-        Some(view) if view.loading || view.error.is_some() => false,
-        Some(view) if view.refresh_due => true,
-        Some(view) => view
-            .updated_at
-            .is_none_or(|updated| updated.elapsed() >= interval),
-    }
-}
-
 fn tool_button_is_active(
     can_use: bool,
     panel_visible: bool,
@@ -1174,32 +1432,6 @@ mod tests {
             updated_at: Some(Instant::now()),
             refresh_due: false,
         }
-    }
-
-    #[test]
-    fn automatic_refresh_only_runs_for_missing_or_stale_successful_views() {
-        let interval = Duration::from_secs(10);
-        assert!(should_refresh_operations(None, interval));
-        assert!(!should_refresh_operations(Some(&view()), interval));
-
-        let mut loading = view();
-        loading.loading = true;
-        assert!(!should_refresh_operations(Some(&loading), interval));
-
-        let mut failed = view();
-        failed.error = Some(OperationsError::new(
-            kt_core::OperationsErrorKind::Timeout,
-            "timeout",
-        ));
-        failed.updated_at = None;
-        assert!(!should_refresh_operations(Some(&failed), interval));
-
-        let mut stale = view();
-        stale.updated_at = Some(Instant::now() - Duration::from_secs(11));
-        assert!(should_refresh_operations(Some(&stale), interval));
-        let mut reprobed = view();
-        reprobed.refresh_due = true;
-        assert!(should_refresh_operations(Some(&reprobed), interval));
     }
 
     #[test]

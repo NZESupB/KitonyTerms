@@ -255,6 +255,15 @@ impl Store {
         })
     }
 
+    /// 从最新配置只修改列宽，保存失败时不提交内存状态。
+    pub fn update_sftp_column_widths(&self, widths: Option<[u16; 6]>) -> anyhow::Result<()> {
+        let widths = widths.map(crate::components::sftp_columns::normalize_widths);
+        self.update_config(move |config| {
+            config.settings.sftp_column_widths = widths;
+            true
+        })
+    }
+
     pub fn vault_state(&self) -> VaultState {
         match &*self.vault.lock().unwrap() {
             VaultAccess::Locked { .. } => VaultState::Locked,
@@ -808,6 +817,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reloaded.settings().theme, DEFAULT_LIGHT_THEME);
+    }
+
+    #[test]
+    fn column_widths_merge_latest_settings_and_roundtrip() {
+        let (dir, store) = test_store();
+        let mut changed = store.settings();
+        changed.theme = DEFAULT_LIGHT_THEME.to_string();
+        changed.ui_font_scale = 1.25;
+        store.update_settings(changed.clone()).unwrap();
+        store
+            .update_sftp_column_widths(Some([0, 1, 2, 3, 4, u16::MAX]))
+            .unwrap();
+        changed.sftp_column_widths = Some([96, 110, 64, 64, 78, 2048]);
+        assert_eq!(store.settings(), changed);
+        assert_eq!(
+            Config::load_from(dir.path().join("config.toml"))
+                .unwrap()
+                .settings,
+            changed
+        );
+        store.update_sftp_column_widths(None).unwrap();
+        changed.sftp_column_widths = None;
+        assert_eq!(store.settings(), changed);
+        assert_eq!(
+            Config::load_from(dir.path().join("config.toml"))
+                .unwrap()
+                .settings,
+            changed
+        );
+    }
+
+    #[test]
+    fn column_save_failure_keeps_previous_memory_and_disk() {
+        let (dir, mut store) = test_store();
+        store.update_sftp_column_widths(Some([128; 6])).unwrap();
+        let original = store.settings();
+        let disk = std::fs::read(dir.path().join("config.toml")).unwrap();
+        std::fs::write(dir.path().join("blocked"), "not a directory").unwrap();
+        store.config_file = dir.path().join("blocked/config.toml");
+        assert!(store.update_sftp_column_widths(Some([256; 6])).is_err());
+        assert_eq!(store.settings(), original);
+        assert_eq!(std::fs::read(dir.path().join("config.toml")).unwrap(), disk);
     }
 
     #[test]

@@ -22,10 +22,11 @@ pub mod term;
 
 pub use monitor::{CpuCoreUsage, DiskUsage, MonitorStats, NetInterfaceStats, SystemInfo};
 pub use remote_ops::{
-    Availability, DockerAction, DockerComposeProject, DockerContainer, DockerImage, DockerNetwork,
-    DockerResource, DockerVolume, NetworkConnection, OperationId, OperationsCapabilities,
-    OperationsDomain, OperationsError, OperationsErrorKind, OperationsRequest, OperationsResult,
-    ProcessAction, ProcessSummary, ServiceAction, ServiceSummary,
+    Availability, DockerAction, DockerComposeProject, DockerContainer, DockerContainerStorage,
+    DockerImage, DockerImageSize, DockerNetwork, DockerResource, DockerRuntimeUsage, DockerVolume,
+    NetworkConnection, OperationId, OperationsCapabilities, OperationsDomain, OperationsError,
+    OperationsErrorKind, OperationsRequest, OperationsResult, ProcessAction, ProcessSummary,
+    ServiceAction, ServiceSummary,
 };
 pub use session::{
     AuthChallenge, AuthPrompt, AuthProviderFactory, AuthResponse, ExecId, FromCore, SessionId,

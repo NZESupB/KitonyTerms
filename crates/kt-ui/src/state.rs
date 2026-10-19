@@ -5,6 +5,7 @@ use std::{
     time::Instant,
 };
 
+use crate::operations_state::{OperationKey, OperationsPage, OperationsUiState};
 use kt_config::ConnectParams;
 use kt_core::monitor::MonitorStats;
 use kt_core::shell_integration;
@@ -42,7 +43,7 @@ pub struct SftpProgressState {
     pub total: u64,
 }
 
-/// 单一运维领域的会话内快照。仅保留最后一次成功结果，查询失败时不清空旧数据。
+/// 单一运维查询的会话内快照。失败保留最后一次成功结果。
 #[derive(Clone, Default, PartialEq)]
 pub struct OperationsViewState {
     pub request_id: Option<OperationId>,
@@ -154,7 +155,8 @@ pub struct SessionState {
     /// 最近一次资源监控错误。
     pub monitor_error: Option<String>,
     /// 运维中心的数据完全是会话级运行时状态，不会写入配置或同步载荷。
-    pub operations: HashMap<OperationsDomain, OperationsViewState>,
+    pub operations: HashMap<OperationKey, OperationsViewState>,
+    pub operations_ui: OperationsUiState,
     /// 当前独立容器 PTY；断开/重连时必须清除。
     pub container_terminal: Option<ContainerTerminalState>,
 }
@@ -187,7 +189,7 @@ impl AppState {
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
-        let view = session.operations.get(&OperationsDomain::Capabilities);
+        let view = session.operations.get(&OperationKey::Capabilities);
         let should_probe = session.connected && view.is_none_or(|view| !view.loading && force);
         if should_probe {
             let _ = self.request_operation(id, OperationsRequest::ProbeCapabilities);
@@ -210,6 +212,7 @@ impl AppState {
                 ));
             }
         }
+        session.operations_ui.pending.clear();
         clear_operation_challenge(session, None);
         self.flush_operation_cancellations();
     }
@@ -281,20 +284,82 @@ impl AppState {
         self.request_operation(session_id, OperationsRequest::Refresh(domain))
     }
 
-    /// 投递任意结构化运维请求。动作、详情和资源列表共享同一请求生命周期，
-    /// 结果仍按所属领域做 request_id 校验，迟到事件不会覆盖新视图。
+    /// 取消指定查询，先消费本地身份，再通知 core 回收通道。
+    pub fn cancel_operation_key(&mut self, id: SessionId, key: &OperationKey) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            if let Some(view) = session.operations.get_mut(key) {
+                if let Some(operation_id) = view.request_id.take() {
+                    session.operations_ui.pending.remove(&operation_id);
+                    self.operation_cancellations.insert((id, operation_id));
+                    view.loading = false;
+                    view.requested_at = None;
+                    clear_operation_challenge(session, Some(operation_id));
+                }
+            }
+        }
+        self.flush_operation_cancellations();
+    }
+
+    /// 页面只由用户操作改变；结果回写不会触发导航。每领域最多保留一个详情。
+    pub fn navigate_operation(&mut self, id: SessionId, page: OperationsPage) {
+        let domain = page.parent().domain();
+        let old_keys = self
+            .sessions
+            .get(&id)
+            .map(|session| {
+                session
+                    .operations
+                    .keys()
+                    .filter(|key| {
+                        matches!(key, OperationKey::Detail(_))
+                            && key.domain() == domain
+                            && **key != page.key()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for key in old_keys {
+            self.cancel_operation_key(id, &key);
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session.operations.remove(&key);
+                session.operations_ui.retry.remove(&key);
+            }
+        }
+        if let Some(session) = self.sessions.get_mut(&id) {
+            if let OperationsPage::Detail { parent, target } = &page {
+                session
+                    .operations_ui
+                    .contexts
+                    .entry(*parent)
+                    .or_default()
+                    .selected = Some(target.identity());
+            }
+            session.operations_ui.retry.remove(&page.key());
+            session.operations_ui.pages.insert(domain, page);
+        }
+    }
+
+    /// 同一查询最多一个在途请求，不同用途并行且互不替换。
     pub fn request_operation(
         &mut self,
         session_id: SessionId,
         request: OperationsRequest,
     ) -> Result<OperationId, String> {
-        let domain = request.domain();
-        if !self
+        let key = OperationKey::for_request(&request);
+        let Some(session) = self
             .sessions
             .get(&session_id)
-            .is_some_and(|session| session.connected)
-        {
+            .filter(|session| session.connected)
+        else {
             return Err("会话已断开，无法刷新运维数据".to_string());
+        };
+        if let Some(id) = session
+            .operations
+            .get(&key)
+            .and_then(|view| view.request_id)
+        {
+            return Ok(id);
         }
         self.flush_operation_cancellations();
         let operation_id = OperationId(self.next_operation_id);
@@ -303,38 +368,19 @@ impl AppState {
             .sessions
             .get_mut(&session_id)
             .expect("连接状态已在上方检查");
-        if let Some(previous) = state
-            .operations
-            .get(&domain)
-            .and_then(|view| view.request_id)
-        {
-            clear_operation_challenge(state, Some(previous));
-        }
-        let view = state
-            .operations
-            .entry(domain)
-            .or_insert(OperationsViewState {
-                request_id: None,
-                loading: false,
-                error: None,
-                result: None,
-                requested_at: None,
-                updated_at: None,
-                refresh_due: false,
-            });
-        if let Some(previous) = view.request_id.take() {
-            if !self.manager.send(ToCore::CancelOperation {
-                id: session_id,
-                operation_id: previous,
-            }) {
-                self.operation_cancellations.insert((session_id, previous));
-            }
+        let view = state.operations.entry(key.clone()).or_default();
+        if matches!(key, OperationKey::Action(_)) {
+            view.result = None;
         }
         view.request_id = Some(operation_id);
         view.refresh_due = false;
         view.loading = true;
         view.error = None;
         view.requested_at = Some(Instant::now());
+        state
+            .operations_ui
+            .pending
+            .insert(operation_id, key.clone());
         if self.manager.send(ToCore::Operations {
             id: session_id,
             operation_id,
@@ -342,6 +388,13 @@ impl AppState {
         }) {
             Ok(operation_id)
         } else {
+            state.operations_ui.pending.remove(&operation_id);
+            state
+                .operations_ui
+                .retry
+                .entry(key)
+                .or_default()
+                .failed(kt_core::OperationsErrorKind::Busy);
             view.request_id = None;
             view.loading = false;
             view.requested_at = None;
@@ -1030,38 +1083,44 @@ impl AppState {
                 domain,
                 result,
             } => {
-                let probe_completed = domain == OperationsDomain::Capabilities
-                    && matches!(&result, OperationsResult::Capabilities(_))
-                    && self
-                        .sessions
-                        .get(&id)
-                        .and_then(|session| session.operations.get(&domain))
-                        .is_some_and(|view| view.request_id == Some(operation_id));
-                if let Some(session) = self.sessions.get_mut(&id) {
-                    clear_operation_challenge(session, Some(operation_id));
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return;
+                };
+                let Some(key) = session.operations_ui.pending.get(&operation_id).cloned() else {
+                    return;
+                };
+                if key.domain() != domain {
+                    return;
                 }
-                if let Some(view) = self
-                    .sessions
-                    .get_mut(&id)
-                    .and_then(|session| session.operations.get_mut(&domain))
-                {
-                    if view.request_id == Some(operation_id) {
-                        view.request_id = None;
-                        view.loading = false;
-                        view.error = None;
-                        view.requested_at = None;
-                        view.result = Some(result);
-                        view.updated_at = Some(Instant::now());
-                    }
-                }
-                if probe_completed {
-                    if let Some(session) = self.sessions.get_mut(&id) {
-                        for (domain, view) in &mut session.operations {
-                            if *domain != OperationsDomain::Capabilities && !view.loading {
-                                view.error = None;
-                                view.refresh_due = true;
-                            }
+                session.operations_ui.pending.remove(&operation_id);
+                clear_operation_challenge(session, Some(operation_id));
+                let Some(view) = session
+                    .operations
+                    .get_mut(&key)
+                    .filter(|view| view.request_id == Some(operation_id))
+                else {
+                    return;
+                };
+                let elapsed = view.requested_at.map(|at| at.elapsed()).unwrap_or_default();
+                view.request_id = None;
+                view.loading = false;
+                view.error = None;
+                view.requested_at = None;
+                view.result = Some(result.clone());
+                view.updated_at = Some(Instant::now());
+                session.operations_ui.retry.remove(&key);
+                session.operations_ui.docker.apply(&result, elapsed);
+                if key == OperationKey::Capabilities || matches!(key, OperationKey::Action(_)) {
+                    for (other, view) in &mut session.operations {
+                        if matches!(other, OperationKey::List(_))
+                            && (key == OperationKey::Capabilities || other.domain() == domain)
+                        {
+                            view.error = None;
+                            view.refresh_due = true;
                         }
+                    }
+                    if key == OperationKey::Capabilities {
+                        session.operations_ui.retry.clear();
                     }
                 }
             }
@@ -1071,20 +1130,32 @@ impl AppState {
                 domain,
                 error,
             } => {
-                if let Some(session) = self.sessions.get_mut(&id) {
-                    clear_operation_challenge(session, Some(operation_id));
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return;
+                };
+                let Some(key) = session.operations_ui.pending.get(&operation_id).cloned() else {
+                    return;
+                };
+                if key.domain() != domain {
+                    return;
                 }
-                if let Some(view) = self
-                    .sessions
-                    .get_mut(&id)
-                    .and_then(|session| session.operations.get_mut(&domain))
+                session.operations_ui.pending.remove(&operation_id);
+                clear_operation_challenge(session, Some(operation_id));
+                if let Some(view) = session
+                    .operations
+                    .get_mut(&key)
+                    .filter(|view| view.request_id == Some(operation_id))
                 {
-                    if view.request_id == Some(operation_id) {
-                        view.request_id = None;
-                        view.loading = false;
-                        view.requested_at = None;
-                        view.error = Some(error);
-                    }
+                    view.request_id = None;
+                    view.loading = false;
+                    view.requested_at = None;
+                    session
+                        .operations_ui
+                        .retry
+                        .entry(key)
+                        .or_default()
+                        .failed(error.kind);
+                    view.error = Some(error);
                 }
             }
             FromCore::ExecStarted {
@@ -1661,7 +1732,9 @@ fn reset_connection_state(session: &mut SessionState) {
     session.monitor_loading = false;
     session.monitor_error = None;
     invalidate_operations(session);
-    session.operations.remove(&OperationsDomain::Capabilities);
+    session.operations.remove(&OperationKey::Capabilities);
+    session.operations_ui.retry.clear();
+    session.operations_ui.docker = Default::default();
     session.container_terminal = None;
 }
 
@@ -1674,6 +1747,7 @@ fn clear_operation_challenge(session: &mut SessionState, id: Option<OperationId>
 }
 
 fn invalidate_operations(session: &mut SessionState) {
+    session.operations_ui.pending.clear();
     for view in session.operations.values_mut() {
         view.request_id = None;
         view.loading = false;
@@ -1806,6 +1880,7 @@ mod tests {
     use super::*;
     use kt_core::ssh::{AcceptAllVerifier, AuthProvider};
     use std::sync::Arc;
+    use std::time::Duration;
 
     struct NoopAuth;
 
@@ -1886,6 +1961,7 @@ mod tests {
             monitor_loading: false,
             monitor_error: None,
             operations: HashMap::new(),
+            operations_ui: Default::default(),
             container_terminal: None,
         }
     }
@@ -1909,7 +1985,7 @@ mod tests {
         app_state.sessions.insert(id, session);
         let domain = OperationsDomain::Services;
         app_state.sessions.get_mut(&id).unwrap().operations.insert(
-            domain,
+            domain.into(),
             OperationsViewState {
                 request_id: Some(OperationId(2)),
                 loading: true,
@@ -1929,6 +2005,13 @@ mod tests {
                 refresh_due: false,
             },
         );
+        app_state
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .operations_ui
+            .pending
+            .insert(OperationId(2), domain.into());
 
         app_state.handle_event(FromCore::OperationResult {
             id,
@@ -1936,7 +2019,7 @@ mod tests {
             domain,
             result: OperationsResult::Services([].into()),
         });
-        let view = &app_state.sessions[&id].operations[&domain];
+        let view = &app_state.sessions[&id].operations[&domain.into()];
         assert!(view.loading);
         assert_eq!(
             view.result.as_ref().map(|result| match result {
@@ -1952,7 +2035,7 @@ mod tests {
             domain,
             error: OperationsError::new(kt_core::OperationsErrorKind::Timeout, "超时"),
         });
-        let view = &app_state.sessions[&id].operations[&domain];
+        let view = &app_state.sessions[&id].operations[&domain.into()];
         assert!(!view.loading);
         assert!(view.error.is_some());
         assert!(view.requested_at.is_none());
@@ -1964,7 +2047,9 @@ mod tests {
             result: OperationsResult::Services([].into()),
         });
         assert!(
-            app_state.sessions[&id].operations[&domain].error.is_some(),
+            app_state.sessions[&id].operations[&domain.into()]
+                .error
+                .is_some(),
             "终态之后的重复成功必须被忽略"
         );
     }
@@ -1977,11 +2062,13 @@ mod tests {
         assert!(app.sessions[&id].operations.is_empty());
         app.probe_operations(id, false);
         let domain = OperationsDomain::Capabilities;
-        let first = app.sessions[&id].operations[&domain].request_id.unwrap();
+        let first = app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .unwrap();
         app.probe_operations(id, false);
         app.probe_operations(id, true);
         assert_eq!(
-            app.sessions[&id].operations[&domain].request_id,
+            app.sessions[&id].operations[&domain.into()].request_id,
             Some(first)
         );
         app.handle_event(FromCore::OperationFailed {
@@ -1991,9 +2078,13 @@ mod tests {
             error: OperationsError::new(kt_core::OperationsErrorKind::Timeout, "timeout"),
         });
         app.probe_operations(id, false);
-        assert!(app.sessions[&id].operations[&domain].request_id.is_none());
+        assert!(app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .is_none());
         app.probe_operations(id, true);
-        let second = app.sessions[&id].operations[&domain].request_id.unwrap();
+        let second = app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .unwrap();
         assert_ne!(first, second);
         let caps = kt_core::remote_ops::parse_capabilities(r#"{"linux":true,"systemd":false,"ps":true,"proc":true,"ss":false,"proc_net":true,"docker_daemon":false,"compose":false}"#).unwrap();
         app.handle_event(FromCore::OperationResult {
@@ -2002,7 +2093,7 @@ mod tests {
             domain,
             result: OperationsResult::Capabilities(caps.clone()),
         });
-        assert!(app.sessions[&id].operations[&domain].loading);
+        assert!(app.sessions[&id].operations[&domain.into()].loading);
         app.handle_event(FromCore::OperationResult {
             id,
             operation_id: second,
@@ -2010,11 +2101,15 @@ mod tests {
             result: OperationsResult::Capabilities(caps),
         });
         app.probe_operations(id, false);
-        assert!(app.sessions[&id].operations[&domain].request_id.is_none());
-        assert!(app.sessions[&id].operations[&domain].result.is_some());
+        assert!(app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .is_none());
+        assert!(app.sessions[&id].operations[&domain.into()]
+            .result
+            .is_some());
         app.handle_event(FromCore::Closed { id, error: None });
         reset_connection_state(app.sessions.get_mut(&id).unwrap());
-        assert!(!app.sessions[&id].operations.contains_key(&domain));
+        assert!(!app.sessions[&id].operations.contains_key(&domain.into()));
     }
 
     #[test]
@@ -2032,7 +2127,7 @@ mod tests {
             content: "snapshot".into(),
         };
         app.sessions.get_mut(&id).unwrap().operations.insert(
-            domain,
+            domain.into(),
             OperationsViewState {
                 result: Some(snapshot.clone()),
                 updated_at: Some(Instant::now()),
@@ -2052,7 +2147,7 @@ mod tests {
         assert!(app.sessions[&id].auth_challenge.is_some());
         app.select_operations_session(Some(other));
         assert!(app.sessions[&id].auth_challenge.is_none());
-        let view = &app.sessions[&id].operations[&domain];
+        let view = &app.sessions[&id].operations[&domain.into()];
         assert!(!view.loading);
         assert_eq!(
             view.error.as_ref().unwrap().kind,
@@ -2076,7 +2171,7 @@ mod tests {
             error: OperationsError::new(kt_core::OperationsErrorKind::Cancelled, "late"),
         });
         assert_eq!(
-            app.sessions[&id].operations[&domain].request_id,
+            app.sessions[&id].operations[&domain.into()].request_id,
             Some(second)
         );
         app.handle_event(FromCore::Closed { id, error: None });
@@ -2086,12 +2181,254 @@ mod tests {
             domain,
             result: OperationsResult::Services([].into()),
         });
-        let view = &app.sessions[&id].operations[&domain];
+        let view = &app.sessions[&id].operations[&domain.into()];
         assert!(view.request_id.is_none());
         assert!(view.requested_at.is_none());
         assert!(view.updated_at.is_some());
         assert_eq!(view.result.as_ref(), Some(&snapshot));
         assert!(app.sessions[&other].operations.is_empty());
+    }
+
+    #[test]
+    fn operations_back_keeps_parent_and_ignores_late_detail_and_runtime_results() {
+        use crate::operations_state::{DetailTarget, OperationsList};
+        let mut app = app_state();
+        let id = SessionId(1);
+        app.sessions.insert(id, session_state(true));
+        let list = OperationsList::Docker(kt_core::DockerResource::Containers);
+        let parent = app.request_operation(id, list.request()).unwrap();
+        let target = DetailTarget::DockerLogs { id: "abc".into() };
+        let page = OperationsPage::Detail {
+            parent: list,
+            target: target.clone(),
+        };
+        app.navigate_operation(id, page.clone());
+        let log = app.request_operation(id, target.request()).unwrap();
+        let stats = app
+            .request_operation(id, OperationsRequest::DockerStats { container: None })
+            .unwrap();
+        assert_eq!(app.sessions[&id].operations_ui.pending.len(), 3);
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: stats,
+            domain: OperationsDomain::Docker,
+            result: OperationsResult::DockerRuntime([].into()),
+        });
+        assert_eq!(
+            app.sessions[&id]
+                .operations_ui
+                .page(OperationsDomain::Docker),
+            page
+        );
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: parent,
+            domain: OperationsDomain::Docker,
+            result: OperationsResult::DockerContainers([].into()),
+        });
+        app.navigate_operation(id, OperationsPage::List(list));
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: log,
+            domain: OperationsDomain::Docker,
+            result: OperationsResult::Details {
+                title: "late".into(),
+                content: "late".into(),
+            },
+        });
+        assert_eq!(
+            app.sessions[&id]
+                .operations_ui
+                .page(OperationsDomain::Docker),
+            OperationsPage::List(list)
+        );
+        assert!(matches!(
+            app.sessions[&id].operations[&OperationKey::List(list)].result,
+            Some(OperationsResult::DockerContainers(_))
+        ));
+        assert!(!app.sessions[&id]
+            .operations
+            .contains_key(&OperationKey::Detail(target)));
+        assert_eq!(
+            app.sessions[&id].operations_ui.contexts[&list]
+                .selected
+                .as_deref(),
+            Some("abc")
+        );
+    }
+
+    #[test]
+    fn operations_scheduler_bounds_monitoring_and_cancels_on_log_navigation() {
+        use crate::operations_state::{DetailTarget, OperationsList};
+        let mut app = app_state();
+        let id = SessionId(1);
+        app.sessions.insert(id, session_state(true));
+        let domain = OperationsDomain::Docker;
+        let list = OperationsList::Docker(kt_core::DockerResource::Containers);
+        let rows: Vec<_> = (0..130)
+            .map(|n| kt_core::DockerContainer {
+                id: format!("container-{n}"),
+                name: format!("web-{n}"),
+                status: Some("Up".into()),
+                image: Some("example".into()),
+                state: Some("running".into()),
+            })
+            .collect();
+        let list_id = app.request_operation(id, list.request()).unwrap();
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: list_id,
+            domain,
+            result: OperationsResult::DockerContainers(rows.clone().into()),
+        });
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        let runtime = app.sessions[&id].operations[&OperationKey::DockerRuntime]
+            .request_id
+            .unwrap();
+        let storage = app.sessions[&id].operations[&OperationKey::DockerStorage]
+            .request_id
+            .unwrap();
+        assert_eq!(app.sessions[&id].operations_ui.pending.len(), 2);
+        for _ in 0..5 {
+            app.poll_operation_page(id, domain, Duration::from_secs(10));
+        }
+        assert_eq!(
+            app.sessions[&id].operations_ui.pending.len(),
+            2,
+            "在途查询不得重复排队"
+        );
+        let storage_rows: Vec<_> = rows
+            .iter()
+            .take(64)
+            .map(|c| kt_core::DockerContainerStorage {
+                container_id: c.id.clone(),
+                image_id: "sha256:shared".into(),
+                size_rw: Some(1),
+                size_rootfs: Some(10),
+            })
+            .collect();
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: storage,
+            domain,
+            result: OperationsResult::DockerStorage(storage_rows.into()),
+        });
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        assert!(app.sessions[&id].operations[&OperationKey::DockerImageSizes].loading);
+        assert!(
+            !app.sessions[&id].operations[&OperationKey::DockerStorage].loading,
+            "慢查询必须串行"
+        );
+        let target = DetailTarget::DockerLogs {
+            id: "container-0".into(),
+        };
+        let page = OperationsPage::Detail {
+            parent: list,
+            target: target.clone(),
+        };
+        app.navigate_operation(id, page.clone());
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        assert!(app.sessions[&id].operations[&OperationKey::Detail(target)].loading);
+        assert!(!app.sessions[&id].operations[&OperationKey::DockerRuntime].loading);
+        assert!(!app.sessions[&id].operations[&OperationKey::DockerImageSizes].loading);
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: runtime,
+            domain,
+            result: OperationsResult::DockerRuntime([].into()),
+        });
+        assert_eq!(app.sessions[&id].operations_ui.page(domain), page);
+        assert!(app.sessions[&id].operations_ui.docker.runtime.is_empty());
+    }
+
+    #[test]
+    fn operations_scheduler_waits_for_backoff_and_explicit_permission_retry() {
+        let mut app = app_state();
+        let id = SessionId(1);
+        app.sessions.insert(id, session_state(true));
+        let domain = OperationsDomain::Services;
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        let first = app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .unwrap();
+        app.handle_event(FromCore::OperationFailed {
+            id,
+            operation_id: first,
+            domain,
+            error: OperationsError::new(kt_core::OperationsErrorKind::Timeout, "timeout"),
+        });
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        assert!(app.sessions[&id].operations_ui.pending.is_empty());
+        app.sessions
+            .get_mut(&id)
+            .unwrap()
+            .operations_ui
+            .retry
+            .get_mut(&domain.into())
+            .unwrap()
+            .last_failure = Some(Instant::now() - Duration::from_secs(3));
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        let second = app.sessions[&id].operations[&domain.into()]
+            .request_id
+            .unwrap();
+        assert_ne!(first, second);
+        app.handle_event(FromCore::OperationFailed {
+            id,
+            operation_id: second,
+            domain,
+            error: OperationsError::new(kt_core::OperationsErrorKind::PermissionDenied, "denied"),
+        });
+        app.sessions
+            .get_mut(&id)
+            .unwrap()
+            .operations_ui
+            .retry
+            .get_mut(&domain.into())
+            .unwrap()
+            .last_failure = Some(Instant::now() - Duration::from_secs(600));
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        assert!(app.sessions[&id].operations_ui.pending.is_empty());
+        app.refresh_operation_page(id, domain);
+        assert!(app.sessions[&id].operations[&domain.into()].loading);
+    }
+
+    #[test]
+    fn operation_action_marks_inflight_list_stale_without_changing_page() {
+        let mut app = app_state();
+        let id = SessionId(1);
+        app.sessions.insert(id, session_state(true));
+        let domain = OperationsDomain::Services;
+        let list = app.refresh_operations(id, domain).unwrap();
+        let action = app
+            .request_operation(
+                id,
+                OperationsRequest::ServiceAction {
+                    name: "test.service".into(),
+                    action: kt_core::ServiceAction::Start,
+                },
+            )
+            .unwrap();
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: action,
+            domain,
+            result: OperationsResult::Action {
+                message: "done".into(),
+            },
+        });
+        assert!(app.sessions[&id].operations[&domain.into()].refresh_due);
+        app.handle_event(FromCore::OperationResult {
+            id,
+            operation_id: list,
+            domain,
+            result: OperationsResult::Services([].into()),
+        });
+        app.poll_operation_page(id, domain, Duration::from_secs(10));
+        assert!(app.sessions[&id].operations[&domain.into()].loading);
+        assert!(matches!(
+            app.sessions[&id].operations_ui.page(domain),
+            OperationsPage::List(_)
+        ));
     }
 
     #[test]

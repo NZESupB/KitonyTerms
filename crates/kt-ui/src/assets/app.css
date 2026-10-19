@@ -1349,7 +1349,7 @@ button[title]:focus-visible::after {
 
 .sftp-table-grid {
     width: 100%;
-    min-width: 0;
+    min-width: var(--sftp-table-min, 534px);
     padding: 0 6px 6px;
     font-size: var(--kt-text-12);
 }
@@ -1357,7 +1357,7 @@ button[title]:focus-visible::after {
 .sftp-table-head-row,
 .sftp-table-row {
     display: grid;
-    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.3fr) minmax(0, .7fr) minmax(0, .9fr) minmax(0, 1fr);
+    grid-template-columns: var(--sftp-cols, minmax(96px, 1.4fr) minmax(110px, 1.3fr) minmax(64px, .7fr) minmax(64px, .7fr) minmax(78px, .9fr) minmax(90px, 1fr));
     align-items: center;
     column-gap: 4px;
 }
@@ -4996,3 +4996,57 @@ button[title]:focus-visible::after {
     .update-button, .update-toggle::before { transition: opacity 160ms ease; }
     .update-button:active:not(:disabled):not(:focus-visible) { transform: none; }
 }
+
+/* 运维详情导航与容器指标共用紧凑表面。 */
+.operations-breadcrumb {
+    position: sticky;
+    top: -10px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 8px;
+}
+.operations-back {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    min-height: 30px;
+    padding: 4px 6px;
+    border-radius: 5px;
+    background: var(--panel-soft);
+    color: var(--text);
+    cursor: pointer;
+    font-size: var(--kt-text-12);
+}
+.operations-breadcrumb-target {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: var(--kt-text-11);
+}
+.operations-resource-row:has(> .docker-usage) { flex-wrap: wrap; }
+.operations-resource-row > .docker-usage { order: 3; flex: 1 0 100%; }
+.docker-usage { display: flex; flex-direction: column; gap: 4px; font-size: var(--kt-text-11); font-variant-numeric: tabular-nums; }
+.docker-usage-runtime, .docker-usage-storage { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
+.docker-usage-runtime { color: var(--text); }
+.docker-usage .is-stale { color: var(--amber); }
+.operations-storage-hint { color: var(--muted); font-size: var(--kt-text-11); line-height: 1.5; }
+.operations-mobile .operations-back { min-height: 44px; }
+
+.sftp-column { position: relative; display: flex; align-items: center; min-width: 0; height: 100%; padding-right: 8px; }
+.sftp-column > span { flex: 1; }
+.sftp-column-resizer { position: absolute; top: 0; bottom: 0; right: -2px; z-index: 2; width: 8px; cursor: col-resize; touch-action: none; user-select: none; }
+.sftp-column-resizer::after { content: ""; display: block; width: 1px; height: 60%; margin: 6px auto; background: var(--border-soft); }
+.sftp-column-resizer:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.sftp-table-grid.is-column-resizing, .sftp-table-grid.is-column-resizing * { cursor: col-resize; user-select: none; }
+.sftp-columns-toolbar { position: sticky; left: 0; display: flex; flex-wrap: wrap; gap: 4px; padding: 3px 6px; }
+.sftp-columns-toolbar button { padding: 2px 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: var(--kt-text-10); }
+.sftp-columns-toolbar .error { color: var(--red); font-size: var(--kt-text-11); }

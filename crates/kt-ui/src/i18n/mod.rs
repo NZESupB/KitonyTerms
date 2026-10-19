@@ -40,6 +40,14 @@ pub struct Texts {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct OperationsText {
+    pub back: &'static str,
+    pub resources: &'static str,
+    pub image_size: &'static str,
+    pub writable_size: &'static str,
+    pub rootfs_size: &'static str,
+    pub storage_hint: &'static str,
+    pub stale: &'static str,
+    pub not_running: &'static str,
     pub tool_docker: &'static str,
     pub tool_services: &'static str,
     pub tool_processes: &'static str,
@@ -415,6 +423,11 @@ pub struct AppText {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DialogText {
+    pub use_account_password: &'static str,
+    pub password_auth_wrong: &'static str,
+    pub password_auth_restricted: &'static str,
+    pub password_auth_locked: &'static str,
+    pub password_auth_busy: &'static str,
     pub new_title: &'static str,
     pub edit_title: &'static str,
     pub name: &'static str,
@@ -484,6 +497,13 @@ pub struct DialogText {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SftpText {
+    pub file_type: &'static str,
+    pub file: &'static str,
+    pub directory: &'static str,
+    pub symlink: &'static str,
+    pub reset_columns: &'static str,
+    pub resize_column: &'static str,
+    pub columns_save_failed: &'static str,
     pub download: &'static str,
     pub download_folder: &'static str,
     pub downloading: &'static str,

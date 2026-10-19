@@ -792,6 +792,7 @@ mod tests {
             monitor_loading: false,
             monitor_error: None,
             operations: std::collections::HashMap::new(),
+            operations_ui: Default::default(),
             container_terminal: None,
         }
     }

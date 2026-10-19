@@ -403,6 +403,7 @@ pub fn SidebarSftpTree(
     error: Option<String>,
     auto_sync: bool,
     language: AppLanguage,
+    settings: Signal<kt_config::AppSettings>,
     on_context_menu: EventHandler<ContextMenuState>,
     on_entry_open: EventHandler<SftpEntryContext>,
     on_entry_inline_edit: EventHandler<SftpEntryContext>,
@@ -711,17 +712,11 @@ pub fn SidebarSftpTree(
                     }
                 },
 
-                div {
-                    class: "sftp-table-grid",
-
-                    div {
-                        class: "sftp-table-head-row",
-                        span { class: "sftp-name-col", title: "{t.name}", "{t.name}" }
-                        span { title: "{t.modified}", "{t.modified}" }
-                        span { title: "{t.size}", "{t.size}" }
-                        span { title: "{t.permissions}", "{t.permissions}" }
-                        span { title: "{t.owner_group}", "{t.owner_group}" }
-                    }
+                super::sftp_columns::SftpColumns {
+                    session_id,
+                    settings,
+                    language,
+                    super::sftp_columns::SftpColumnHeader { language }
 
                     if loading {
                         div { class: "sftp-table-message", "{t.loading}" }
@@ -736,6 +731,7 @@ pub fn SidebarSftpTree(
                                 session_id,
                                 base_path: path.clone(),
                                 entry,
+                                language,
                                 on_context_menu,
                                 on_entry_open,
                                 on_entry_inline_edit,
@@ -859,6 +855,7 @@ pub fn SidebarSftpEntry(
     session_id: SessionId,
     base_path: String,
     entry: SftpEntry,
+    language: AppLanguage,
     on_context_menu: EventHandler<ContextMenuState>,
     on_entry_open: EventHandler<SftpEntryContext>,
     on_entry_inline_edit: EventHandler<SftpEntryContext>,
@@ -877,6 +874,7 @@ pub fn SidebarSftpEntry(
     let size = format_sftp_size(entry.size, entry.is_dir);
     let permissions = format_sftp_permissions(entry.permissions, entry.is_dir);
     let owner = format_sftp_owner(&entry);
+    let file_type = super::sftp_columns::file_type(&entry, language);
     let full_path = join_path(&base_path, &name);
     let double_open_base_path = base_path.clone();
     let double_open_entry = entry.clone();
@@ -965,6 +963,7 @@ pub fn SidebarSftpEntry(
                 span { title: "{name}", "{name}" }
             }
             span { title: "{modified}", "{modified}" }
+            span { title: "{file_type}", "{file_type}" }
             span { title: "{size}", "{size}" }
             span { title: "{permissions}", "{permissions}" }
             span { title: "{owner}", "{owner}" }

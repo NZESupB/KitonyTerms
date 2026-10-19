@@ -32,7 +32,7 @@
 - vault 使用每安装独立的 `secrets.vault.key`；旧固定密钥迁移，不能打开的旧主密码 vault 先备份再重建。
 - 主机密钥按 host/port/fingerprint 去重并精确确认；首次信任必须落盘成功，不能因保存失败接受未知 key。
 - Android 使用应用私有路径。配置同步不包含 vault、vault key、known_hosts 或运行时状态。
-- 保存密码的 UI 查看路径由 [os_auth.rs](../crates/kt-ui/src/os_auth.rs) 先进行系统认证，再消费不可自行构造、不可复制的 `Verified` 调用 `Store::reveal_secret`；存在性检查仅用 `has_secret`，不克隆明文。macOS 每次新建 LAContext 使用设备所有者策略；Windows 凭据窗口结果经 LogonUserW 验证，并比较当前进程账户 SID，其他账户不能通过。Linux/移动端拒绝查看，连接时自动 SSH 认证及 vault 格式沿用原实现。
+- 保存密码的 UI 查看路径由 [os_auth.rs](../crates/kt-ui/src/os_auth.rs) 先进行系统认证，再消费不可自行构造、不可复制的 `Verified` 调用 `Store::reveal_secret`；存在性检查仅用 `has_secret`，不克隆明文。macOS 每次新建 LAContext 使用设备所有者策略；Windows 优先探测 Hello，经 HWND 绑定的 `IUserConsentVerifierInterop` 验证，接口明确不支持或未配置时走账户密码；取消/认证失败不自动再弹密码窗口，界面提供独立账户密码入口。密码路径按当前 token SID 预填账户，经 LogonUserW 成功后再比较 SID；空密码由系统实际验证，不能据为空放行。凭据清零并分类提示错误，日志仅阶段/错误码。Linux/移动端拒绝查看，连接时自动 SSH 认证及 vault 格式沿用原实现。
 - [密码字段](../crates/kt-ui/src/components/password_field.rs)将只读查看值与编辑值隔离，查看值不参与保存；异步结果绑定连接名称、host/user/port、vault ID 与请求代次。关闭弹窗、切换目标/页签、编辑输入或 30 秒超时清除查看值；原生系统弹窗和取消行为仍需实机验收。
 
 ## SFTP 与编辑
@@ -71,6 +71,8 @@
 - 类型化管理动作支持 sudo 挑战；当前协议不是 Prepare/Commit 两阶段协议，也没有进程启动身份校验来防止 PID 复用。
 - 能力探测按连接懒加载；负面结果允许手动重试。proc/proc-net 可读性不等于已实现对应列表后端。
 - 取消、断线、切换和重连收敛在途请求；失败保留最近成功快照，迟到结果不能覆盖新请求。
+- [operations_state.rs](../crates/kt-ui/src/operations_state.rs) 按会话保存当前页面、父列表上下文及 `OperationId → OperationKey`；列表、详情、动作与监控分槽，结果只能回写本槽，不能改变页面。每领域保留当前一个详情，返回只清理离开的详情；动作成功标记相关列表待刷新，包含仍在途的旧列表。滚动与焦点桥只写父列表位置，清理时不读取新详情的滚动。
+- Docker 清单约 10 秒、CPU/内存约 2 秒、容器大小初始 60 秒 TTL（慢查询最多延至 300 秒）。仅可见页面采集，runtime 不重叠，storage/image 共用单个慢查询且每批最多 64 个 ID；前台请求优先。失败按 2/4/8/16/30 秒退避，权限/能力/解析/输出超限/取消等等待显式重试。大小命令仅投影必要字段，容器存储与 image ID 缓存分开，删除清单清理缓存且拒绝迟到数据恢复已删除容器。镜像逻辑大小、可写层及 rootfs 不相加当作独占磁盘，CPU 允许超过 100%，缺失值用 `--` 并保留过期快照。
 - Docker 容器终端独立拥有 SSH PTY、TermEngine 和 ExecId；宿主断线时回收。
 
 ## UI 与移动端
@@ -82,7 +84,7 @@
 - 软键盘使用真实 textarea，IME 组合期间不清空输入；键序列复用终端映射，键盘高度由 device 写入统一 CSS 变量。
 - 软键盘输入框用固定 DOM id 且桥接脚本常驻，目标会话每次渲染同步到本地 `Cell`：组件在会话切换时不重建，靠 `key` 无法改目标。
 - 桌面固定紧凑布局；旧 density 字段由配置兼容读取并在保存时移除。
-- 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用五列可收缩 Grid，长文本省略并提供完整 title，不再固定 680px 最小宽度。
+- 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用六列（名称/修改时间/类型/大小/权限/所有者组）；`SftpColumns` 集中布局与归一化，`None` 自适应，手动宽度以 `AppSettings.sftp_column_widths` 原子保存且只更新最新配置中的该字段。窄侧栏在文件区域内部横滚，最小列宽 `[96,110,64,64,78,90]`、每列最大 2048 CSS px。Pointer/键盘调整、Esc/失焦取消及双击/按钮恢复自适应共用 `sftp_columns.js`，按实例注册清理以支持 DOM 已移除时卸载。长文本省略并提供 title；手机单列布局沿用原实现。
 - [主题](../crates/kt-ui/src/components/theme.rs)与[样式](../crates/kt-ui/src/assets/app.css)使用变量；默认终端色随主题，显式颜色保留。
 - 视觉共用规则集中于 app.css：设置、连接/安全弹窗、内置编辑器与通知共用按钮和表单表面；终端、文件 Grid 和运维保留紧凑尺寸。依赖其他 CSS 变量的强调色、菜单和悬停 token 在 `:root`、`.kt-window`、`.software-update-layer` 同时声明，确保在当前主题/强调色根节点重新计算，不能只依赖 :root 的已计算继承值。主要按钮复用 `accent_foreground` 计算的前景。
 - 设置内容区以具名 container query 在 480px 以下堆叠表单，640px 以下桌面设置导航横向换行。手机普通输入（含 URL）保持 16px/44px；连接/安全弹窗随键盘 inset 收缩，正文滚动与底部操作区分离。全局可见焦点不覆盖终端输入桥，新增悬停仅用于精确指针，减少动态效果时禁用过渡。

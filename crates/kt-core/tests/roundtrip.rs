@@ -52,6 +52,7 @@ struct EchoState {
     operation_mode: Option<OperationMode>,
     monitor: Option<MonitorScenario>,
     connections: usize,
+    exec_replies: std::collections::HashMap<Vec<u8>, Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -146,6 +147,23 @@ impl server::Handler for EchoHandler {
             .lock()
             .map(|state| state.hold_container_start)
             .unwrap_or(false);
+
+        let reply = self.state.lock().unwrap().exec_replies.get(data).cloned();
+        if let Some(reply) = reply {
+            session.channel_success(channel)?;
+            for chunk in reply.chunks(16384) {
+                session.data(channel, bytes::Bytes::copy_from_slice(chunk))?;
+            }
+            session.extended_data(
+                channel,
+                1,
+                bytes::Bytes::from_static(b"docker-stderr-canary"),
+            )?;
+            session.eof(channel)?;
+            session.exit_status_request(channel, 0)?;
+            session.close(channel)?;
+            return Ok(());
+        }
 
         if let Some(mode) = self.state.lock().unwrap().operation_mode {
             if !matches!(mode, OperationMode::Opening) {
@@ -589,6 +607,162 @@ fn readonly_operations_use_allowlisted_exec_and_keep_stderr_out_of_events() {
     );
 
     mgr.send(ToCore::Disconnect { id });
+}
+
+#[test]
+fn docker_usage_queries_return_typed_results_over_independent_exec() {
+    use kt_core::{DockerResource, OperationsResult};
+    let requests = [
+        (
+            OperationsRequest::DockerStats { container: None },
+            r#"{"ID":"abc","CPUPerc":"250.5%","MemUsage":"1MiB / 1GiB","MemPerc":"0.1%"}"#,
+        ),
+        (
+            OperationsRequest::DockerStorage {
+                containers: vec!["abc".into()],
+            },
+            r#"{"id":"abc","image_id":"sha256:def","size_rw":10,"size_rootfs":100}"#,
+        ),
+        (
+            OperationsRequest::DockerImageSizes {
+                images: vec!["sha256:def".into()],
+            },
+            r#"{"id":"sha256:def","size":90}"#,
+        ),
+        (
+            OperationsRequest::DockerContainerNetwork {
+                container: "abc".into(),
+            },
+            r#"{"bridge":{"IPAddress":"172.17.0.2"}}"#,
+        ),
+        (
+            OperationsRequest::DockerList(DockerResource::Containers),
+            r#"{"ID":"abc","Names":"web","State":"running","Status":"Up","Image":"example"}"#,
+        ),
+    ];
+    let mut echo = EchoState::default();
+    let commands: Vec<_> = requests
+        .iter()
+        .map(|(request, response)| {
+            let command = kt_core::remote_ops::command_for_request(request).unwrap();
+            echo.exec_replies
+                .insert(command.as_bytes().to_vec(), response.as_bytes().to_vec());
+            command.into_bytes()
+        })
+        .collect();
+    assert_eq!(
+        commands[0],
+        b"LC_ALL=C docker stats --no-stream --no-trunc --format '{{json .}}' --all"
+    );
+    assert!(String::from_utf8_lossy(&commands[1]).contains("--size --format"));
+    assert!(String::from_utf8_lossy(&commands[1]).contains(".SizeRw"));
+    assert!(!String::from_utf8_lossy(&commands[1]).contains(".Config"));
+    assert_eq!(
+        commands[3],
+        b"docker container inspect --format '{{json .NetworkSettings.Networks}}' 'abc'"
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (port, state) =
+        runtime.block_on(start_server_with_state(false, Arc::new(Mutex::new(echo))));
+    let (mut manager, id) = operations_test_manager(port);
+    for (index, (request, _)) in requests.into_iter().enumerate() {
+        let operation_id = OperationId(400 + index as u64);
+        assert!(manager.send(ToCore::Operations {
+            id,
+            operation_id,
+            request
+        }));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut received = false;
+        while std::time::Instant::now() < deadline && !received {
+            match recv_timeout(&mut manager, Duration::from_millis(100)) {
+                Some(FromCore::OperationResult {
+                    operation_id: actual,
+                    domain,
+                    result,
+                    ..
+                }) => {
+                    assert_eq!(actual, operation_id);
+                    assert_eq!(domain, OperationsDomain::Docker);
+                    match (index, result) {
+                        (0, OperationsResult::DockerRuntime(rows)) => {
+                            assert_eq!(rows[0].cpu_percent, Some(250.5));
+                            assert_eq!(rows[0].memory_used_bytes, Some(1048576));
+                        }
+                        (1, OperationsResult::DockerStorage(rows)) => {
+                            assert_eq!(rows[0].size_rw, Some(10))
+                        }
+                        (2, OperationsResult::DockerImageSizes(rows)) => {
+                            assert_eq!(rows[0].size, Some(90))
+                        }
+                        (3, OperationsResult::Details { content, .. }) => {
+                            assert!(content.contains("172.17.0.2"))
+                        }
+                        (4, OperationsResult::DockerContainers(rows)) => {
+                            assert_eq!(rows[0].state.as_deref(), Some("running"))
+                        }
+                        (_, other) => panic!("Docker 返回类型错误: {other:?}"),
+                    }
+                    received = true;
+                }
+                Some(FromCore::Render { snapshot, .. }) => {
+                    assert!(!snapshot.to_plain_text().contains("docker-stderr-canary"))
+                }
+                Some(FromCore::OperationFailed { error, .. }) => {
+                    panic!("Docker 查询失败: {error:?}")
+                }
+                _ => {}
+            }
+        }
+        assert!(received, "未收到 Docker 查询结果");
+    }
+    assert_eq!(state.lock().unwrap().exec_commands, commands);
+    manager.send(ToCore::Disconnect { id });
+}
+
+#[test]
+fn docker_stats_output_limit_rejects_payload_without_terminal_leak() {
+    let command = kt_core::remote_ops::command_for_request(&OperationsRequest::DockerStats {
+        container: None,
+    })
+    .unwrap();
+    let mut echo = EchoState::default();
+    echo.exec_replies
+        .insert(command.into_bytes(), vec![b'x'; 9 * 1024 * 1024]);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (port, _) = runtime.block_on(start_server_with_state(false, Arc::new(Mutex::new(echo))));
+    let (mut manager, id) = operations_test_manager(port);
+    let operation_id = OperationId(499);
+    manager.send(ToCore::Operations {
+        id,
+        operation_id,
+        request: OperationsRequest::DockerStats { container: None },
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut failed = false;
+    while std::time::Instant::now() < deadline && !failed {
+        match recv_timeout(&mut manager, Duration::from_millis(100)) {
+            Some(FromCore::OperationFailed {
+                operation_id: actual,
+                error,
+                ..
+            }) => {
+                assert_eq!(actual, operation_id);
+                assert_eq!(
+                    error.kind,
+                    kt_core::OperationsErrorKind::OutputLimitExceeded
+                );
+                failed = true;
+            }
+            Some(FromCore::OperationResult { .. }) => panic!("超限输出不能成功"),
+            Some(FromCore::Render { snapshot, .. }) => {
+                assert!(!snapshot.to_plain_text().contains("xxxxxxxx"))
+            }
+            _ => {}
+        }
+    }
+    assert!(failed, "超限结果未收敛");
+    manager.send(ToCore::Disconnect { id });
 }
 
 fn operations_test_manager(port: u16) -> (SessionManager, SessionId) {

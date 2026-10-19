@@ -548,6 +548,9 @@ pub struct AppSettings {
     /// Persisted so the user only has to opt in once instead of per session.
     #[serde(default)]
     pub sftp_auto_sync: bool,
+    /// 文件管理六列宽度；None 使用容器自适应布局。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sftp_column_widths: Option<[u16; 6]>,
 }
 
 impl Default for AppSettings {
@@ -570,6 +573,7 @@ impl Default for AppSettings {
             show_timestamps: false,
             terminal_wrap: true,
             sftp_auto_sync: false,
+            sftp_column_widths: None,
         }
     }
 }
@@ -1121,6 +1125,28 @@ use_ssh_config = true
         let settings: AppSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.ui_font(), None);
         assert_eq!(settings.normalized_ui_font_scale(), 1.0);
+    }
+
+    #[test]
+    fn sftp_columns_default_and_roundtrip_remain_compatible() {
+        let mut settings = AppSettings::default();
+        let old = toml::to_string(&settings).unwrap();
+        assert!(!old.contains("sftp_column_widths"));
+        assert_eq!(
+            toml::from_str::<AppSettings>(&old)
+                .unwrap()
+                .sftp_column_widths,
+            None
+        );
+        settings.sftp_column_widths = Some([96, 110, 64, 64, 78, 2048]);
+        assert_eq!(
+            toml::from_str::<AppSettings>(&toml::to_string(&settings).unwrap()).unwrap(),
+            settings
+        );
+        assert!(
+            toml::from_str::<AppSettings>(&format!("{old}\nsftp_column_widths = [1, 2, 3]"))
+                .is_err()
+        );
     }
 
     #[test]

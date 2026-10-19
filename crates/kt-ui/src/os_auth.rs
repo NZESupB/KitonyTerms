@@ -6,10 +6,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod windows;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuthMethod {
+    Auto,
+    AccountPassword,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AuthError {
     Cancelled,
     Unavailable,
     Failed,
+    WrongCredentials,
+    AccountRestricted,
+    AccountLocked,
+    Busy,
 }
 
 pub(crate) struct Verified {
@@ -25,31 +36,43 @@ impl Drop for PendingGuard {
 }
 
 /// `owner` 是 Windows 原生窗口句柄，其余平台忽略。不接收 SSH 密码。
-pub(crate) async fn authenticate(reason: String, owner: isize) -> Result<Verified, AuthError> {
+pub(crate) async fn authenticate(
+    reason: String,
+    owner: isize,
+    method: AuthMethod,
+) -> Result<Verified, AuthError> {
     AUTH_PENDING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| AuthError::Unavailable)?;
+        .map_err(|_| AuthError::Busy)?;
     let guard = PendingGuard;
     tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        authenticate_platform(&reason, owner).map(|()| Verified { _private: () })
+        authenticate_platform(&reason, owner, method).map(|()| Verified { _private: () })
     })
     .await
     .map_err(|_| AuthError::Failed)?
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn authenticate_platform(_reason: &str, _owner: isize) -> Result<(), AuthError> {
+fn authenticate_platform(
+    _reason: &str,
+    _owner: isize,
+    _method: AuthMethod,
+) -> Result<(), AuthError> {
     Err(AuthError::Unavailable)
 }
 
 #[cfg(windows)]
-fn authenticate_platform(reason: &str, owner: isize) -> Result<(), AuthError> {
-    windows::authenticate(reason, owner)
+fn authenticate_platform(reason: &str, owner: isize, method: AuthMethod) -> Result<(), AuthError> {
+    windows::authenticate(reason, owner, method)
 }
 
 #[cfg(target_os = "macos")]
-fn authenticate_platform(reason: &str, _owner: isize) -> Result<(), AuthError> {
+fn authenticate_platform(
+    reason: &str,
+    _owner: isize,
+    _method: AuthMethod,
+) -> Result<(), AuthError> {
     use block2::RcBlock;
     use objc2::{rc::autoreleasepool, runtime::Bool};
     use objc2_foundation::{NSError, NSString};

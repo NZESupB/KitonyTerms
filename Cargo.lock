@@ -3354,7 +3354,7 @@ checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
 name = "kt-app"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "dioxus",
@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "kt-config"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "directories",
  "jni 0.21.1",
@@ -3393,7 +3393,7 @@ dependencies = [
 
 [[package]]
 name = "kt-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -3417,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "kt-secrets"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "argon2 0.5.3",
  "chacha20poly1305",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "kt-sync"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "kt-ui"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3484,13 +3484,15 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "windows 0.62.2",
+ "windows-future 0.3.2",
  "windows-sys 0.61.2",
  "zeroize",
 ]
 
 [[package]]
 name = "kt-update"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "flate2",

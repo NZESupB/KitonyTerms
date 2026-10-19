@@ -130,6 +130,7 @@ pub fn session_state_from_profile(
         monitor_loading: false,
         monitor_error: None,
         operations: std::collections::HashMap::new(),
+        operations_ui: Default::default(),
         container_terminal: None,
     }
 }

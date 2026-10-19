@@ -5,6 +5,7 @@ pub mod app_logic;
 pub mod app_runtime;
 pub mod command_history;
 pub mod dialog;
+pub(crate) mod docker_usage;
 pub mod external_edit;
 pub(crate) mod fonts;
 pub mod icons;
@@ -20,6 +21,7 @@ pub mod scanner;
 pub mod security_dialogs;
 pub mod settings;
 pub mod sftp;
+pub mod sftp_columns;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) mod sftp_download;
 pub mod sidebar;

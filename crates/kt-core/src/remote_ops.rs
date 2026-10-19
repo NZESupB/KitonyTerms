@@ -10,6 +10,8 @@ use tokio::sync::oneshot;
 
 mod capabilities;
 pub use capabilities::{parse_capabilities, Availability, OperationsCapabilities, PROBE_COMMAND};
+mod docker;
+pub use docker::{parse_docker_stats, DockerContainerStorage, DockerImageSize, DockerRuntimeUsage};
 
 use crate::session::{AuthChallenge, FromCore, SessionEventSender, SessionId};
 use crate::ssh::ChannelCloseGuard;
@@ -74,6 +76,15 @@ pub enum OperationsRequest {
     },
     DockerStats {
         container: Option<String>,
+    },
+    DockerStorage {
+        containers: Vec<String>,
+    },
+    DockerImageSizes {
+        images: Vec<String>,
+    },
+    DockerContainerNetwork {
+        container: String,
     },
     DockerAction {
         resource: DockerResource,
@@ -166,6 +177,7 @@ pub struct DockerContainer {
     pub name: String,
     pub status: Option<String>,
     pub image: Option<String>,
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +222,9 @@ pub enum OperationsResult {
     DockerVolumes(Arc<[DockerVolume]>),
     DockerNetworks(Arc<[DockerNetwork]>),
     DockerCompose(Arc<[DockerComposeProject]>),
+    DockerRuntime(Arc<[DockerRuntimeUsage]>),
+    DockerStorage(Arc<[DockerContainerStorage]>),
+    DockerImageSizes(Arc<[DockerImageSize]>),
     Details { title: String, content: String },
     Action { message: String },
 }
@@ -242,6 +257,9 @@ impl OperationsRequest {
             | Self::DockerInspect { .. }
             | Self::DockerLogs { .. }
             | Self::DockerStats { .. }
+            | Self::DockerStorage { .. }
+            | Self::DockerImageSizes { .. }
+            | Self::DockerContainerNetwork { .. }
             | Self::DockerAction { .. } => OperationsDomain::Docker,
             Self::ServiceDetails { .. } | Self::ServiceLogs { .. } | Self::ServiceAction { .. } => {
                 OperationsDomain::Services
@@ -267,6 +285,12 @@ pub fn command_for_request(request: &OperationsRequest) -> Result<String, Operat
         OperationsRequest::ProbeCapabilities => Ok(PROBE_COMMAND.to_string()),
         OperationsRequest::Refresh(domain) => Ok(read_command(*domain).to_string()),
         OperationsRequest::DockerList(resource) => Ok(docker_list_command(*resource)),
+        OperationsRequest::DockerStorage { containers } => docker::inspect_batch(containers, false),
+        OperationsRequest::DockerImageSizes { images } => docker::inspect_batch(images, true),
+        OperationsRequest::DockerContainerNetwork { container } => Ok(format!(
+            "docker container inspect --format '{{{{json .NetworkSettings.Networks}}}}' {}",
+            shell_quote(validate_resource_id(container)?)
+        )),
         OperationsRequest::DockerInspect { resource, id } => {
             let id = validate_resource_id(id)?;
             Ok(format!(
@@ -291,7 +315,7 @@ pub fn command_for_request(request: &OperationsRequest) -> Result<String, Operat
                 .map(shell_quote)
                 .unwrap_or_else(|| "--all".to_string());
             Ok(format!(
-                "docker stats --no-stream --no-trunc --format '{{{{json .}}}}' {target}"
+                "LC_ALL=C docker stats --no-stream --no-trunc --format '{{{{json .}}}}' {target}"
             ))
         }
         OperationsRequest::DockerAction {
@@ -471,7 +495,15 @@ pub(crate) async fn execute_request(
     let domain = request.domain();
     let mut channel = ChannelCloseGuard::new(channel);
     let mut sudo_prompt_buffer = Vec::new();
-    let result = tokio::time::timeout(QUERY_TIMEOUT, async {
+    let timeout = if matches!(
+        request,
+        OperationsRequest::DockerStorage { .. } | OperationsRequest::DockerImageSizes { .. }
+    ) {
+        Duration::from_secs(45)
+    } else {
+        QUERY_TIMEOUT
+    };
+    let result = tokio::time::timeout(timeout, async {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_status = None;
@@ -618,7 +650,7 @@ pub(crate) async fn execute_request(
     result.unwrap_or_else(|_| {
         Err(OperationsError::new(
             OperationsErrorKind::Timeout,
-            "远程查询超时（12 秒）",
+            format!("远程查询超时（{} 秒）", timeout.as_secs()),
         ))
     })
 }
@@ -753,6 +785,8 @@ struct DockerRow {
     status: Option<String>,
     #[serde(rename = "Image")]
     image: Option<String>,
+    #[serde(rename = "State")]
+    state: Option<String>,
 }
 
 pub fn parse_docker_containers(stdout: &str) -> Result<Vec<DockerContainer>, OperationsError> {
@@ -771,6 +805,7 @@ pub fn parse_docker_containers(stdout: &str) -> Result<Vec<DockerContainer>, Ope
                 id,
                 status: row.status,
                 image: row.image,
+                state: row.state,
             })
         })
         .collect()
@@ -956,8 +991,17 @@ pub fn parse_request_result(
             title: format!("Docker logs {container}"),
             content: stdout.to_string(),
         }),
-        OperationsRequest::DockerStats { .. } => Ok(OperationsResult::Details {
-            title: "Docker stats".to_string(),
+        OperationsRequest::DockerStats { .. } => Ok(OperationsResult::DockerRuntime(
+            parse_docker_stats(stdout)?.into(),
+        )),
+        OperationsRequest::DockerStorage { .. } => Ok(OperationsResult::DockerStorage(
+            docker::parse_docker_storage(stdout)?.into(),
+        )),
+        OperationsRequest::DockerImageSizes { .. } => Ok(OperationsResult::DockerImageSizes(
+            docker::parse_docker_image_sizes(stdout)?.into(),
+        )),
+        OperationsRequest::DockerContainerNetwork { container } => Ok(OperationsResult::Details {
+            title: format!("Docker network {container}"),
             content: stdout.to_string(),
         }),
         OperationsRequest::ServiceDetails { name } => Ok(OperationsResult::Details {

@@ -302,6 +302,7 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         error: sftp.error.clone(),
                         auto_sync: sftp.auto_sync,
                         language,
+                        settings,
                         on_context_menu: move |menu| show_context_menu(context_menu, menu),
                         on_entry_open: move |ctx| on_sftp_entry_open.call(ctx),
                         on_entry_inline_edit: move |ctx| on_sftp_entry_inline_edit.call(ctx),
