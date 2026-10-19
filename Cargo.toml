@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["KitonyTerms contributors"]
@@ -28,7 +28,7 @@ kt-ui = { path = "crates/kt-ui" }
 kt-sync = { path = "crates/kt-sync" }
 kt-update = { path = "crates/kt-update" }
 semver = "1"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 tempfile = "3"

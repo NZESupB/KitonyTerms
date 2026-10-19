@@ -9,7 +9,7 @@
 
 ## 当前任务
 
-- [发布 v0.1.6](workflow/261019-release-v016.md)：版本升级及本地门禁完成，554 项测试通过/1 忽略；待提交、推送标签及核验 Release。
+- [发布 v0.1.7](workflow/261019-release-v017.md)：v0.1.6 审计发现 zip 漏洞而未发布；升级 zip 后以新标签完成发布。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。

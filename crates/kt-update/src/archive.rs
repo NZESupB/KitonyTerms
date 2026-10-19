@@ -41,7 +41,8 @@ fn extract_inner(package: &Package, archive: &Path, directory: &Path) -> Result<
             );
             for i in 0..zip.len() {
                 let mut entry = zip.by_index(i)?;
-                let relative = checked_path(Path::new(entry.name()), &mut seen)?;
+                let name = entry.name()?;
+                let relative = checked_path(Path::new(name.as_ref()), &mut seen)?;
                 let path = directory.join(&relative);
                 let mode = entry.unix_mode().unwrap_or(0o100644);
                 if mode & 0o170000 == 0o120000 {
