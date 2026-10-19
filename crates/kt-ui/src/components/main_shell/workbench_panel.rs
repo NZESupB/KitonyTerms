@@ -10,6 +10,7 @@ use super::{ConnectionDialogSignals, SplitMode};
 use crate::components::app_logic::{
     session_dot_class_for_status, ActiveTerminalView, SessionConnectionStatus, SessionTabView,
 };
+use crate::components::command_history::CommandHistoryPanel;
 use crate::components::icons::Icon;
 use crate::components::terminal::{SnapshotWrapper, Terminal};
 use crate::components::workbench::{EmptyWorkbench, TerminalPlaceholder};
@@ -25,6 +26,9 @@ pub(super) struct WorkbenchPanelArgs {
     pub(super) dialog_signals: ConnectionDialogSignals,
     pub(super) active_session_id: Signal<Option<SessionId>>,
     pub(super) split_mode: Signal<Option<SplitMode>>,
+    pub(super) history_open: Signal<bool>,
+    pub(super) history_height: Signal<f64>,
+    pub(super) active_resize: Signal<Option<super::ResizeDrag>>,
 }
 
 pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
@@ -37,6 +41,9 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
         dialog_signals,
         mut active_session_id,
         split_mode,
+        mut history_open,
+        mut history_height,
+        mut active_resize,
     } = args;
 
     let t = texts(language).app;
@@ -121,6 +128,15 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                         },
                         Icon { name: "add" }
                     }
+                    button {
+                        class: "new-tab-button tooltip-trigger",
+                        "data-tooltip": "{t.command_history}",
+                        aria_label: "{t.command_history}",
+                        aria_expanded: history_open().to_string(),
+                        disabled: active_tab_id.is_none(),
+                        onclick: move |_| history_open.set(!history_open()),
+                        Icon { name: "list" }
+                    }
                 }
 
                 div {
@@ -148,6 +164,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                     language,
                                     split_mode,
                                     exec_id: None,
+                                    history_open: Some(history_open),
                                     allow_split: true,
                                     desktop_focus: true,
                                 }
@@ -169,6 +186,7 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                                         language,
                                         split_mode,
                                         exec_id: None,
+                                        history_open: Some(history_open),
                                         allow_split: true,
                                         desktop_focus: true,
                                     }
@@ -186,6 +204,52 @@ pub(super) fn render_workbench_panel(args: WorkbenchPanelArgs) -> Element {
                         }
                     } else {
                         EmptyWorkbench { language }
+                    }
+                }
+            }
+            if history_open() {
+                if let Some(session) = active_terminal {
+                    div {
+                        class: "command-history-splitter",
+                        role: "separator",
+                        tabindex: 0,
+                        aria_orientation: "horizontal",
+                        aria_label: "{t.history_resize}",
+                        aria_controls: "command-history-panel",
+                        aria_valuemin: "120",
+                        aria_valuemax: "420",
+                        aria_valuenow: history_height().to_string(),
+                        onmousedown: move |event| {
+                            if event.trigger_button() != Some(dioxus::html::input_data::MouseButton::Primary) { return; }
+                            event.prevent_default();
+                            active_resize.set(Some(super::ResizeDrag::HistoryHeight {
+                                start_y: event.client_coordinates().y,
+                                start_height: history_height(),
+                            }));
+                        },
+                        onkeydown: move |event| {
+                            let delta = match event.key() { Key::ArrowUp => 20.0, Key::ArrowDown => -20.0, _ => return };
+                            event.prevent_default();
+                            history_height.set((history_height() + delta).clamp(120.0, 420.0));
+                        },
+                    }
+                    div { class: "command-history-container", style: "height: {history_height()}px;",
+                        CommandHistoryPanel {
+                            session_id: session.id,
+                            entries: session.command_history,
+                            language,
+                            on_close: move |_| history_open.set(false),
+                            on_clear: {
+                                let state = state.clone();
+                                move |_| {
+                                    if let Ok(mut state) = state.lock() {
+                                        if let Some(session) = state.sessions.get_mut(&session.id) {
+                                            session.command_history.clear();
+                                        }
+                                    }
+                                }
+                            },
+                        }
                     }
                 }
             }

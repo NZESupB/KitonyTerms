@@ -59,6 +59,7 @@ pub fn Terminal(
     /// 桌面宿主终端管理焦点；手机输入桥和容器终端保留各自的焦点策略。
     #[props(default)]
     desktop_focus: bool,
+    #[props(default)] history_open: Option<Signal<bool>>,
 ) -> Element {
     let snapshot = &snapshot.0;
     let rows = snapshot.rows;
@@ -487,6 +488,16 @@ pub fn Terminal(
                         span { "{t.select_all}" }
                         small { "Cmd/Ctrl+A" }
                     }
+                    if let Some(mut history_open) = history_open {
+                        button {
+                            onclick: move |_| {
+                                terminal_context_menu.set(None);
+                                history_open.set(!history_open());
+                            },
+                            Icon { name: "list" }
+                            span { "{t.command_history}" }
+                        }
+                    }
                     if allow_split {
                         div { class: "context-separator" }
                         button {
@@ -532,16 +543,25 @@ pub(crate) fn terminal_screen_id(terminal_id: &str) -> String {
     format!("{terminal_id}-screen")
 }
 
-/// gutter 宽度（以 ch 为单位）：行号约 5ch，时间戳 `[HH:MM:SS] ` 约 11ch。
-/// 通过给 surface 增加等宽的左内边距实现，resize 脚本会自动扣除该内边距，
-/// 从而保证 PTY 列数计算不受 gutter 影响。
+/// gutter 各列宽度（以 ch 为单位）：行号 5ch 右对齐，时间戳 `[HH:MM:SS]` 10ch，
+/// 两列间距 1ch。列宽只在这里定义一次，并下发成 CSS 变量供样式表读取，
+/// 避免「预留的内边距」与「真实排版宽度」各写一份数字后互相漂移。
+const GUTTER_LINENO_CH: u32 = 5;
+const GUTTER_TIME_CH: u32 = 10;
+const GUTTER_GAP_CH: u32 = 1;
+
+/// gutter 总宽度（以 ch 为单位）；同时用于预留左内边距与下发 CSS 变量。
+/// resize 脚本按同样的内边距扣除宽度，因此 PTY 列数不受 gutter 影响。
 fn gutter_width_ch(show_line_numbers: bool, show_timestamps: bool) -> u32 {
     let mut width = 0;
     if show_line_numbers {
-        width += 6;
+        width += GUTTER_LINENO_CH;
     }
     if show_timestamps {
-        width += 11;
+        if show_line_numbers {
+            width += GUTTER_GAP_CH;
+        }
+        width += GUTTER_TIME_CH;
     }
     width
 }
@@ -549,11 +569,15 @@ fn gutter_width_ch(show_line_numbers: bool, show_timestamps: bool) -> u32 {
 fn gutter_surface_style(show_line_numbers: bool, show_timestamps: bool) -> String {
     let width = gutter_width_ch(show_line_numbers, show_timestamps);
     if width == 0 {
-        String::new()
-    } else {
-        // 覆盖左内边距为 gutter 宽度 + 原有 8px 视觉留白。
-        format!("padding-left: calc({width}ch + 8px);")
+        return String::new();
     }
+    // 覆盖左内边距为 gutter 宽度 + 原有 8px 视觉留白，并下发列宽变量。
+    format!(
+        "--terminal-gutter-lineno-width: {GUTTER_LINENO_CH}ch; \
+         --terminal-gutter-time-width: {GUTTER_TIME_CH}ch; \
+         --terminal-gutter-gap: {GUTTER_GAP_CH}ch; \
+         padding-left: calc({width}ch + 8px);"
+    )
 }
 
 fn terminal_surface_style(
@@ -1544,11 +1568,26 @@ mod tests {
     #[test]
     fn gutter_width_and_style_track_enabled_columns() {
         assert_eq!(gutter_width_ch(false, false), 0);
-        assert_eq!(gutter_width_ch(true, false), 6);
-        assert_eq!(gutter_width_ch(false, true), 11);
-        assert_eq!(gutter_width_ch(true, true), 17);
+        assert_eq!(gutter_width_ch(true, false), GUTTER_LINENO_CH);
+        assert_eq!(gutter_width_ch(false, true), GUTTER_TIME_CH);
+        // 两列同时显示时多出固定 1ch 列间距。
+        assert_eq!(
+            gutter_width_ch(true, true),
+            GUTTER_LINENO_CH + GUTTER_GAP_CH + GUTTER_TIME_CH
+        );
         assert!(gutter_surface_style(false, false).is_empty());
-        assert!(gutter_surface_style(true, true).contains("17ch"));
+        // 预留内边距与 CSS 变量来自同一组常量：两者不能各写一份数字。
+        let style = gutter_surface_style(true, true);
+        assert!(style.contains("16ch"), "{style}");
+        assert!(
+            style.contains("--terminal-gutter-lineno-width: 5ch"),
+            "{style}"
+        );
+        assert!(
+            style.contains("--terminal-gutter-time-width: 10ch"),
+            "{style}"
+        );
+        assert!(style.contains("--terminal-gutter-gap: 1ch"), "{style}");
     }
 
     #[test]

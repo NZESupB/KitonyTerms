@@ -29,11 +29,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 | shell 注入与输出过滤 | `cargo test -p kt-core shell_integration`；[shell 测试](../crates/kt-core/src/shell_integration.rs) |
 | SSH、运维取消与容器 PTY | `cargo test -p kt-core --test roundtrip`；[回环测试](../crates/kt-core/tests/roundtrip.rs) |
 | vault、信任与落盘 | `cargo test -p kt-ui store::tests`；[Store 测试](../crates/kt-ui/src/store.rs) |
+| 命令历史采集与提示符顺序 | `cargo test -p kt-core command_history`、`cargo test -p kt-core history_prompt_marker`、`cargo test -p kt-ui command_history`；[采集器](../crates/kt-core/src/command_history.rs) |
+| 保存密码查看的代次隔离与存在性 | `cargo test -p kt-ui password_field`、`cargo test -p kt-ui secret_presence`；[字段状态](../crates/kt-ui/src/components/password_field.rs)、[系统认证](../crates/kt-ui/src/os_auth.rs) |
 | 移动打包 | `cargo test -p kt-app --test mobile_packaging_contract`；[契约测试](../crates/kt-app/tests/mobile_packaging_contract.rs) |
 | 桌面后台更新与安装事务 | `cargo test -p kt-update`；[本地 HTTP](../crates/kt-update/src/tests.rs)、[归档](../crates/kt-update/src/archive.rs)、[安装](../crates/kt-update/src/install.rs) |
 | 更新辅助握手、身份探测与锁竞争 | `cargo test -p kt-app update_launcher`；[辅助程序](../crates/kt-app/src/update_launcher.rs) |
 | 更新重启保护 | `cargo test -p kt-ui restart_protects`；[界面](../crates/kt-ui/src/components/software_update.rs) |
 | 桌面清单与发布契约 | `python3 -B .github/scripts/test-update-manifest.py`；`bash -n .github/scripts/publish-alpha.sh` |
+| 界面字体与缩放令牌 | `cargo test -p kt-ui style_contract`、`cargo test -p kt-config ui_font`；[样式不变量](../crates/kt-ui/src/style_contract.rs)、[配置字段](../crates/kt-config/src/lib.rs) |
+| 更新代理（含 HTTP/SOCKS5 隧道与失败分类） | `cargo test -p kt-update proxy`；[代理实现](../crates/kt-update/src/proxy.rs)、[本地代理与隧道](../crates/kt-update/src/tests.rs) |
 
 修改 shell 脚本时对改动文件执行 `bash -n`；文档变更检查本地链接和 `git diff --check`，包含暂存修改时检查 `git diff --cached --check`。
 

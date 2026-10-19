@@ -2,6 +2,7 @@
 use crate::{
     client::{Available, ReleaseClient},
     metadata::Package,
+    progress::{Progress, RateMeter},
 };
 use anyhow::{ensure, Result};
 use sha2::{Digest, Sha256};
@@ -9,6 +10,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    time::Instant,
 };
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -18,7 +20,7 @@ pub async fn download(
     available: &Available,
     root: &Path,
     cancel: &CancellationToken,
-    progress: impl Fn(u64) + Send,
+    progress: impl Fn(Progress) + Send,
 ) -> Result<PathBuf> {
     available.package.validate()?;
     let package = &available.package;
@@ -48,6 +50,7 @@ pub async fn download(
     );
     let mut received = 0u64;
     let mut hash = Sha256::new();
+    let mut meter = RateMeter::new(Instant::now());
     loop {
         let chunk = tokio::select! {
             _ = cancel.cancelled() => anyhow::bail!("下载已取消 / Download cancelled"),
@@ -65,8 +68,10 @@ pub async fn download(
         );
         hash.update(&chunk);
         file.write_all(&chunk).await?;
-        progress(received);
+        progress(meter.sample(Instant::now(), received));
     }
+    // 结束时速率归零：界面不再显示最后一次速度，也不把被取消的读数留在状态里。
+    progress(meter.finish(received));
     ensure!(!cancel.is_cancelled(), "下载已取消 / Download cancelled");
     ensure!(
         received == package.size

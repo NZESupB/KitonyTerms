@@ -1,5 +1,6 @@
 //! 固定仓库的 Release 查询和有界 HTTP 读取。
 use crate::metadata::{BuildInfo, Channel, Manifest, Package};
+use crate::proxy::UpdateProxy;
 use anyhow::{ensure, Result};
 use reqwest::{header, Client, Response, StatusCode};
 use serde::Deserialize;
@@ -8,6 +9,35 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const REPOSITORY: &str = "nzesupb/KitonyTerms";
 pub const RELEASE_PAGE: &str = "https://github.com/nzesupb/KitonyTerms/releases";
 const META_LIMIT: usize = 2 * 1024 * 1024;
+/// 生产超时：连接（经代理时是到代理的连接）、单次读取静默、整次请求总时限。
+/// 代理不可达或黑洞时分别由连接与读取超时兜底，失败会经 `describe_failure` 归类。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// 更新重定向白名单：只允许官方 GitHub 域名，且必须仍是 HTTPS。
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects");
+        }
+        let url = attempt.url();
+        let allowed = matches!(
+            url.host_str(),
+            Some(
+                "api.github.com"
+                    | "github.com"
+                    | "release-assets.githubusercontent.com"
+                    | "objects.githubusercontent.com"
+            )
+        );
+        if url.scheme() == "https" && allowed {
+            attempt.follow()
+        } else {
+            attempt.error("untrusted update redirect")
+        }
+    })
+}
 pub const MAX_RELEASE_NOTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct RetryAfter(pub u64);
@@ -56,35 +86,33 @@ pub struct ReleaseClient {
 }
 impl ReleaseClient {
     pub fn new() -> Result<Self> {
-        let client = Client::builder()
+        Self::configured(&UpdateProxy::System)
+    }
+    /// 按代理设置构造生产客户端：官方仓库地址 + 生产超时 + 重定向白名单。
+    pub fn configured(proxy: &UpdateProxy) -> Result<Self> {
+        Self::build(
+            format!("https://api.github.com/repos/{REPOSITORY}"),
+            proxy,
+            redirect_policy(),
+            (CONNECT_TIMEOUT, READ_TIMEOUT, TOTAL_TIMEOUT),
+        )
+    }
+    fn build(
+        base: String,
+        proxy: &UpdateProxy,
+        redirects: reqwest::redirect::Policy,
+        timeouts: (Duration, Duration, Duration),
+    ) -> Result<Self> {
+        let (connect, read, total) = timeouts;
+        let builder = Client::builder()
             .user_agent("KitonyTerms-updater/1")
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(15 * 60))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5 {
-                    return attempt.error("too many redirects");
-                }
-                let url = attempt.url();
-                let allowed = matches!(
-                    url.host_str(),
-                    Some(
-                        "api.github.com"
-                            | "github.com"
-                            | "release-assets.githubusercontent.com"
-                            | "objects.githubusercontent.com"
-                    )
-                );
-                if url.scheme() == "https" && allowed {
-                    attempt.follow()
-                } else {
-                    attempt.error("untrusted update redirect")
-                }
-            }))
-            .build()?;
+            .connect_timeout(connect)
+            .read_timeout(read)
+            .timeout(total)
+            .redirect(redirects);
         Ok(Self {
-            client,
-            base: format!("https://api.github.com/repos/{REPOSITORY}"),
+            client: proxy.apply(builder)?.build()?,
+            base,
         })
     }
     #[cfg(test)]
@@ -99,6 +127,15 @@ impl ReleaseClient {
                 .unwrap(),
             base,
         }
+    }
+    /// 测试专用：真实代理接线（含重定向白名单）但指向本地测试服务与短超时。
+    #[cfg(test)]
+    pub(crate) fn testing_with_proxy(
+        base: String,
+        proxy: &UpdateProxy,
+        timeout: Duration,
+    ) -> Result<Self> {
+        Self::build(base, proxy, redirect_policy(), (timeout, timeout, timeout))
     }
     async fn get(&self, path: &str, binary: bool) -> Result<Response> {
         let response = self

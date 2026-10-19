@@ -6,8 +6,12 @@ pub mod clipboard;
 pub mod components;
 pub mod device;
 pub mod i18n;
+pub(crate) mod os_auth;
 pub mod state;
+
 pub mod store;
+#[cfg(test)]
+mod style_contract;
 
 // 重新导出核心组件
 pub use components::app::App;

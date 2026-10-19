@@ -35,6 +35,7 @@ pub(super) fn DesktopTitlebar(
     on_session_close: Callback<SessionId>,
     on_session_reconnect: Callback<SessionId>,
     on_new_connection: Callback<()>,
+    history_open: Signal<bool>,
 ) -> Element {
     let desktop = dioxus::desktop::use_window();
     let t = texts(language).app;
@@ -144,6 +145,16 @@ pub(super) fn DesktopTitlebar(
             }
 
             div { class: "desktop-titlebar-controls desktop-titlebar-settings",
+                button {
+                    class: "desktop-settings-button",
+                    aria_label: "{t.command_history}",
+                    aria_expanded: history_open().to_string(),
+                    aria_controls: "command-history-panel",
+                    disabled: active_tab_id.is_none(),
+                    onclick: move |_| { let mut open = history_open; open.set(!open()); },
+                    Icon { name: "list" }
+                    span { "{t.command_history}" }
+                }
                 button {
                     class: "desktop-settings-button",
                     onclick: move |_| on_settings_open.call(()),

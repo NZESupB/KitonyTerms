@@ -275,6 +275,24 @@ impl Store {
         self.status_notices.lock().unwrap().pop_front()
     }
 
+    /// 只检查条目是否存在，不克隆明文。
+    pub fn has_secret(&self, vault_id: &str) -> anyhow::Result<bool> {
+        match &*self.vault.lock().unwrap() {
+            VaultAccess::Unlocked { vault, .. } => Ok(vault.get(vault_id).is_some()),
+            VaultAccess::Locked { reason } => Err(anyhow::anyhow!(reason.clone())),
+        }
+    }
+
+    /// UI 查看路径消费一次系统认证成功凭据，连接自动认证仍沿用 get_secret。
+    pub(crate) fn reveal_secret(
+        &self,
+        vault_id: &str,
+        _verified: crate::os_auth::Verified,
+    ) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
+        self.get_secret(vault_id)
+            .map(|secret| secret.map(zeroize::Zeroizing::new))
+    }
+
     pub fn get_secret(&self, vault_id: &str) -> anyhow::Result<Option<String>> {
         let guard = self.vault.lock().unwrap();
         match &*guard {
@@ -651,6 +669,19 @@ mod tests {
         )
         .unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn secret_presence_matches_vault_entries_without_changing_them() {
+        let (_dir, store) = test_store();
+        assert!(!store.has_secret("custom-entry").unwrap());
+        store.set_secret("custom-entry", "test-value").unwrap();
+        assert!(store.has_secret("custom-entry").unwrap());
+        assert!(!store.has_secret("other-entry").unwrap());
+        assert_eq!(
+            store.get_secret("custom-entry").unwrap().as_deref(),
+            Some("test-value")
+        );
     }
 
     #[test]

@@ -142,6 +142,11 @@ impl TermEngine {
         }
     }
 
+    /// 当前是否为备用屏；输入观察不需要为此复制整个网格。
+    pub fn is_alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     /// Current visible dimensions (columns, rows).
     pub fn dimensions(&self) -> (usize, usize) {
         (self.size.columns, self.size.screen_lines)

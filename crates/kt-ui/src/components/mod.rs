@@ -3,6 +3,7 @@
 pub mod app;
 pub mod app_logic;
 pub mod app_runtime;
+pub mod command_history;
 pub mod dialog;
 pub mod external_edit;
 pub(crate) mod fonts;
@@ -12,6 +13,7 @@ pub mod main_shell;
 pub(crate) mod metrics_format;
 pub mod monitor;
 pub mod operations;
+mod password_field;
 pub mod phone_shell;
 pub mod qr;
 pub mod scanner;

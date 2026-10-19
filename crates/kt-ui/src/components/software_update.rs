@@ -29,6 +29,8 @@ struct UpdateUi {
     error: Signal<Option<String>>,
     confirm: Signal<bool>,
     restarting: Signal<bool>,
+    /// 本次重启是否已由用户确认使用管理员权限替换受保护目录里的副本。
+    elevate: Signal<bool>,
     safety: Rc<dyn Fn() -> RestartSafety>,
 }
 pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Signal<bool> {
@@ -37,6 +39,7 @@ pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Sig
     let error = use_signal(|| None::<String>);
     let confirm = use_signal(|| false);
     let restarting = use_signal(|| false);
+    let elevate = use_signal(|| false);
     let safety = use_hook(|| Rc::new(safety) as Rc<dyn Fn() -> RestartSafety>);
     let ui = UpdateUi {
         context: context.clone(),
@@ -44,6 +47,7 @@ pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Sig
         error,
         confirm,
         restarting,
+        elevate,
         safety,
     };
     use_context_provider(|| ui);
@@ -71,12 +75,13 @@ pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Sig
     });
     restarting
 }
-fn request_restart(mut ui: UpdateUi, language: AppLanguage) {
+fn request_restart(mut ui: UpdateUi, language: AppLanguage, elevate: bool) {
     ui.error.set(None);
     if (ui.safety)().blocked() {
         ui.error
             .set(Some(texts(language).app.update_blocked.into()));
     } else {
+        ui.elevate.set(elevate);
         ui.confirm.set(true);
     }
 }
@@ -93,11 +98,12 @@ fn restart(mut ui: UpdateUi, language: AppLanguage) {
     ui.confirm.set(false);
     ui.restarting.set(true);
     ui.error.set(None);
+    let elevate = (ui.elevate)();
     let window = dioxus::desktop::use_window();
     spawn(async move {
         let service = Arc::clone(&ui.context.service);
         let launch = ui.context.launch;
-        let result = tokio::task::spawn_blocking(move || launch(&service)).await;
+        let result = tokio::task::spawn_blocking(move || launch(&service, elevate)).await;
         let error = match result {
             Ok(Ok(())) => None,
             Ok(Err(e)) => Some(format!("{e:#}")),
@@ -191,7 +197,11 @@ fn act(mut ui: UpdateUi, action: UpdateAction, language: AppLanguage) {
             Ok(())
         }
         UpdateAction::Restart => {
-            request_restart(ui.clone(), language);
+            request_restart(ui.clone(), language, false);
+            Ok(())
+        }
+        UpdateAction::ElevatedRestart => {
+            request_restart(ui.clone(), language, true);
             Ok(())
         }
     };
@@ -221,6 +231,17 @@ pub fn SoftwareUpdateSection(language: AppLanguage) -> Element {
                 }
                 ui.snapshot.set(ui.context.service.snapshot());
             } },
+            on_proxy: { let mut ui = ui.clone(); move |proxy| {
+                ui.error.set(None);
+                let preferences = kt_update::Preferences {
+                    proxy,
+                    ..(ui.snapshot)().preferences
+                };
+                if let Err(error) = ui.context.service.preferences(preferences) {
+                    ui.error.set(Some(error.to_string()));
+                }
+                ui.snapshot.set(ui.context.service.snapshot());
+            } },
         }
     }
 }
@@ -231,6 +252,8 @@ pub fn SoftwareUpdateOverlay(
     theme: String,
     accent: String,
     accent_rgb: String,
+    ui_font: Option<String>,
+    ui_scale: f32,
 ) -> Element {
     let ui = use_context::<UpdateUi>();
     let mut dismissed = use_signal(|| None::<kt_update::metadata::BuildInfo>);
@@ -254,15 +277,23 @@ pub fn SoftwareUpdateOverlay(
     let modal = confirm() || restarting();
     let notice = snapshot.phase == Phase::Ready && target.is_some() && dismissed() != target;
     let ink = crate::components::theme::accent_foreground(&accent);
+    let layer_style = crate::components::theme::interface_root_style(
+        &accent,
+        &accent_rgb,
+        ink,
+        ui_font.as_deref(),
+        ui_scale,
+    );
     rsx! {
         div {
             class: if theme == "light" { "software-update-layer theme-light" } else { "software-update-layer" },
-            style: "--blue: {accent}; --accent-rgb: {accent_rgb}; --update-button-ink: {ink};",
+            style: "{layer_style}",
             if modal {
                 RestartDialog {
                     language,
                     target: label.clone(),
                     preparing: restarting(),
+                    elevated: snapshot.requires_elevation,
                     on_later: { let mut ui = ui.clone(); move |_| { if !(ui.restarting)() { ui.confirm.set(false); } } },
                     on_restart: { let ui = ui.clone(); move |_| restart(ui.clone(), language) },
                 }
@@ -273,7 +304,8 @@ pub fn SoftwareUpdateOverlay(
                     div { class: "update-notice-copy", role: "status", strong { "{t.update_notice_title}" } span { "KitonyTerms {label}" } }
                     div { class: "software-update-actions",
                         button { class: "settings-button update-button", r#type: "button", onclick: move |_| dismissed.set(target.clone()), "{t.update_later}" }
-                        button { class: "settings-button primary update-button", r#type: "button", onclick: { let ui = ui.clone(); move |_| request_restart(ui.clone(), language) }, "{t.update_restart}" }
+                        // 通知里的重启直接沿用当前安装位置的授权需求。
+                        button { class: "settings-button primary update-button", r#type: "button", onclick: { let ui = ui.clone(); let elevate = snapshot.requires_elevation; move |_| request_restart(ui.clone(), language, elevate) }, if snapshot.requires_elevation { "{t.update_restart_elevated}" } else { "{t.update_restart}" } }
                     }
                     if let Some(error) = (ui.error)().or(snapshot.message) { UpdateError { message: error, language } }
                 }

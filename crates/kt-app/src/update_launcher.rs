@@ -41,6 +41,8 @@ pub fn internal_command() -> Option<Result<()>> {
     }
     if args[0] == "--apply-update" {
         Some(apply_helper())
+    } else if args[0] == "--elevated-replace" {
+        Some(elevated_replace_helper())
     } else if args[0] == "--restore-update" {
         Some(restore_helper())
     } else if args[0] == "--relaunch-update" {
@@ -99,31 +101,52 @@ pub fn startup(paths: &Paths, installation: &Installation) -> Result<Startup> {
             }
         }
     }
+    // 回收上一次替换留下的让位文件；仍被占用时保留到下次启动。
+    install::cleanup_replace_leftovers(installation.executable.parent().unwrap_or(Path::new(".")))?;
     cleanup_markers(&root)?;
     Ok(Startup::Ready(lock))
 }
-pub fn launch(service: &UpdateService) -> Result<()> {
+pub fn launch(service: &UpdateService, elevate: bool) -> Result<()> {
     let root = &service.root;
     ensure!(
         !root.join("task.json").exists(),
         "辅助程序尚未结束，请稍后重试 / Previous helper still active; retry shortly"
     );
     cleanup_markers(root)?;
-    let task = service.prepare()?;
+    let task = service.prepare(elevate)?;
     let result = (|| {
-        let helper = helper_path(root);
-        fs::copy(&task.installation.executable, &helper)?;
-        File::open(&helper)?.sync_all()?;
-        ensure!(
-            download::sha256(&helper)? == task.source_sha256,
-            "辅助程序复制校验失败 / Helper copy checksum failed"
-        );
+        install_helper(root, &task)?;
         spawn_ready(root, "--apply-update", &task.source_sha256)
     })();
     if result.is_err() {
         cleanup_markers(root)?;
     }
     result
+}
+/// 就位辅助程序：先写临时副本，再原子替换目标，避免覆盖被占用或只读的旧文件。
+fn install_helper(root: &Path, task: &InstallTask) -> Result<()> {
+    let helper = helper_path(root);
+    // 残留的辅助程序仍持有 helper.lock：不做替换，给出可操作的提示。
+    let lock = helper_lock(root)?;
+    FileExt::try_lock_exclusive(&lock).context(
+        "上一次更新辅助程序仍在运行，请稍后重试 / Previous update helper is still running; retry shortly",
+    )?;
+    let staged = root.join(format!(
+        "{}.new",
+        helper.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    install::remove(&staged)?;
+    fs::copy(&task.installation.executable, &staged)?;
+    File::open(&staged)?.sync_all()?;
+    ensure!(
+        download::sha256(&staged)? == task.source_sha256,
+        "辅助程序复制校验失败 / Helper copy checksum failed"
+    );
+    if let Err(error) = install::replace_file(&staged, &helper) {
+        let _ = install::remove(&staged);
+        return Err(error.context("放置更新辅助程序失败 / Cannot place the update helper"));
+    }
+    Ok(())
 }
 
 fn apply_helper() -> Result<()> {
@@ -162,6 +185,10 @@ fn apply_helper() -> Result<()> {
         let applied = install::apply(&root, &task).and_then(|()| verify_installed(&root, &task));
         if let Err(error) = &applied {
             let rollback = install::rollback(&root);
+            // 替换被拒绝访问：记下「需要管理员授权」，让下次启动的界面提供提权重试。
+            if replace_needs_elevation(error) {
+                install::atomic_json(&root.join("elevation.json"), &true)?;
+            }
             install::atomic_json(
                 &root.join("error.json"),
                 &format!("更新失败 / Update failed: {error:#}; recovery: {rollback:?}"),
@@ -193,6 +220,28 @@ fn apply_helper() -> Result<()> {
     }
     result
 }
+/// 替换失败是否指向「缺少管理员授权」：界面据此提供提权重试入口。
+///
+/// 仅「拒绝访问」会给出该提示；纯粹的占用冲突由普通重试（带退避）解决，
+/// 把提权当成占用问题的解法会让界面给出错误的指引。
+fn replace_needs_elevation(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<install::ReplaceFailure>(),
+        Some(failure) if failure.kind == install::ReplaceKind::AccessDenied
+    )
+}
+/// 提权替换入口：只做文件交换，不启动 GUI，也不修改其他状态。
+///
+/// 由非提权的 `--apply-update` 辅助程序用 `runas` 启动；身份校验全部通过后
+/// 才执行替换，失败时以非零退出码上报，由父进程统一走回滚与错误记录。
+fn elevated_replace_helper() -> Result<()> {
+    let paths = Paths::discover()?;
+    let root = fs::canonicalize(root(&paths))?;
+    let task: InstallTask = install::read_json(&root.join("task.json"))?;
+    install::validate_task(&root, &task, &std::env::current_exe()?)?;
+    let journal = install::validate_elevated_replace(&root, &task)?;
+    install::replace_file(&journal.staging.join("payload"), &task.installation.target)
+}
 fn restore_helper() -> Result<()> {
     let paths = Paths::discover()?;
     let root = fs::canonicalize(root(&paths))?;
@@ -222,6 +271,13 @@ fn cleanup_markers(root: &Path) -> Result<()> {
     ] {
         install::remove(&root.join(name))?;
     }
+    // 上一次就位辅助程序时中途退出留下的临时副本。
+    let staged = helper_path(root);
+    let staged = staged.with_file_name(format!(
+        "{}.new",
+        staged.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    install::remove(&staged)?;
     Ok(())
 }
 fn wait_lock(lock: &File, timeout: Duration) -> Result<()> {
@@ -607,6 +663,7 @@ mod tests {
                 kind: kt_update::metadata::PackageKind::Zip,
             },
             parent_pid: 1,
+            elevate: false,
         };
         verify_installed(dir.path(), &task).unwrap();
         task.next.version = "99.0.0".into();

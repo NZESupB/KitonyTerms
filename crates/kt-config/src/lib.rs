@@ -506,6 +506,12 @@ pub struct AppSettings {
     pub font_family: String,
     /// Font size in points.
     pub font_size: f32,
+    /// 界面（非终端）字体族。`None` 表示使用内置平台默认字体栈。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_font_family: Option<String>,
+    /// 界面文字缩放系数，只作用于界面文字尺寸；终端字号仍由 `font_size` 决定。
+    #[serde(default = "default_ui_font_scale")]
+    pub ui_font_scale: f32,
     /// Named color theme.
     pub theme: String,
     /// Accent color used for focus, selection and operation controls.
@@ -550,6 +556,8 @@ impl Default for AppSettings {
             language: AppLanguage::default(),
             font_family: default_mono_font().to_string(),
             font_size: 13.0,
+            ui_font_family: None,
+            ui_font_scale: default_ui_font_scale(),
             theme: DEFAULT_DARK_THEME.to_string(),
             accent_color: default_accent_color(),
             scrollback_lines: 10_000,
@@ -578,6 +586,24 @@ impl AppSettings {
     pub fn follows_system_theme(&self) -> bool {
         self.normalized_theme() == DEFAULT_SYSTEM_THEME
     }
+
+    /// 归一后的界面字体族：空白视为未设置，交给 UI 使用平台默认字体栈。
+    pub fn ui_font(&self) -> Option<&str> {
+        self.ui_font_family
+            .as_deref()
+            .map(str::trim)
+            .filter(|family| !family.is_empty())
+    }
+
+    /// 手改配置越界或写入非有限值时的防御性归一。
+    pub fn normalized_ui_font_scale(&self) -> f32 {
+        if self.ui_font_scale.is_finite() {
+            self.ui_font_scale
+                .clamp(UI_FONT_SCALE_MIN, UI_FONT_SCALE_MAX)
+        } else {
+            1.0
+        }
+    }
 }
 
 fn default_trigger_highlights() -> Vec<String> {
@@ -594,6 +620,14 @@ fn default_true() -> bool {
 
 fn default_accent_color() -> String {
     "#5aa7ff".to_string()
+}
+
+/// 界面文字缩放系数的合法范围（1.0 = 现状，仅作用于界面文字尺寸）。
+pub const UI_FONT_SCALE_MIN: f32 = 0.85;
+pub const UI_FONT_SCALE_MAX: f32 = 1.40;
+
+fn default_ui_font_scale() -> f32 {
+    1.0
 }
 
 #[cfg(target_os = "windows")]
@@ -1059,6 +1093,67 @@ use_ssh_config = true
         let decoded: AppSettings = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.theme, DEFAULT_SYSTEM_THEME);
         assert_eq!(decoded.font_family, "Noto Sans Mono");
+    }
+
+    #[test]
+    fn app_settings_ui_font_defaults_to_unset_and_stays_out_of_toml() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.ui_font(), None);
+        assert_eq!(settings.normalized_ui_font_scale(), 1.0);
+
+        // 未配置的字体族不写入配置；缩放系数是常驻字段，始终落盘。
+        let encoded = toml::to_string(&settings).unwrap();
+        assert!(!encoded.contains("ui_font_family"), "{encoded}");
+        assert!(encoded.contains("ui_font_scale = 1.0"), "{encoded}");
+    }
+
+    #[test]
+    fn app_settings_ui_font_is_backward_compatible() {
+        // 旧配置没有界面字体字段：必须仍能读取，并落到默认值。
+        let toml = r#"
+font_family = "Mono"
+font_size = 13.0
+theme = "default-dark"
+scrollback_lines = 10000
+cursor_style = "block"
+use_ssh_config = true
+"#;
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        assert_eq!(settings.ui_font(), None);
+        assert_eq!(settings.normalized_ui_font_scale(), 1.0);
+    }
+
+    #[test]
+    fn app_settings_ui_font_roundtrips_and_normalizes() {
+        let settings = AppSettings {
+            ui_font_family: Some("  Fira Sans  ".to_string()),
+            ui_font_scale: 1.25,
+            ..AppSettings::default()
+        };
+        let encoded = toml::to_string(&settings).unwrap();
+        let decoded: AppSettings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.ui_font(), Some("Fira Sans"));
+        assert_eq!(decoded.normalized_ui_font_scale(), 1.25);
+
+        // 空白字体族视为未设置，与 `None` 等价。
+        let blank = AppSettings {
+            ui_font_family: Some("   ".to_string()),
+            ..AppSettings::default()
+        };
+        assert_eq!(blank.ui_font(), None);
+    }
+
+    #[test]
+    fn ui_font_scale_is_clamped_to_supported_range() {
+        let mut settings = AppSettings {
+            ui_font_scale: 4.0,
+            ..AppSettings::default()
+        };
+        assert_eq!(settings.normalized_ui_font_scale(), UI_FONT_SCALE_MAX);
+        settings.ui_font_scale = 0.1;
+        assert_eq!(settings.normalized_ui_font_scale(), UI_FONT_SCALE_MIN);
+        settings.ui_font_scale = f32::NAN;
+        assert_eq!(settings.normalized_ui_font_scale(), 1.0);
     }
 
     #[test]

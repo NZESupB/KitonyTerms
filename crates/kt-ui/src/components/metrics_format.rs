@@ -38,6 +38,14 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 pub(crate) fn format_rate(bytes_per_second: u64) -> String {
     format!("{}/s", format_bytes(bytes_per_second))
 }
+/// 更新下载统一按 MB 展示：已下载与总大小用同一刻度，避免跨单位比较。
+pub(crate) fn format_mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+pub(crate) fn format_mb_rate(bytes_per_second: u64) -> String {
+    format!("{}/s", format_mb(bytes_per_second))
+}
 
 pub(crate) fn format_uptime(seconds: u64) -> String {
     let hours = seconds / 3600;
@@ -70,5 +78,13 @@ mod tests {
         assert_eq!(percent(1, 0), 0.0);
         assert_eq!(percent(150, 100), 100.0);
         assert_eq!(clamp_percent(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn update_downloads_use_a_single_megabyte_scale() {
+        assert_eq!(format_mb(0), "0.0 MB");
+        assert_eq!(format_mb(512 * 1024), "0.5 MB");
+        assert_eq!(format_mb(18 * 1024 * 1024), "18.0 MB");
+        assert_eq!(format_mb_rate(12 * 1024 * 1024), "12.0 MB/s");
     }
 }

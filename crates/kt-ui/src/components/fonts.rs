@@ -55,20 +55,31 @@ fn looks_monospace(font: &str) -> bool {
         || normalized.contains("monaco")
 }
 
-/// 将用户配置转换为可放入 inline style 的字体族表达式。
-pub(crate) fn css_font_family(value: &str) -> String {
-    let filtered: String = value
+/// 过滤掉可用于样式注入的字符，只保留字母数字与常见字体族符号。
+fn sanitize_font_family(value: &str) -> String {
+    value
         .chars()
         .filter(|character| {
             character.is_alphanumeric()
                 || matches!(character, ' ' | ',' | '-' | '_' | '.' | '\'' | '"')
         })
-        .collect();
+        .collect()
+}
+
+/// 将用户配置转换为可放入 inline style 的等宽字体族表达式。
+pub(crate) fn css_font_family(value: &str) -> String {
+    let filtered = sanitize_font_family(value);
     if filtered.trim().is_empty() {
         "\"SF Mono\", \"Menlo\", \"Consolas\", monospace".to_string()
     } else {
         filtered
     }
+}
+
+/// 界面字体族：未配置或清洗后为空时返回 `None`，由 CSS 使用平台默认字体栈。
+pub(crate) fn css_ui_font_family(value: Option<&str>) -> Option<String> {
+    let sanitized = sanitize_font_family(value?);
+    (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
 #[cfg(test)]
@@ -93,5 +104,22 @@ mod tests {
         );
         assert_eq!(css_font_family("苹方 SC"), "苹方 SC");
         assert!(css_font_family(";:{}").contains("monospace"));
+    }
+
+    #[test]
+    fn ui_font_family_is_optional_and_sanitized() {
+        // 未配置：交给 CSS 默认字体栈，不能落成空字符串。
+        assert_eq!(css_ui_font_family(None), None);
+        assert_eq!(css_ui_font_family(Some("   ")), None);
+        assert_eq!(css_ui_font_family(Some(";:{}")), None);
+
+        assert_eq!(
+            css_ui_font_family(Some("Fira Sans; color: red")),
+            Some("Fira Sans color red".to_string())
+        );
+        assert_eq!(
+            css_ui_font_family(Some(" 苹方 SC ")),
+            Some(" 苹方 SC ".to_string())
+        );
     }
 }

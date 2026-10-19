@@ -47,6 +47,7 @@ pub const SFTP_MAX_HEIGHT: f64 = 420.0;
 pub enum ResizeDrag {
     SidebarWidth { start_x: f64, start_width: f64 },
     SftpHeight { start_y: f64, start_height: f64 },
+    HistoryHeight { start_y: f64, start_height: f64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +69,9 @@ pub fn theme_class(theme: &str) -> &'static str {
 pub fn window_class(active_resize: Option<ResizeDrag>, theme: &str, is_phone: bool) -> String {
     let resize_class = match active_resize {
         Some(ResizeDrag::SidebarWidth { .. }) => " is-resizing is-resizing-x",
-        Some(ResizeDrag::SftpHeight { .. }) => " is-resizing is-resizing-y",
+        Some(ResizeDrag::SftpHeight { .. } | ResizeDrag::HistoryHeight { .. }) => {
+            " is-resizing is-resizing-y"
+        }
         None => "",
     };
     let device_class = if is_phone { " is-phone" } else { "" };
@@ -101,6 +104,7 @@ pub(super) struct DesktopTitlebarArgs {
     on_session_close: Callback<SessionId>,
     on_session_reconnect: Callback<SessionId>,
     on_new_connection: Callback<()>,
+    history_open: Signal<bool>,
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -115,6 +119,7 @@ fn render_desktop_titlebar(args: DesktopTitlebarArgs) -> Element {
         on_session_close,
         on_session_reconnect,
         on_new_connection,
+        history_open,
     } = args;
     rsx! {
         DesktopTitlebar {
@@ -127,6 +132,7 @@ fn render_desktop_titlebar(args: DesktopTitlebarArgs) -> Element {
             on_session_close,
             on_session_reconnect,
             on_new_connection,
+            history_open,
         }
     }
 }
@@ -185,6 +191,8 @@ pub struct ShellArgs {
     pub collapsed_server_groups: Signal<BTreeSet<String>>,
     pub sidebar_collapsed: Signal<bool>,
     pub split_mode: Signal<Option<SplitMode>>,
+    pub history_open: Signal<bool>,
+    pub history_height: Signal<f64>,
     pub on_sftp_entry_open: Callback<SftpEntryContext>,
     pub on_sftp_entry_inline_edit: Callback<SftpEntryContext>,
 }
@@ -312,6 +320,8 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
         collapsed_server_groups,
         mut sidebar_collapsed,
         split_mode,
+        history_open,
+        history_height,
         on_sftp_entry_open,
         on_sftp_entry_inline_edit,
         // 连接对话框的各个 edit_* 信号已由 `from_shell_args` 取走。
@@ -365,6 +375,7 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
             on_session_close,
             on_session_reconnect,
             on_new_connection,
+            history_open,
         })}
 
         div {
@@ -435,6 +446,9 @@ pub fn render_main_shell(args: ShellArgs) -> Element {
                 dialog_signals,
                 active_session_id,
                 split_mode,
+                history_open,
+                history_height,
+                active_resize,
             })}
 
             OperationsPanel {

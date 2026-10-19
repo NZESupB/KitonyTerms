@@ -32,6 +32,7 @@ use crate::components::external_edit::{
     ExternalEdit, ExternalEditAction, ExternalEditSaveDialog, ExternalEditStatus,
     ExternalEditSyncMode,
 };
+use crate::components::fonts::css_ui_font_family;
 use crate::components::inline_editor::{
     inline_edit_load_error_text, inline_edit_size_rejection, read_editable_text,
     write_editable_text, InlineEdit, InlineEditAction, InlineEditStatus, InlineEditorDialog,
@@ -48,7 +49,9 @@ use crate::components::settings::{ActiveShare, SettingsPanel, SyncAction};
 use crate::components::sftp::{join_path, parent_path, request_directory};
 use crate::components::sidebar::{ContextMenu, ContextMenuState, SftpEntryContext};
 use crate::components::state_controller::{use_state_controller, EditSignals, StoreSignals};
-use crate::components::theme::{accent_foreground, concrete_theme_name, use_system_theme};
+use crate::components::theme::{
+    accent_foreground, concrete_theme_name, interface_root_style, use_system_theme,
+};
 use crate::device::use_device_class;
 use crate::i18n::texts;
 use crate::state::{AppState, SessionState};
@@ -101,7 +104,7 @@ pub fn get_state() -> &'static Arc<Mutex<AppState>> {
     })
 }
 
-fn get_store() -> &'static Arc<Store> {
+pub(crate) fn get_store() -> &'static Arc<Store> {
     GLOBAL_STORE.get_or_init(|| Arc::new(Store::load().expect("无法加载配置")))
 }
 
@@ -211,6 +214,8 @@ pub fn App() -> Element {
     let collapsed_server_groups = use_signal(BTreeSet::<String>::new);
     let sidebar_collapsed = use_signal(|| false);
     let split_mode = use_signal(|| None::<SplitMode>);
+    let history_open = use_signal(|| false);
+    let mut history_height = use_signal(|| 200.0_f64);
     // 手机 Shell 的局部状态。两个 Shell 在同一层条件渲染，hook 必须无条件创建，
     // 否则设备类型切换（旋转、折叠屏展开）会打乱 hook 顺序。桌面端只是两个空信号。
     let phone_tab = use_signal(|| PhoneTab::Servers);
@@ -502,6 +507,16 @@ pub fn App() -> Element {
     let accent_color = normalized_accent_color(&current_settings.accent_color);
     let accent_rgb = accent_color_rgb(accent_color);
     let update_button_ink = accent_foreground(accent_color);
+    // 界面字体族与界面字号缩放：内联到两个渲染根上，尺寸令牌在 app.css 中定义。
+    let ui_font = css_ui_font_family(current_settings.ui_font());
+    let ui_scale = current_settings.normalized_ui_font_scale();
+    let window_style = interface_root_style(
+        accent_color,
+        &accent_rgb,
+        update_button_ink,
+        ui_font.as_deref(),
+        ui_scale,
+    );
     let sessions_snapshot = all_sessions();
     let active_session_ref = active_session(&sessions_snapshot, active_session_id());
     let active_status_session = active_session_ref.cloned();
@@ -650,6 +665,8 @@ pub fn App() -> Element {
         collapsed_server_groups,
         sidebar_collapsed,
         split_mode,
+        history_open,
+        history_height,
         on_sftp_entry_open: {
             let state = Arc::clone(state);
             Callback::new(move |ctx: SftpEntryContext| {
@@ -680,13 +697,13 @@ pub fn App() -> Element {
 
     rsx! {
         style { {include_str!("../assets/app.css")} }
-        SoftwareUpdateLayer { language, theme: theme_name.to_string(), accent: accent_color.to_string(), accent_rgb: accent_rgb.clone() }
+        SoftwareUpdateLayer { language, theme: theme_name.to_string(), accent: accent_color.to_string(), accent_rgb: accent_rgb.clone(), ui_font: ui_font.clone(), ui_scale }
 
         div {
             class: "{window_class_name}",
             // Dioxus 0.7.10 会保留 inert="false"；正常状态必须省略属性。
             inert: update_restarting().then_some(true),
-            style: "--blue: {accent_color}; --accent-rgb: {accent_rgb}; --update-button-ink: {update_button_ink};",
+            style: "{window_style}",
             "data-theme": "{theme_name}",
             onmousemove: move |evt| {
                 match active_resize() {
@@ -705,6 +722,9 @@ pub fn App() -> Element {
                             SFTP_MIN_HEIGHT,
                             SFTP_MAX_HEIGHT,
                         )));
+                    }
+                    Some(ResizeDrag::HistoryHeight { start_y, start_height }) => {
+                        history_height.set((start_height + start_y - evt.client_coordinates().y).clamp(120.0, 420.0));
                     }
                     None => {}
                 }
@@ -1220,6 +1240,14 @@ pub fn App() -> Element {
                 user: edit_user,
                 group: edit_group,
                 password: edit_password,
+                original_name: edit_original_name,
+                vault_id: saved_profiles.iter().find(|profile| dialog_mode() == "edit" && profile.name == edit_original_name()).and_then(|profile| profile.params.vault_id.clone()),
+                saved_vault_id: saved_profiles.iter()
+                    .find(|profile| dialog_mode() == "edit" && profile.name == edit_original_name()
+                        && profile.params.host == edit_host() && profile.params.user == edit_user()
+                        && profile.params.port.to_string() == edit_port())
+                    .map(|profile| profile.params.effective_vault_id())
+                    .filter(|id| store.has_secret(id).unwrap_or(false)),
                 key_path: edit_key_path,
                 proxy_jump: edit_proxy_jump,
                 proxy_type: edit_proxy_type,
@@ -1861,14 +1889,16 @@ fn SoftwareUpdateLayer(
     theme: String,
     accent: String,
     accent_rgb: String,
+    ui_font: Option<String>,
+    ui_scale: f32,
 ) -> Element {
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     {
-        rsx! { crate::components::software_update::SoftwareUpdateOverlay { language, theme, accent, accent_rgb } }
+        rsx! { crate::components::software_update::SoftwareUpdateOverlay { language, theme, accent, accent_rgb, ui_font, ui_scale } }
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
-        let _ = (language, theme, accent, accent_rgb);
+        let _ = (language, theme, accent, accent_rgb, ui_font, ui_scale);
         rsx! {}
     }
 }

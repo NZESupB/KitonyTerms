@@ -39,6 +39,27 @@ pub(crate) fn concrete_theme_name(theme: &str, system_is_light: bool) -> &'stati
     resolve_theme_name(theme, system_is_light)
 }
 
+/// 两个渲染根（`.kt-window` 与 `.software-update-layer`）共用的内联变量。
+///
+/// 界面字体族与缩放只在这里写入，具体尺寸令牌定义在 `app.css` 中；更新弹层位于
+/// `.kt-window` 之外，因此必须与主界面使用同一份拼装逻辑，避免两处漂移。
+pub(crate) fn interface_root_style(
+    accent: &str,
+    accent_rgb: &str,
+    ink: &str,
+    ui_font: Option<&str>,
+    ui_scale: f32,
+) -> String {
+    let mut style = format!(
+        "--blue: {accent}; --accent-rgb: {accent_rgb}; --update-button-ink: {ink}; \
+         --kt-ui-scale: {ui_scale:.3};"
+    );
+    if let Some(family) = ui_font {
+        style.push_str(&format!(" --kt-ui-font: {family};"));
+    }
+    style
+}
+
 /// 在用户强调色上选择对比度更高的前景，供更新按钮和开关使用。
 pub(crate) fn accent_foreground(accent: &str) -> &'static str {
     let rgb = u32::from_str_radix(accent.trim_start_matches('#'), 16).unwrap_or(0x5aa7ff);
@@ -86,5 +107,25 @@ mod tests {
             concrete_theme_name(DEFAULT_LIGHT_THEME, false),
             DEFAULT_LIGHT_THEME
         );
+    }
+
+    #[test]
+    fn interface_root_style_carries_accent_and_interface_font() {
+        let without_font = interface_root_style("#5aa7ff", "90, 167, 255", "#08121f", None, 1.0);
+        assert_eq!(
+            without_font,
+            "--blue: #5aa7ff; --accent-rgb: 90, 167, 255; --update-button-ink: #08121f; \
+             --kt-ui-scale: 1.000;"
+        );
+        assert!(!without_font.contains("--kt-ui-font"));
+
+        let scaled = interface_root_style(
+            "#5aa7ff",
+            "90, 167, 255",
+            "#08121f",
+            Some("Fira Sans"),
+            1.25,
+        );
+        assert!(scaled.ends_with("--kt-ui-scale: 1.250; --kt-ui-font: Fira Sans;"));
     }
 }

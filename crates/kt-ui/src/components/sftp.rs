@@ -541,6 +541,7 @@ mod tests {
         let mut sess = crate::state::SessionState {
             id: SessionId(1),
             title: "demo".to_string(),
+            command_history: Default::default(),
             connect_params: kt_config::ConnectParams::new("example.com", "root"),
             pty: kt_core::PtySize {
                 cols: 100,
@@ -591,6 +592,7 @@ mod tests {
         let mut sess = crate::state::SessionState {
             id: SessionId(1),
             title: "demo".to_string(),
+            command_history: Default::default(),
             connect_params: kt_config::ConnectParams::new("example.com", "root"),
             pty: kt_core::PtySize {
                 cols: 100,

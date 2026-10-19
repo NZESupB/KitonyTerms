@@ -7,7 +7,7 @@
 use dioxus::prelude::*;
 use kt_config::{
     normalize_theme_name, AppLanguage, AppSettings, CursorStyle, EditorEntry, DEFAULT_DARK_THEME,
-    DEFAULT_LIGHT_THEME, DEFAULT_SYSTEM_THEME,
+    DEFAULT_LIGHT_THEME, DEFAULT_SYSTEM_THEME, UI_FONT_SCALE_MAX, UI_FONT_SCALE_MIN,
 };
 
 use crate::components::external_edit::{detect_editors, env_editor_command};
@@ -378,6 +378,11 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
     let selected_theme = normalize_theme_name(&props.settings.theme);
     let accent_settings = props.settings.clone();
     let ssh_config_settings = props.settings.clone();
+    let ui_font_settings = props.settings.clone();
+    let ui_scale_settings = props.settings.clone();
+    let ui_font_value = props.settings.ui_font_family.clone().unwrap_or_default();
+    let ui_font_options = font_options(&ui_font_value, &(props.detected_fonts)());
+    let ui_font_scale_percent = (props.settings.normalized_ui_font_scale() * 100.0).round();
 
     rsx! {
         div {
@@ -445,6 +450,60 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
                     if is_valid_accent_color(&value) {
                         let mut next = accent_settings.clone();
                         next.accent_color = value;
+                        on_settings_change.call(next);
+                    }
+                },
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div {
+                class: "settings-row-copy",
+                strong { "{t.ui_font}" }
+                p { "{t.ui_font_hint}" }
+            }
+            select {
+                class: "settings-text-input settings-font-select",
+                value: "{ui_font_value}",
+                onchange: move |evt| {
+                    let value = evt.value().replace(['\n', '\r'], "");
+                    if value.len() <= 128 {
+                        let mut next = ui_font_settings.clone();
+                        next.ui_font_family = if value.trim().is_empty() { None } else { Some(value) };
+                        on_settings_change.call(next);
+                    }
+                },
+                option { value: "", selected: ui_font_value.is_empty(), "{t.ui_font_default}" }
+                for font in ui_font_options.iter() {
+                    option {
+                        value: "{font}",
+                        selected: ui_font_value == *font,
+                        "{font}"
+                    }
+                }
+            }
+        }
+
+        div {
+            class: "settings-row",
+            div {
+                class: "settings-row-copy",
+                strong { "{t.ui_font_scale}" }
+                p { "{t.ui_font_scale_hint}" }
+            }
+            input {
+                class: "settings-number-input",
+                r#type: "number",
+                min: "85",
+                max: "140",
+                step: "5",
+                value: "{ui_font_scale_percent}",
+                oninput: move |evt: Event<FormData>| {
+                    if let Ok(percent) = evt.value().parse::<f32>() {
+                        let mut next = ui_scale_settings.clone();
+                        next.ui_font_scale =
+                            (percent / 100.0).clamp(UI_FONT_SCALE_MIN, UI_FONT_SCALE_MAX);
                         on_settings_change.call(next);
                     }
                 },

@@ -9,11 +9,14 @@
 
 ## 当前任务
 
+- [发布 v0.1.6](workflow/261019-release-v016.md)：版本升级及本地门禁完成，554 项测试通过/1 忽略；待提交、推送标签及核验 Release。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
+- [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
 
 ## 最近归档
 
+- [命令历史与系统认证查看密码](workflow/done/261019-command-history-password-reveal.md)：第 4、5 项实现及自动检查完成；工作区测试 553 通过/1 忽略，517 项 SSR 浏览器检查和 Windows 认证 API 类型检查通过；原生系统认证、真实 SSH 与原生剪贴板仍待实机验收。
 - [发布 v0.1.5](workflow/done/261016-release-v015.md)：发布提交 49be49b；dev 与标签已推送，流水线 38862414531 的 10 项任务全部成功。12 个资产发布并设为 Latest，桌面构建身份、大小和 SHA-256 摘要一致；本机应用未替换。
 - [全局视觉统一](workflow/done/261016-ui-consistency.md)：共用控件、主题、设置/弹窗、工作区及手机端表面已统一；既有浏览器检查见归档。v0.1.5 已修复 macOS 回环 HTTP 测试 socket 模式，512 项串行及默认并发 Rust 测试通过；原生键鼠/SSH/软键盘仍待验收。
 - [更新界面](workflow/done/261016-update-ui.md)：状态卡片、发布日志、真实下载进度、主题及确认交互已实现；Rust 门禁与 915 项浏览器检查通过，原生 WebView 下载/终端/重启端到端待验收。

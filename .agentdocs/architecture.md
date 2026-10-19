@@ -32,6 +32,8 @@
 - vault 使用每安装独立的 `secrets.vault.key`；旧固定密钥迁移，不能打开的旧主密码 vault 先备份再重建。
 - 主机密钥按 host/port/fingerprint 去重并精确确认；首次信任必须落盘成功，不能因保存失败接受未知 key。
 - Android 使用应用私有路径。配置同步不包含 vault、vault key、known_hosts 或运行时状态。
+- 保存密码的 UI 查看路径由 [os_auth.rs](../crates/kt-ui/src/os_auth.rs) 先进行系统认证，再消费不可自行构造、不可复制的 `Verified` 调用 `Store::reveal_secret`；存在性检查仅用 `has_secret`，不克隆明文。macOS 每次新建 LAContext 使用设备所有者策略；Windows 凭据窗口结果经 LogonUserW 验证，并比较当前进程账户 SID，其他账户不能通过。Linux/移动端拒绝查看，连接时自动 SSH 认证及 vault 格式沿用原实现。
+- [密码字段](../crates/kt-ui/src/components/password_field.rs)将只读查看值与编辑值隔离，查看值不参与保存；异步结果绑定连接名称、host/user/port、vault ID 与请求代次。关闭弹窗、切换目标/页签、编辑输入或 30 秒超时清除查看值；原生系统弹窗和取消行为仍需实机验收。
 
 ## SFTP 与编辑
 
@@ -52,6 +54,8 @@
 
 - OSC 7 上报远端目录；bootstrap 追加 shell hook，保留用户已有配置。
 - 输出过滤仅处理已识别的 bootstrap 数据；登录信息和 stderr 保留，超时、超限或用户输入时冲刷未确认缓存。
+- [命令历史采集](../crates/kt-core/src/command_history.rs)在 core PTY 收发顺序中工作：Bash/Zsh 提示符 hook 在用户已有 hook 之后发出专用标记，bootstrap 初始化不开放采集，每次提示符最多记录一条提交；无标记、备用屏、前导空格、控制编辑/补全及超过 4096 字节的输入跳过。shell 集成独立于目录自动同步开关，目录跟随仍服从开关。仅宿主 SSH 会话采集，容器独立 PTY 不采集。
+- [历史面板](../crates/kt-ui/src/components/command_history.rs)从会话状态展示最近 200 条内存记录；支持标题栏/终端菜单切换、拖动或方向键调整高度、逐条原生剪贴板复制与清空，不写入配置或同步载荷，不提供自动执行。
 - 文件管理切目录统一经 `AppState::send_terminal_cd`；检查备用屏，转义路径，先清行/擦回显再执行 cd。
 - 终端列数由视口宽度驱动：`terminal_wrap` 开启时下限 20 列、长行在视口内折行；关闭时保留更宽终端（桌面 160、窄屏 80）供横向查看长行。
 - 输入推断仅作有限兜底，不猜测任意脚本或别名；百分号路径解码仍需注意兼容性。
@@ -83,6 +87,7 @@
 - 视觉共用规则集中于 app.css：设置、连接/安全弹窗、内置编辑器与通知共用按钮和表单表面；终端、文件 Grid 和运维保留紧凑尺寸。依赖其他 CSS 变量的强调色、菜单和悬停 token 在 `:root`、`.kt-window`、`.software-update-layer` 同时声明，确保在当前主题/强调色根节点重新计算，不能只依赖 :root 的已计算继承值。主要按钮复用 `accent_foreground` 计算的前景。
 - 设置内容区以具名 container query 在 480px 以下堆叠表单，640px 以下桌面设置导航横向换行。手机普通输入（含 URL）保持 16px/44px；连接/安全弹窗随键盘 inset 收缩，正文滚动与底部操作区分离。全局可见焦点不覆盖终端输入桥，新增悬停仅用于精确指针，减少动态效果时禁用过渡。
 - 跟随当前会话的组件状态用 `use_reactive(session_id)` 驱动，轮询另以代次收敛旧任务；Dioxus 的 `key` 只在条件渲染/迭代器产生的 Fragment 层比较，普通子节点位的 `key` 不触发重建。
+- 界面字体族与界面字号缩放经内联 `--kt-ui-font` / `--kt-ui-scale` 注入 `.kt-window` 与 `.software-update-layer` 两个渲染根（更新弹层在 `.kt-window` 之外，两处必须用同一份拼装）；界面文字尺寸统一用 `--kt-text-10..22` 令牌（在这两个根与 `:root` 声明），终端区（`.terminal-surface`/`.terminal-gutter`/`.terminal-placeholder`）与手机 iOS 16px 输入保护保持原始 px。终端字号仍只由终端设置决定，不随界面缩放；新增界面文字不得写死 px，由 `kt-ui/src/style_contract.rs` 守卫测试约束。
 - 手机输入的待验收场景见[当前任务](workflow/260820-mobile-phone-ui.md)。
 
 ## 配置同步与打包
@@ -112,4 +117,6 @@
 - 更新展示位于 software_update/view.rs，主页面与独立弹层共享主题变量；弹层显式传入当前主题、强调色与可读前景色，始终位于主界面 inert 之外。software_update_dialog.js 管理默认稍后焦点、Tab 循环、确认时 Esc 与卸载恢复；准备期间只显示真实阶段，不推测辅助安装百分比。
 - ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。macOS 更新包使用 DMG，经 hdiutil 校验并只读挂载到 updates 下固定私有挂载点，仅复制 KitonyTerms.app，沿用路径/链接/体积限制；成功与失败均卸载，重试先回收遗留挂载。复制后以 codesign 验证签名和 bundle ID。ZIP 中的 AppleDouble 载体校验标识与体积后丢弃，不得作为普通资源加入签名包。
 - 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。匹配的 committed 事务在 GUI 启动确认后清理，其他中断事务恢复；Windows 当前 EXE 的恢复在进程退出后执行，安装版恢复限定管理员登记路径。
+- 便携版安装准备必须在 GUI 退出前检查安装父目录可写性，即使用户选择提权也不能跳过：当前暂存目录和旧版备份仍由普通权限辅助进程创建，提权仅执行最终文件替换。受保护目录应提前提示移动到用户目录或使用安装包。
 - App 提供内置/外部编辑、SFTP pending、下载选择器及同步状态保护；准备期间根界面 inert，握手后再次检查，确认后取消运维并断开连接。Android/iOS 不渲染更新入口。
+- 更新代理属于设备本机偏好（updates/preferences.json，不参与配置同步）：System 读环境变量代理、Direct 强制直连、HTTP/HTTPS/SOCKS5 显式代理只在 URL 中带用户名且密码留空（与 core 的 TCP 代理一致，代理凭证不落盘，需要密码时用 System 加环境变量凭证）。改代理先构建新客户端再落盘（失败不留内存更新），并取消在途检查/下载、以 `generation` 丢弃过期写回；启动读到非法代理时回退 System 并把原因写进快照 message，避免坏配置阻断启动。检查与下载共用同一客户端，失败按 407 / 超时 / 连接 / 重定向 / 状态分类后再附底层原因。

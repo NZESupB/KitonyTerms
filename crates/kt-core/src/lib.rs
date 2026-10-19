@@ -11,6 +11,7 @@
 //! * [`session`] — session lifecycle + the UI⇄core message protocol
 //! * [`shell_integration`] — remote shell CWD reporting hook + directory commands
 
+mod command_history;
 pub mod monitor;
 pub mod remote_ops;
 pub mod session;

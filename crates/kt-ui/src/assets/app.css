@@ -48,6 +48,27 @@
     --terminal-gutter-lineno: #7f8fa6;
     --terminal-gutter-continuation: #5a6779;
     --terminal-gutter-time: #7d94b4;
+    /* 界面文字尺寸令牌：N 是基准 px 值（1.0 缩放下与原值等值），统一随
+       --kt-ui-scale 缩放。--kt-ui-scale / --kt-ui-font 由 app.rs 内联写在
+       .kt-window 与 .software-update-layer 上，两处都使用这些令牌，因此
+       三个令牌根都必须声明，才能各自看到所在根的内联值。
+       终端区（.terminal-surface/.terminal-gutter/.terminal-placeholder）不在此列：
+       那里字号由终端设置内联决定，行高按 `em` 与该字号绑定。 */
+    --kt-text-10: calc(10px * var(--kt-ui-scale, 1));
+    --kt-text-11: calc(11px * var(--kt-ui-scale, 1));
+    --kt-text-12: calc(12px * var(--kt-ui-scale, 1));
+    --kt-text-13: calc(13px * var(--kt-ui-scale, 1));
+    --kt-text-14: calc(14px * var(--kt-ui-scale, 1));
+    --kt-text-15: calc(15px * var(--kt-ui-scale, 1));
+    --kt-text-16: calc(16px * var(--kt-ui-scale, 1));
+    --kt-text-17: calc(17px * var(--kt-ui-scale, 1));
+    --kt-text-18: calc(18px * var(--kt-ui-scale, 1));
+    --kt-text-19: calc(19px * var(--kt-ui-scale, 1));
+    --kt-text-20: calc(20px * var(--kt-ui-scale, 1));
+    --kt-text-21: calc(21px * var(--kt-ui-scale, 1));
+    --kt-text-22: calc(22px * var(--kt-ui-scale, 1));
+    /* 未配置界面字体时的平台默认字体栈（与历史 body 声明一致）。 */
+    --kt-ui-font-default: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
 }
 
 html,
@@ -61,7 +82,7 @@ body,
 body {
     background: #05080c;
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    font-family: var(--kt-ui-font, var(--kt-ui-font-default));
 }
 
 button,
@@ -108,7 +129,7 @@ button:disabled {
     background: var(--panel-soft);
     color: var(--text);
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
     line-height: 1.4;
     white-space: normal;
@@ -151,7 +172,7 @@ button:disabled {
     border-radius: 8px;
     background: var(--bg-strong);
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -212,6 +233,9 @@ button:disabled {
     overflow: hidden;
     background: var(--bg);
     border: 1px solid var(--border-soft);
+    /* 界面字体族必须直接声明在两个渲染根上：font-family 是继承的计算值，
+       只写在祖先上时，内联到 .kt-window 的 --kt-ui-font 不会被后代看到。 */
+    font-family: var(--kt-ui-font, var(--kt-ui-font-default));
 }
 
 .desktop-titlebar {
@@ -262,7 +286,7 @@ button:disabled {
     align-self: center;
     margin-left: 4px;
     border-radius: 5px;
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .desktop-topbar-icon .kt-icon-direction {
@@ -309,7 +333,7 @@ button:disabled {
     border-radius: 5px;
     color: var(--muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 
@@ -343,7 +367,7 @@ button:disabled {
     height: 22px;
     flex: 0 0 22px;
     border-radius: 4px;
-    font-size: 14px;
+    font-size: var(--kt-text-14);
 }
 
 .desktop-new-session {
@@ -351,7 +375,7 @@ button:disabled {
     height: 28px;
     flex-basis: 28px;
     margin: 0 2px;
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 .desktop-settings-button {
@@ -366,13 +390,13 @@ button:disabled {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 650;
 }
 
 
 .desktop-settings-button .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .tooltip-trigger,
@@ -393,7 +417,7 @@ button[title]::after {
     background: var(--panel-raised);
     box-shadow: 0 6px 16px var(--shadow);
     color: var(--text);
-    font-size: 11px;
+    font-size: var(--kt-text-11);
     font-weight: 500;
     line-height: 1.3;
     opacity: 0;
@@ -468,7 +492,7 @@ button[title]:focus-visible::after {
 }
 
 .desktop-titlebar-control .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .desktop-titlebar + .kt-content .workbench-session-tabs {
@@ -604,7 +628,7 @@ button[title]:focus-visible::after {
 /* ========== 远程运维中心 ========== */
 .operations-capabilities {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     overflow-wrap: anywhere;
     margin-bottom: 8px;
 }
@@ -714,7 +738,7 @@ button[title]:focus-visible::after {
 .operations-drawer-header h2,
 .operations-section h3 {
     margin: 0;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     letter-spacing: 0;
 }
 
@@ -766,7 +790,7 @@ button[title]:focus-visible::after {
     border-radius: 8px;
     color: var(--red);
     background: color-mix(in srgb, var(--red) 5%, transparent);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     line-height: 1.6;
     overflow-wrap: anywhere;
 }
@@ -785,7 +809,7 @@ button[title]:focus-visible::after {
 .operations-summary {
     margin-top: 8px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .operations-kv-grid {
@@ -824,7 +848,7 @@ button[title]:focus-visible::after {
 .operations-list-row {
     border-radius: 4px;
     background: var(--panel-soft);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .operations-core {
@@ -840,7 +864,7 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 6px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .operations-list {
@@ -872,7 +896,7 @@ button[title]:focus-visible::after {
     min-height: 28px;
     margin-bottom: 8px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .operations-tabs {
@@ -892,7 +916,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .operations-tab.is-active {
@@ -920,7 +944,7 @@ button[title]:focus-visible::after {
     height: 30px;
     padding: 0 8px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .operations-filter-input {
@@ -969,13 +993,13 @@ button[title]:focus-visible::after {
 
 .operations-resource-primary strong {
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .operations-resource-primary small,
 .operations-resource-meta {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .operations-resource-meta {
@@ -1046,7 +1070,7 @@ button[title]:focus-visible::after {
     border-radius: 8px;
     color: var(--green);
     background: color-mix(in srgb, var(--green) 6%, transparent);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .operations-status {
@@ -1087,14 +1111,14 @@ button[title]:focus-visible::after {
     height: 34px;
     border-radius: 7px;
     background: transparent;
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 
 .icon-button.slim {
     width: 30px;
     height: 30px;
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 /* ========== 左侧边栏 ========== */
@@ -1151,12 +1175,12 @@ button[title]:focus-visible::after {
     gap: 6px;
     padding: 12px 12px 8px;
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
 }
 
 .sidebar-section-head > .kt-icon {
-    font-size: 16px;
+    font-size: var(--kt-text-16);
     color: var(--muted);
 }
 
@@ -1171,7 +1195,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 
@@ -1204,7 +1228,7 @@ button[title]:focus-visible::after {
     background: var(--bg-strong);
     color: var(--text);
     font-family: "SF Mono", "Menlo", monospace;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .sftp-path-line:focus-within {
@@ -1262,7 +1286,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 
@@ -1275,7 +1299,7 @@ button[title]:focus-visible::after {
     margin-left: auto;
     color: var(--muted);
     cursor: pointer;
-    font-size: 11px;
+    font-size: var(--kt-text-11);
     white-space: nowrap;
 }
 
@@ -1327,7 +1351,7 @@ button[title]:focus-visible::after {
     width: 100%;
     min-width: 0;
     padding: 0 6px 6px;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .sftp-table-head-row,
@@ -1384,7 +1408,7 @@ button[title]:focus-visible::after {
 .sftp-name-cell .kt-icon {
     flex: 0 0 15px;
     color: var(--blue);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .sftp-name-cell > span {
@@ -1401,7 +1425,7 @@ button[title]:focus-visible::after {
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .sftp-table-message.error {
@@ -1418,7 +1442,7 @@ button[title]:focus-visible::after {
     margin: 0 10px;
     padding: 5px 2px 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .sftp-upload-status {
@@ -1429,7 +1453,7 @@ button[title]:focus-visible::after {
     margin: 0 10px;
     padding: 4px 2px 0;
     color: var(--blue);
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .sftp-upload-status span {
@@ -1443,7 +1467,7 @@ button[title]:focus-visible::after {
 .sftp-empty {
     padding: 10px 8px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     line-height: 1.45;
 }
 
@@ -1459,14 +1483,14 @@ button[title]:focus-visible::after {
     padding: 6px 8px;
     border-radius: 6px;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     cursor: pointer;
 }
 
 
 .sftp-tree-item > .kt-icon {
     color: var(--amber);
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .sftp-tree-item.is-file {
@@ -1500,12 +1524,12 @@ button[title]:focus-visible::after {
     padding: 5px 6px;
     color: var(--muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
 }
 
 .tree-group-title > .kt-icon {
-    font-size: 14px;
+    font-size: var(--kt-text-14);
     color: var(--muted);
     transition: transform 0.12s ease;
 }
@@ -1579,14 +1603,14 @@ button[title]:focus-visible::after {
 
 .connection-copy strong {
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.25;
 }
 
 .connection-copy small {
     margin-top: 2px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .connection-actions {
@@ -1625,11 +1649,11 @@ button[title]:focus-visible::after {
     height: 24px;
     border-radius: 5px;
     background: transparent;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .connection-actions .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 /* ========== 分隔条 ========== */
@@ -1736,6 +1760,59 @@ button[title]:focus-visible::after {
     flex-direction: column;
 }
 
+/* 会话内命令历史 */
+.command-history-container {
+    flex: 0 1 auto;
+    min-height: 100px;
+    max-height: 45%;
+    min-width: 0;
+    overflow: hidden;
+}
+.command-history-splitter {
+    flex: 0 0 5px;
+    cursor: row-resize;
+    background: var(--border-soft);
+    touch-action: none;
+}
+.command-history-splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.command-history-panel {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--panel);
+    color: var(--text);
+    font-size: var(--kt-text-12);
+}
+.command-history-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.command-history-count { flex: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+.command-history-hint, .command-history-empty, .command-history-feedback {
+    margin: 0;
+    padding: 6px 10px;
+    color: var(--muted);
+    font-size: var(--kt-text-11);
+}
+.command-history-list { overflow: auto; flex: 1; min-height: 0; overscroll-behavior: contain; }
+.command-history-row {
+    display: grid;
+    grid-template-columns: 8ch minmax(0, 1fr) 28px;
+    gap: 10px;
+    align-items: start;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.command-history-row time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.command-history-row code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.password-auth-status { color: var(--muted); margin: 6px 0 0; font-size: var(--kt-text-12); }
+.password-saved-reveal { margin-top: 6px; }
+
 /* ========== 终端面板 ========== */
 
 .terminal-panel {
@@ -1814,7 +1891,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: currentColor;
     cursor: pointer;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     opacity: 0.78;
 }
 
@@ -1839,7 +1916,7 @@ button[title]:focus-visible::after {
     height: 22px;
     border-radius: 5px;
     background: transparent;
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 .new-tab-button {
@@ -1849,7 +1926,7 @@ button[title]:focus-visible::after {
     border-radius: 5px;
     background: transparent;
     color: var(--muted);
-    font-size: 22px;
+    font-size: var(--kt-text-22);
 }
 
 .terminal-body {
@@ -1914,6 +1991,8 @@ button[title]:focus-visible::after {
     flex-direction: column;
     color: var(--terminal-gutter-lineno);
     font-size: inherit;
+    /* 列宽由 terminal.rs 下发的变量决定，回退值与常量保持一致。 */
+    font-variant-numeric: tabular-nums;
     line-height: var(--terminal-row-height);
     user-select: none;
     pointer-events: none;
@@ -1924,13 +2003,13 @@ button[title]:focus-visible::after {
     height: var(--terminal-row-height);
     line-height: var(--terminal-row-height);
     display: flex;
-    gap: 0.5ch;
+    gap: var(--terminal-gutter-gap, 1ch);
 }
 
 /* gutter 前景色统一用不透明主题变量：半透明灰在浅色终端底色上会被冲淡到看不见。 */
 .terminal-gutter-lineno {
     display: inline-block;
-    width: 5ch;
+    width: var(--terminal-gutter-lineno-width, 5ch);
     text-align: right;
     color: var(--terminal-gutter-lineno);
 }
@@ -1941,7 +2020,7 @@ button[title]:focus-visible::after {
 
 .terminal-gutter-time {
     display: inline-block;
-    min-width: 10ch;
+    width: var(--terminal-gutter-time-width, 10ch);
     color: var(--terminal-gutter-time);
 }
 
@@ -2085,14 +2164,14 @@ button[title]:focus-visible::after {
 .empty-workbench h2 {
     margin-bottom: 6px;
     color: var(--text);
-    font-size: 19px;
+    font-size: var(--kt-text-19);
 }
 
 .empty-workbench p {
     max-width: 420px;
     margin: 0;
     color: var(--muted);
-    font-size: 14px;
+    font-size: var(--kt-text-14);
     line-height: 1.5;
 }
 
@@ -2182,11 +2261,11 @@ button[title]:focus-visible::after {
 
 .monitor-panel.compact .metric-label {
     gap: 4px;
-    font-size: 10px;
+    font-size: var(--kt-text-10);
 }
 
 .monitor-panel.compact .metric-label .kt-icon {
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .monitor-panel.compact .metric-value-row {
@@ -2194,11 +2273,11 @@ button[title]:focus-visible::after {
 }
 
 .monitor-panel.compact .metric-value-row strong {
-    font-size: 14px;
+    font-size: var(--kt-text-14);
 }
 
 .monitor-panel.compact .metric-value-row small {
-    font-size: 10px;
+    font-size: var(--kt-text-10);
 }
 
 .monitor-panel.compact .metric-value-row.is-stacked {
@@ -2218,7 +2297,7 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 8px;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
 }
 
@@ -2228,7 +2307,7 @@ button[title]:focus-visible::after {
 
 .monitor-title > .kt-icon {
     color: var(--blue);
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .monitor-grid {
@@ -2248,7 +2327,7 @@ button[title]:focus-visible::after {
     gap: 8px;
     padding-top: 8px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.4;
 }
 
@@ -2258,7 +2337,7 @@ button[title]:focus-visible::after {
 
 .monitor-state-message > .kt-icon {
     flex: 0 0 auto;
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .metric-card {
@@ -2293,12 +2372,12 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 6px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
 }
 
 .metric-label .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .metric-value-row {
@@ -2312,7 +2391,7 @@ button[title]:focus-visible::after {
     min-width: 0;
     overflow: hidden;
     color: var(--text);
-    font-size: 20px;
+    font-size: var(--kt-text-20);
     line-height: 1;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2322,7 +2401,7 @@ button[title]:focus-visible::after {
     min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2426,7 +2505,7 @@ button[title]:focus-visible::after {
     border-top: 1px solid var(--border-soft);
     background: var(--panel);
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .status-monitor {
@@ -2451,7 +2530,7 @@ button[title]:focus-visible::after {
     background: var(--panel);
     box-shadow: 0 12px 40px var(--shadow);
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     line-height: 1.4;
     pointer-events: auto;
     overflow-wrap: anywhere;
@@ -2526,7 +2605,7 @@ button[title]:focus-visible::after {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .sftp-toolbar {
@@ -2577,7 +2656,7 @@ button[title]:focus-visible::after {
     padding: 0 10px;
     border-bottom: 1px solid var(--border-soft);
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 700;
 }
 
@@ -2586,7 +2665,7 @@ button[title]:focus-visible::after {
     padding: 0 10px;
     color: var(--text);
     cursor: default;
-    font-size: 14px;
+    font-size: var(--kt-text-14);
 }
 
 
@@ -2611,7 +2690,7 @@ button[title]:focus-visible::after {
     align-items: center;
     justify-content: center;
     color: var(--blue);
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .file-icon.folder {
@@ -2621,7 +2700,7 @@ button[title]:focus-visible::after {
 .sftp-row span:nth-child(2),
 .sftp-row span:nth-child(3) {
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .sftp-message {
@@ -2642,7 +2721,7 @@ button[title]:focus-visible::after {
     padding: 0 14px;
     border-top: 1px solid var(--border);
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .sftp-footer button {
@@ -2655,7 +2734,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 17px;
+    font-size: var(--kt-text-17);
 }
 
 
@@ -2687,7 +2766,7 @@ button[title]:focus-visible::after {
     background: transparent;
     color: var(--menu-text);
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     text-align: left;
 }
 
@@ -2715,7 +2794,7 @@ button[title]:focus-visible::after {
 }
 
 .context-menu .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .context-menu span {
@@ -2727,7 +2806,7 @@ button[title]:focus-visible::after {
 .context-menu small {
     color: var(--menu-muted);
     font-family: "SF Mono", "Menlo", monospace;
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .context-separator {
@@ -2802,7 +2881,7 @@ button[title]:focus-visible::after {
 .upload-conflict-dialog .group-form p {
     margin-bottom: 10px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.45;
 }
 
@@ -2816,7 +2895,7 @@ button[title]:focus-visible::after {
     background: var(--bg-strong);
     color: var(--text);
     font-family: "SF Mono", "Menlo", "Consolas", monospace;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -2847,7 +2926,7 @@ button[title]:focus-visible::after {
     height: 34px;
     flex: 0 0 34px;
     color: var(--blue);
-    font-size: 22px;
+    font-size: var(--kt-text-22);
 }
 
 .external-edit-dialog-body > div {
@@ -2864,13 +2943,13 @@ button[title]:focus-visible::after {
 
 .external-edit-dialog-body strong {
     color: var(--text);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .external-edit-dialog-body p {
     margin-top: 6px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.5;
 }
 
@@ -2883,7 +2962,7 @@ button[title]:focus-visible::after {
     background: var(--bg-strong);
     color: var(--text);
     font-family: "SF Mono", "Menlo", monospace;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
@@ -2897,7 +2976,7 @@ button[title]:focus-visible::after {
 
 .dialog-field span {
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
 }
 
@@ -2928,7 +3007,7 @@ button[title]:focus-visible::after {
 
 .dialog-fieldset legend {
     padding: 0 4px;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     color: var(--muted);
 }
 
@@ -2981,7 +3060,7 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 8px;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     margin-bottom: 8px;
 }
 
@@ -3015,7 +3094,7 @@ button[title]:focus-visible::after {
 
 .dialog-tab {
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     color: var(--muted);
     background: transparent;
     border: 0;
@@ -3133,7 +3212,7 @@ button[title]:focus-visible::after {
 .settings-head h2 {
     flex: 1;
     color: var(--text);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     font-weight: 650;
     overflow-wrap: anywhere;
 }
@@ -3141,7 +3220,7 @@ button[title]:focus-visible::after {
 .settings-version {
     flex: 0 0 auto;
     color: var(--faint);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     letter-spacing: 0;
     user-select: text;
 }
@@ -3176,7 +3255,7 @@ button[title]:focus-visible::after {
     color: var(--muted);
     cursor: pointer;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     text-align: left;
 }
 
@@ -3196,7 +3275,7 @@ button[title]:focus-visible::after {
 
 .settings-nav-item .kt-icon {
     flex: 0 0 auto;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .settings-body {
@@ -3218,7 +3297,7 @@ button[title]:focus-visible::after {
 
 .settings-section-heading h3 {
     color: var(--text);
-    font-size: 18px;
+    font-size: var(--kt-text-18);
     font-weight: 650;
     letter-spacing: 0;
 }
@@ -3243,7 +3322,7 @@ button[title]:focus-visible::after {
     color: var(--text);
     cursor: pointer;
     font-family: inherit;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     text-align: left;
 }
 
@@ -3259,7 +3338,7 @@ button[title]:focus-visible::after {
 .settings-nav-list-item .kt-icon {
     flex: 0 0 auto;
     color: var(--muted);
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 .settings-row {
@@ -3291,7 +3370,7 @@ button[title]:focus-visible::after {
 
 .settings-row strong {
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
 }
 
@@ -3300,7 +3379,7 @@ button[title]:focus-visible::after {
     min-height: 18px;
     margin-top: 4px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
@@ -3327,7 +3406,7 @@ button[title]:focus-visible::after {
     color: var(--muted);
     cursor: pointer;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .segmented-control button.is-selected {
@@ -3448,12 +3527,12 @@ button[title]:focus-visible::after {
 .settings-button.slim {
     min-height: 28px;
     padding: 5px 10px;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
 }
 
 .settings-button .kt-icon {
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .settings-toggle-group {
@@ -3468,7 +3547,7 @@ button[title]:focus-visible::after {
     align-items: center;
     gap: 6px;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     cursor: pointer;
 }
 
@@ -3498,7 +3577,7 @@ button[title]:focus-visible::after {
 .settings-share-hint {
     margin: 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-align: center;
 }
 
@@ -3513,7 +3592,7 @@ button[title]:focus-visible::after {
 .settings-share-label {
     flex: 0 0 auto;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .settings-share-value {
@@ -3522,12 +3601,12 @@ button[title]:focus-visible::after {
     overflow-wrap: anywhere;
     color: var(--text);
     font-family: "SF Mono", "Menlo", "Consolas", monospace;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 /* 配对码是要念给人听、手抄的，字号放大、字距拉开。 */
 .settings-share-value.is-code {
-    font-size: 20px;
+    font-size: var(--kt-text-20);
     font-weight: 700;
     letter-spacing: 0.18em;
 }
@@ -3535,7 +3614,7 @@ button[title]:focus-visible::after {
 .settings-sync-status {
     margin: 10px 0 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     line-height: 1.5;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -3563,7 +3642,7 @@ button[title]:focus-visible::after {
     flex: 0 1 auto;
     overflow-wrap: anywhere;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
 }
 
@@ -3573,7 +3652,7 @@ button[title]:focus-visible::after {
     overflow: hidden;
     color: var(--muted);
     font-family: "SF Mono", "Menlo", monospace;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -3591,7 +3670,7 @@ button[title]:focus-visible::after {
 
 .settings-editor-empty {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 /* ========== 扫码取景 ========== */
@@ -3618,7 +3697,7 @@ button[title]:focus-visible::after {
 
 .scanner-head h2 {
     color: #f4f8ff;
-    font-size: 16px;
+    font-size: var(--kt-text-16);
 }
 
 .scanner-viewport {
@@ -3652,7 +3731,7 @@ button[title]:focus-visible::after {
     flex: 0 0 auto;
     padding: 16px 20px 24px;
     color: rgba(238, 244, 255, 0.78);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.5;
     text-align: center;
 }
@@ -3726,7 +3805,7 @@ button[title]:focus-visible::after {
 
 .inline-editor-title strong {
     overflow: hidden;
-    font-size: 14px;
+    font-size: var(--kt-text-14);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -3734,7 +3813,7 @@ button[title]:focus-visible::after {
 .inline-editor-title small {
     overflow: hidden;
     color: var(--faint);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -3745,7 +3824,7 @@ button[title]:focus-visible::after {
     color: var(--amber);
     background: rgba(242, 184, 91, 0.14);
     border-radius: 999px;
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .inline-editor-close {
@@ -3765,7 +3844,7 @@ button[title]:focus-visible::after {
 .inline-editor-banner {
     flex: 0 0 auto;
     padding: 8px 16px;
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .inline-editor-banner.is-error {
@@ -3784,7 +3863,7 @@ button[title]:focus-visible::after {
     color: var(--text);
     font-family: "SF Mono", "Menlo", "Consolas", "PingFang SC", monospace;
     /* iOS 会对 font-size < 16px 的输入框自动放大页面。 */
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.5;
     tab-size: 4;
     white-space: pre;
@@ -3806,7 +3885,7 @@ button[title]:focus-visible::after {
 .inline-editor-footer.is-confirm {
     color: var(--amber);
     background: rgba(242, 184, 91, 0.1);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .inline-editor-hint {
@@ -3814,7 +3893,7 @@ button[title]:focus-visible::after {
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
 }
 
 .inline-editor-footer.is-confirm span {
@@ -3841,7 +3920,7 @@ button[title]:focus-visible::after {
 
 .inline-editor-status-message {
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.5;
 }
 
@@ -3869,7 +3948,7 @@ button[title]:focus-visible::after {
 
 .kt-window.is-phone .inline-editor-text {
     /* iOS 上小于 16px 的输入框会触发自动缩放，手机端放大字号。 */
-    font-size: 16px;
+    font-size: max(16px, var(--kt-text-16));
     /* 窄屏横向滚动读代码比折行更难用，手机上改为折行。 */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -3983,7 +4062,7 @@ button[title]:focus-visible::after {
     border-radius: var(--radius);
     background: transparent;
     color: var(--text);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     font-weight: 600;
     text-align: left;
 }
@@ -4009,7 +4088,7 @@ button[title]:focus-visible::after {
     border-radius: var(--radius);
     background: transparent;
     color: var(--muted);
-    font-size: 18px;
+    font-size: var(--kt-text-18);
 }
 
 .phone-topbar-button:active {
@@ -4057,11 +4136,11 @@ button[title]:focus-visible::after {
 
 .phone-empty strong {
     color: var(--text);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
 }
 
 .phone-empty p {
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.5;
 }
 
@@ -4086,7 +4165,7 @@ button[title]:focus-visible::after {
     overflow: hidden;
     flex: 1;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
     letter-spacing: 0;
     text-overflow: ellipsis;
@@ -4134,7 +4213,7 @@ button[title]:focus-visible::after {
     overflow: hidden;
     flex: 1;
     color: var(--faint);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     font-weight: 600;
     letter-spacing: 0;
     text-overflow: ellipsis;
@@ -4183,7 +4262,7 @@ button[title]:focus-visible::after {
 
 .phone-row-copy strong {
     overflow: hidden;
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -4192,7 +4271,7 @@ button[title]:focus-visible::after {
 .phone-row-copy small {
     overflow: hidden;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -4202,7 +4281,7 @@ button[title]:focus-visible::after {
     min-width: 48px;
     background: transparent;
     color: var(--muted);
-    font-size: 20px;
+    font-size: var(--kt-text-20);
     line-height: 1;
 }
 
@@ -4234,7 +4313,7 @@ button[title]:focus-visible::after {
     height: 44px;
     flex: 1;
     padding: 0 10px;
-    font-size: 16px;
+    font-size: max(16px, var(--kt-text-16));
 }
 
 
@@ -4247,7 +4326,7 @@ button[title]:focus-visible::after {
     border-radius: var(--radius);
     background: var(--panel-raised);
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     white-space: nowrap;
 }
 
@@ -4338,7 +4417,7 @@ button[title]:focus-visible::after {
     background: var(--panel-raised);
     color: var(--text);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .phone-key:active {
@@ -4356,7 +4435,7 @@ button[title]:focus-visible::after {
     padding: 4px 12px;
     color: var(--blue);
     background: var(--accent-soft);
-    font-size: 12px;
+    font-size: var(--kt-text-12);
     text-align: center;
 }
 
@@ -4461,7 +4540,7 @@ button[title]:focus-visible::after {
     padding: 8px 2px;
     background: transparent;
     color: var(--faint);
-    font-size: 11px;
+    font-size: var(--kt-text-11);
 }
 
 .phone-tab .kt-icon {
@@ -4517,7 +4596,7 @@ button[title]:focus-visible::after {
     flex: 0 0 auto;
     padding: 8px 20px 12px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -4532,7 +4611,7 @@ button[title]:focus-visible::after {
     padding: 0 20px;
     background: transparent;
     color: var(--text);
-    font-size: 15px;
+    font-size: var(--kt-text-15);
     text-align: left;
 }
 
@@ -4564,7 +4643,7 @@ button[title]:focus-visible::after {
     border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     box-shadow: 0 10px 24px var(--shadow);
-    font-size: 13px;
+    font-size: var(--kt-text-13);
 }
 
 .phone-status-notification span {
@@ -4610,7 +4689,7 @@ button[title]:focus-visible::after {
 /* iOS 会对 font-size < 16px 的输入框自动放大页面，手机上统一放大到 16px。 */
 .kt-window.is-phone input:not([type="checkbox"]):not([type="color"]),
 .kt-window.is-phone select {
-    font-size: 16px;
+    font-size: max(16px, var(--kt-text-16));
 }
 
 .kt-window.is-phone .settings-head {
@@ -4722,11 +4801,11 @@ button[title]:focus-visible::after {
     padding: 24px;
     color: var(--text);
     container-type: inline-size;
-    font-size: 13px;
+    font-size: var(--kt-text-13);
     line-height: 1.6;
 }
 
-.update-page-heading h3 { font-size: 18px; font-weight: 650; letter-spacing: 0; }
+.update-page-heading h3 { font-size: var(--kt-text-18); font-weight: 650; letter-spacing: 0; }
 .update-page-heading p { margin-top: 4px; color: var(--muted); }
 .update-card { min-width: 0; border: 1px solid var(--border-soft); border-radius: 14px; background: var(--bg-strong); }
 .update-status-card { padding: 22px; background: linear-gradient(145deg, var(--accent-soft), transparent 68%), var(--bg-strong); }
@@ -4738,19 +4817,19 @@ button[title]:focus-visible::after {
 .update-status-card.is-error .update-state-icon { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .update-status-card.is-neutral .update-state-icon { color: var(--muted); background: var(--panel-soft); }
 .update-status-copy { min-width: 0; }
-.update-status-copy h4 { font-size: 20px; font-weight: 650; line-height: 1.35; letter-spacing: 0; overflow-wrap: anywhere; }
-.update-status-copy p { margin-top: 7px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.update-status-copy h4 { font-size: var(--kt-text-20); font-weight: 650; line-height: 1.35; letter-spacing: 0; overflow-wrap: anywhere; }
+.update-status-copy p { margin-top: 7px; color: var(--muted); font-size: var(--kt-text-13); line-height: 1.65; }
 .update-version-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 20px; }
-.update-channel { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--muted); background: var(--panel); font-size: 11px; font-weight: 600; }
-.update-current-version, .update-last-check, .update-package-size { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.update-channel { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--muted); background: var(--panel); font-size: var(--kt-text-11); font-weight: 600; }
+.update-current-version, .update-last-check, .update-package-size { color: var(--muted); font-size: var(--kt-text-12); font-variant-numeric: tabular-nums; }
 .update-current-version, .update-target-line strong { overflow-wrap: anywhere; }
 .update-target-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
-.update-target-line > span:first-child { color: var(--muted); font-size: 12px; }
-.update-target-line strong { min-width: 0; font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.update-target-line > span:first-child { color: var(--muted); font-size: var(--kt-text-12); }
+.update-target-line strong { min-width: 0; font-size: var(--kt-text-16); font-weight: 650; font-variant-numeric: tabular-nums; }
 .update-package-size { margin-left: auto; }
 .update-card-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; margin-top: 22px; }
 .software-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
-.update-button { min-height: 38px; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; line-height: 1.4; white-space: normal; text-align: center; transition: transform 160ms var(--update-ease-out, cubic-bezier(0.23, 1, 0.32, 1)), opacity 160ms ease; }
+.update-button { min-height: 38px; padding: 8px 14px; border-radius: 8px; font-size: var(--kt-text-13); font-weight: 600; line-height: 1.4; white-space: normal; text-align: center; transition: transform 160ms var(--update-ease-out, cubic-bezier(0.23, 1, 0.32, 1)), opacity 160ms ease; }
 .update-button .kt-icon { flex: 0 0 auto; }
 .update-button.primary { background: var(--blue); color: var(--update-button-ink, #08121f); }
 .update-button:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
@@ -4758,47 +4837,59 @@ button[title]:focus-visible::after {
 .update-button:disabled { opacity: 0.5; }
 .update-toggle:focus-visible::before { transition: none; }
 .update-card-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
-.update-card-heading h4 { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; }
-.update-card-heading h4 .kt-icon { color: var(--muted); font-size: 16px; }
-.update-card-heading > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.update-card-heading h4 { display: inline-flex; align-items: center; gap: 8px; font-size: var(--kt-text-14); font-weight: 650; }
+.update-card-heading h4 .kt-icon { color: var(--muted); font-size: var(--kt-text-16); }
+.update-card-heading > span { color: var(--muted); font-size: var(--kt-text-11); font-variant-numeric: tabular-nums; }
 .update-notes-card { display: grid; gap: 16px; padding: 18px 20px; }
-.update-markdown { min-width: 0; max-height: 220px; overflow: auto; color: var(--text); font-size: 13px; line-height: 1.75; scrollbar-gutter: stable; }
+.update-markdown { min-width: 0; max-height: 220px; overflow: auto; color: var(--text); font-size: var(--kt-text-13); line-height: 1.75; scrollbar-gutter: stable; }
 .update-markdown.is-expanded { max-height: none; }
 .update-markdown > :first-child { margin-top: 0; }
 .update-markdown p, .update-markdown h4, .update-markdown ul, .update-markdown ol, .update-markdown pre, .update-markdown blockquote { margin-top: 10px; }
-.update-markdown h4 { font-size: 13px; font-weight: 650; }
+.update-markdown h4 { font-size: var(--kt-text-13); font-weight: 650; }
 .update-markdown ul, .update-markdown ol { padding-left: 20px; }
 .update-markdown li + li { margin-top: 5px; }
 .update-markdown li p { margin-top: 4px; }
 .update-markdown p, .update-markdown li, .update-markdown a { overflow-wrap: anywhere; }
-.update-markdown code { padding: 2px 4px; border-radius: 4px; background: var(--panel-soft); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.update-markdown code { padding: 2px 4px; border-radius: 4px; background: var(--panel-soft); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: var(--kt-text-12); overflow-wrap: anywhere; }
 .update-markdown pre { max-width: 100%; overflow-x: auto; padding: 10px 12px; border-radius: 8px; background: var(--panel-soft); }
 .update-markdown pre code { padding: 0; white-space: pre-wrap; }
 .update-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border); color: var(--muted); }
 .update-markdown hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border-soft); }
-.update-empty-notes, .update-notes-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.update-empty-notes, .update-notes-hint { color: var(--muted); font-size: var(--kt-text-12); line-height: 1.6; }
 .update-release-link, .update-markdown a { color: var(--blue); text-decoration: none; }
-.update-release-link { display: inline-flex; width: fit-content; max-width: 100%; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
-.update-text-button { justify-self: start; padding: 3px 0; background: transparent; color: var(--blue); cursor: pointer; font-size: 12px; font-weight: 600; }
+.update-release-link { display: inline-flex; width: fit-content; max-width: 100%; align-items: center; gap: 6px; font-size: var(--kt-text-12); overflow-wrap: anywhere; }
+.update-text-button { justify-self: start; padding: 3px 0; background: transparent; color: var(--blue); cursor: pointer; font-size: var(--kt-text-12); font-weight: 600; }
 .update-page-link { justify-self: center; }
 .update-preferences { display: grid; min-width: 0; gap: 10px; }
-.update-preferences > h4 { padding-left: 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.update-preferences > h4 { padding-left: 2px; font-size: var(--kt-text-12); font-weight: 600; color: var(--muted); }
 .update-preferences-card { overflow: hidden; }
 .update-preference-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; cursor: pointer; }
 .update-preference-row + .update-preference-row { border-top: 1px solid var(--border-soft); }
 .update-preference-copy { display: grid; min-width: 0; gap: 3px; }
-.update-preference-copy strong { font-size: 13px; font-weight: 600; }
-.update-preference-copy > span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.update-preference-copy strong { font-size: var(--kt-text-13); font-weight: 600; }
+.update-preference-copy > span { color: var(--muted); font-size: var(--kt-text-12); line-height: 1.55; }
 .settings-toggle input[type="checkbox"], .update-toggle { appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 36px; width: 36px; height: 21px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-raised); cursor: pointer; }
 .settings-toggle input[type="checkbox"]::before, .update-toggle::before { content: ""; display: block; position: absolute; width: 15px; height: 15px; top: 2px; left: 2px; border-radius: 50%; background: var(--muted); transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
 .settings-toggle input[type="checkbox"]:checked, .update-toggle:checked { border-color: var(--blue); background: var(--blue); }
 .settings-toggle input[type="checkbox"]:checked::before, .update-toggle:checked::before { transform: translateX(15px); background: var(--accent-ink); }
 .settings-toggle input[type="checkbox"]:disabled, .update-toggle:disabled { opacity: 0.45; cursor: default; }
-.update-local-hint { padding-left: 2px; color: var(--muted); font-size: 11px; }
-.update-progress-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.update-local-hint { padding-left: 2px; color: var(--muted); font-size: var(--kt-text-11); }
+/* 更新通道代理表单：卡片内竖排字段，主机与端口并排。 */
+.update-proxy-card { display: grid; gap: 14px; padding: 16px 18px; }
+.update-proxy-field { display: grid; min-width: 0; gap: 6px; }
+.update-proxy-field > span { color: var(--muted); font-size: var(--kt-text-12); }
+.update-proxy-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.update-proxy-row > .update-proxy-field:first-child { flex: 1 1 180px; }
+.update-proxy-row > .update-proxy-field:last-child { flex: 0 0 120px; }
+.update-proxy-error { color: var(--red); font-size: var(--kt-text-12); overflow-wrap: anywhere; }
+.update-proxy-actions { display: flex; justify-content: flex-end; }
+.update-progress-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: var(--kt-text-12); font-variant-numeric: tabular-nums; }
 .update-progress-meta strong { color: var(--text); font-weight: 600; }
+.update-progress-meta .update-download-speed { color: var(--muted); }
+.update-elevation-warning { border-color: color-mix(in srgb, var(--blue) 24%, transparent); background: color-mix(in srgb, var(--blue) 7%, transparent); }
+.update-elevation-warning > .kt-icon { color: var(--blue); }
 .update-download-progress { display: grid; gap: 8px; margin-top: 18px; }
-.update-download-progress > p { color: var(--muted); font-size: 12px; }
+.update-download-progress > p { color: var(--muted); font-size: var(--kt-text-12); }
 .update-download-progress progress { display: block; appearance: none; -webkit-appearance: none; width: 100%; height: 6px; overflow: hidden; border: 0; border-radius: 5px; background: var(--border-soft); accent-color: var(--blue); }
 .update-download-progress progress::-webkit-progress-bar { background: var(--border-soft); border-radius: 5px; }
 .update-download-progress progress::-webkit-progress-value { background: var(--blue); border-radius: 5px; }
@@ -4807,27 +4898,27 @@ button[title]:focus-visible::after {
 .update-indeterminate > span { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--blue); animation: update-indeterminate 1.3s linear infinite; }
 .is-spinning > .kt-icon, .update-mini-spinner { animation: update-spin 0.8s linear infinite; }
 .update-mini-spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid var(--border); border-top-color: var(--blue); border-radius: 50%; }
-.update-install-steps { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 18px; font-size: 12px; color: var(--muted); }
+.update-install-steps { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 18px; font-size: var(--kt-text-12); color: var(--muted); }
 .update-install-steps > div { display: flex; align-items: center; gap: 7px; }
-.update-install-steps > div > span { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border-soft); border-radius: 50%; font-size: 10px; }
+.update-install-steps > div > span { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border-soft); border-radius: 50%; font-size: var(--kt-text-10); }
 .update-install-steps .kt-icon { width: 12px; height: 12px; }
 .update-install-steps .is-complete { color: var(--green); }
 .update-install-steps .is-active { color: var(--text); }
-.software-update-error { min-width: 0; margin-top: 16px; padding: 12px; border: 1px solid color-mix(in srgb, var(--red) 25%, transparent); border-radius: 8px; color: var(--red); background: color-mix(in srgb, var(--red) 5%, transparent); font-size: 12px; line-height: 1.6; }
+.software-update-error { min-width: 0; margin-top: 16px; padding: 12px; border: 1px solid color-mix(in srgb, var(--red) 25%, transparent); border-radius: 8px; color: var(--red); background: color-mix(in srgb, var(--red) 5%, transparent); font-size: var(--kt-text-12); line-height: 1.6; }
 .software-update-error > p { font-weight: 600; }
 .software-update-error summary { width: fit-content; margin-top: 4px; cursor: pointer; }
 .software-update-error details p { margin-top: 8px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-.software-update-layer { --update-ease-out: cubic-bezier(0.23, 1, 0.32, 1); color: var(--text); font-size: 13px; }
+.software-update-layer { --update-ease-out: cubic-bezier(0.23, 1, 0.32, 1); color: var(--text); font-size: var(--kt-text-13); font-family: var(--kt-ui-font, var(--kt-ui-font-default)); }
 .software-update-overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: rgba(2, 6, 12, 0.6); }
 .software-update-layer.theme-light .software-update-overlay { background: rgba(15, 23, 42, 0.32); }
 .software-update-dialog { width: min(440px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: 0 24px 80px var(--shadow); line-height: 1.65; overflow-wrap: anywhere; }
 .software-update-dialog:focus { outline: none; }
 .update-dialog-icon { width: 48px; height: 48px; margin-bottom: 18px; border-radius: 14px; }
 .update-dialog-icon .kt-icon { width: 24px; height: 24px; }
-.software-update-dialog h3 { font-size: 21px; font-weight: 650; line-height: 1.35; letter-spacing: 0; }
-.update-dialog-target { margin-top: 7px; color: var(--text); font-weight: 600; font-size: 13px; }
-#update-dialog-description { margin-top: 10px; color: var(--muted); font-size: 13px; }
-.update-restart-warning { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--amber) 20%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); color: var(--text); font-size: 12px; }
+.software-update-dialog h3 { font-size: var(--kt-text-21); font-weight: 650; line-height: 1.35; letter-spacing: 0; }
+.update-dialog-target { margin-top: 7px; color: var(--text); font-weight: 600; font-size: var(--kt-text-13); }
+#update-dialog-description { margin-top: 10px; color: var(--muted); font-size: var(--kt-text-13); }
+.update-restart-warning { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--amber) 20%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); color: var(--text); font-size: var(--kt-text-12); }
 .update-restart-warning > .kt-icon { flex: 0 0 auto; margin-top: 2px; color: var(--amber); width: 16px; height: 16px; }
 .update-dialog-actions { justify-content: space-between; margin-top: 24px; }
 .software-update-notice { position: fixed; right: 20px; bottom: 44px; z-index: 1500; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; width: max-content; max-width: min(560px, calc(100vw - 40px)); padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: 0 12px 40px var(--shadow); }
@@ -4835,8 +4926,8 @@ button[title]:focus-visible::after {
 .update-notice-icon { width: 34px; height: 34px; border-radius: 10px; }
 .update-notice-icon .kt-icon { width: 18px; height: 18px; }
 .update-notice-copy { display: grid; min-width: 0; flex: 1; gap: 2px; overflow-wrap: anywhere; }
-.update-notice-copy strong { font-size: 13px; font-weight: 600; }
-.update-notice-copy span { color: var(--muted); font-size: 12px; }
+.update-notice-copy strong { font-size: var(--kt-text-13); font-weight: 600; }
+.update-notice-copy span { color: var(--muted); font-size: var(--kt-text-12); }
 .software-update-notice > .software-update-error { flex-basis: 100%; margin-top: 0; }
 @keyframes update-spin { to { transform: rotate(360deg); } }
 @keyframes update-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(386%); } }
@@ -4847,7 +4938,7 @@ button[title]:focus-visible::after {
 @container (max-width: 400px) {
     .update-status-card { padding: 18px; }
     .update-status-heading { gap: 10px; }
-    .update-status-copy h4 { font-size: 18px; }
+    .update-status-copy h4 { font-size: var(--kt-text-18); }
     .update-card-footer { align-items: flex-start; flex-direction: column; }
     .update-notes-card { padding: 16px; }
     .update-preference-row { gap: 12px; padding: 14px 16px; }

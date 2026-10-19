@@ -82,11 +82,20 @@ impl PartialEq for ContainerTerminalState {
     }
 }
 
+/// 每个会话仅保留最近 200 条命令，不进入配置或同步。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandEntry {
+    pub sequence: u64,
+    pub command: String,
+    pub time: String,
+}
+
 /// 单个会话的 UI 状态
 #[derive(Clone)]
 pub struct SessionState {
     pub id: SessionId,
     pub title: String,
+    pub command_history: VecDeque<CommandEntry>,
     pub connect_params: ConnectParams,
     pub pty: PtySize,
     pub snapshot: Option<GridSnapshot>,
@@ -591,12 +600,13 @@ impl AppState {
 
     /// 请求向远端交互 shell 注入目录上报 hook。
     ///
-    /// 只有已连接且自动同步开启的会话才注入，且每次连接最多一次。注入是尽力而为的
-    /// 增强（UI 侧有输入推断兜底），投递失败只记日志，不写入会话错误状态。
+    /// 连接后为目录上报与命令历史共用一次注入；目录跟随仍由自动同步开关控制。
+    /// 投递失败只记日志，不写入会话错误状态。
     fn request_shell_integration(&mut self, id: SessionId) {
-        let should_request = self.sessions.get(&id).is_some_and(|session| {
-            session.connected && session.sftp_auto_sync && !session.shell_integration_requested
-        });
+        let should_request = self
+            .sessions
+            .get(&id)
+            .is_some_and(|session| session.connected && !session.shell_integration_requested);
         if !should_request {
             return;
         }
@@ -693,6 +703,26 @@ impl AppState {
                 );
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     sess.snapshot = Some(*snapshot);
+                }
+            }
+            FromCore::CommandSubmitted { id, command } => {
+                if let Some(session) = self
+                    .sessions
+                    .get_mut(&id)
+                    .filter(|session| session.connected)
+                {
+                    let sequence = session
+                        .command_history
+                        .back()
+                        .map_or(1, |entry| entry.sequence + 1);
+                    session.command_history.push_back(CommandEntry {
+                        sequence,
+                        command,
+                        time: chrono::Local::now().format("%H:%M:%S").to_string(),
+                    });
+                    if session.command_history.len() > 200 {
+                        session.command_history.pop_front();
+                    }
                 }
             }
             FromCore::Title { id, title } => {
@@ -1662,6 +1692,7 @@ fn core_event_kind(event: &FromCore) -> &'static str {
         FromCore::Connected { .. } => "connected",
         FromCore::Render { .. } => "render",
         FromCore::Title { .. } => "title",
+        FromCore::CommandSubmitted { .. } => "command_submitted",
         FromCore::Cwd { .. } => "cwd",
         FromCore::Bell { .. } => "bell",
         FromCore::SftpListing { .. } => "sftp_listing",
@@ -1819,6 +1850,7 @@ mod tests {
         SessionState {
             id: SessionId(1),
             title: "demo".to_string(),
+            command_history: VecDeque::new(),
             connect_params: ConnectParams::new("example.com", "root"),
             pty: PtySize {
                 cols: 100,
@@ -2105,18 +2137,52 @@ mod tests {
     }
 
     #[test]
-    fn shell_integration_is_not_requested_while_auto_sync_is_off() {
+    fn command_history_enables_shell_integration_without_directory_sync() {
         let mut app_state = app_state();
         let sess = session_state(false);
         let id = sess.id;
         app_state.sessions.insert(id, sess);
 
         app_state.handle_event(FromCore::Connected { id });
-        assert!(!app_state.sessions[&id].shell_integration_requested);
+        assert!(app_state.sessions[&id].shell_integration_requested);
 
-        // 用户打开开关时补注入。
+        // 切换目录同步开关不能关闭历史所需的提示符上报。
         app_state.set_sftp_auto_sync(id, true).unwrap();
         assert!(app_state.sessions[&id].shell_integration_requested);
+    }
+
+    #[test]
+    fn command_history_is_bounded_and_scoped_to_the_connected_session() {
+        let mut app_state = app_state();
+        let id = SessionId(1);
+        app_state.sessions.insert(id, session_state(true));
+        let mut other = session_state(true);
+        other.id = SessionId(2);
+        app_state.sessions.insert(other.id, other);
+        for index in 0..205 {
+            app_state.handle_event(FromCore::CommandSubmitted {
+                id,
+                command: format!("echo {index}"),
+            });
+        }
+        let history = &app_state.sessions[&id].command_history;
+        assert_eq!(history.len(), 200);
+        assert_eq!(history.front().unwrap().command, "echo 5");
+        assert_eq!(history.back().unwrap().command, "echo 204");
+        assert!(app_state.sessions[&SessionId(2)].command_history.is_empty());
+        app_state.sessions.get_mut(&id).unwrap().connected = false;
+        app_state.handle_event(FromCore::CommandSubmitted {
+            id,
+            command: "late".into(),
+        });
+        assert_eq!(app_state.sessions[&id].command_history.len(), 200);
+        app_state
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .command_history
+            .clear();
+        assert!(app_state.sessions[&id].command_history.is_empty());
     }
 
     #[test]

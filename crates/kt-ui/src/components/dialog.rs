@@ -149,6 +149,9 @@ pub fn ConnectionDialog(
     user: Signal<String>,
     group: Signal<String>,
     password: Signal<String>,
+    original_name: Signal<String>,
+    vault_id: Option<String>,
+    saved_vault_id: Option<String>,
     key_path: Signal<String>,
     proxy_jump: Signal<String>,
     proxy_type: Signal<String>,
@@ -165,7 +168,6 @@ pub fn ConnectionDialog(
 ) -> Element {
     // 选项卡状态需在 early return 之前初始化，避免 hooks 顺序随 show 抖动。
     let mut active_tab = use_signal(|| "session".to_string());
-    let mut password_visible = use_signal(|| false);
 
     if !show() {
         return rsx! {};
@@ -183,7 +185,7 @@ pub fn ConnectionDialog(
         div {
             class: "settings-overlay",
             onclick: move |_| {
-                password_visible.set(false);
+                password.set(String::new());
                 show.set(false);
             },
 
@@ -204,7 +206,7 @@ pub fn ConnectionDialog(
                         class: "icon-button slim",
                         title: "{t.cancel}",
                         onclick: move |_| {
-                            password_visible.set(false);
+                            password.set(String::new());
                             show.set(false);
                         },
                         Icon { name: "close" }
@@ -315,31 +317,15 @@ pub fn ConnectionDialog(
                             fieldset {
                                 class: "dialog-fieldset dialog-auth-methods",
                                 legend { "{t.auth_options}" }
-                                div {
-                                    class: "dialog-field",
-                                    span { "{t.password}" }
-                                    div {
-                                        class: "password-input-wrap",
-                                        input {
-                                            r#type: if password_visible() { "text" } else { "password" },
-                                            value: "{password()}",
-                                            oninput: move |evt| {
-                                                password.set(evt.value().clone());
-                                            },
-                                            placeholder: "{t.password_placeholder}"
-                                        }
-                                        button {
-                                            r#type: "button",
-                                            class: "password-toggle",
-                                            title: if password_visible() { t.hide_password } else { t.show_password },
-                                            onclick: move |_| password_visible.set(!password_visible()),
-                                            if password_visible() {
-                                                Icon { name: "eye-off" }
-                                            } else {
-                                                Icon { name: "eye" }
-                                            }
-                                        }
-                                    }
+                                crate::components::password_field::PasswordField {
+                                    password,
+                                    show,
+                                    original_name,
+                                    host,
+                                    port,
+                                    user,
+                                    saved_vault_id,
+                                    language,
                                 }
 
                                 div {
@@ -470,7 +456,7 @@ pub fn ConnectionDialog(
                     button {
                         class: "dialog-btn",
                         onclick: move |_| {
-                            password_visible.set(false);
+                            password.set(String::new());
                             show.set(false);
                         },
                         "{t.cancel}"
@@ -526,7 +512,7 @@ pub fn ConnectionDialog(
                                     port: port_val,
                                     user: user_val.clone(),
                                     auth,
-                                    vault_id: None,
+                                    vault_id: vault_id.clone(),
                                     proxy_jump: {
                                         let trimmed = proxy_jump_str.trim();
                                         if trimmed.is_empty() {
@@ -541,7 +527,7 @@ pub fn ConnectionDialog(
                             };
 
                             on_save.call(profile);
-                            password_visible.set(false);
+                            password.set(String::new());
                             show.set(false);
                         },
                         "{t.save}"

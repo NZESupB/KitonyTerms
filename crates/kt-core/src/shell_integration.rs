@@ -21,7 +21,7 @@ const CLEAR_CURRENT_LINE: &[u8] = b"\r\x1b[2K";
 ///
 /// - `__kt_cwd` 用 `printf '%s'` 传参而不是把 `$PWD` 拼进格式串，路径里的 `%`
 ///   不会被当成格式说明符。
-/// - bash 侧前置追加到 `PROMPT_COMMAND`，并识别 bash 5.1+ 的数组形式，避免把
+/// - bash 侧在用户 hook 之后追加到 `PROMPT_COMMAND`，并识别 bash 5.1+ 的数组形式，避免把
 ///   用户的数组配置压成标量。
 /// - zsh 侧追加 `precmd_functions`；`+=(...)` 与 `setopt` 放进 `eval`，这样
 ///   dash 之类不认该语法的 shell 只是运行期跳过，而不是整行解析失败。
@@ -29,16 +29,16 @@ const CLEAR_CURRENT_LINE: &[u8] = b"\r\x1b[2K";
 ///   [`change_directory_command`] 的前导空格，使文件管理发出的 `cd` 不污染
 ///   用户的 shell history。
 pub const BOOTSTRAP_COMMAND: &str = concat!(
-    r#"__kt_cwd(){ printf '\033]7;file://%s\a' "$PWD"; }; "#,
+    r#"__kt_cwd(){ printf '\033]7;file://%s\a' "$PWD"; if [ "${1:-}" != bootstrap ] && [ -n "${BASH_VERSION:-}${ZSH_VERSION:-}" ]; then printf '\033]1337;KitonyTermsPrompt=ready\a'; fi; }; "#,
     r#"if [ -n "$ZSH_VERSION" ]; then "#,
     r#"eval 'precmd_functions+=(__kt_cwd); setopt hist_ignore_space'; "#,
     r#"elif [ -n "$BASH_VERSION" ]; then "#,
     r#"case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in "#,
     r#""declare -a"*) eval 'PROMPT_COMMAND+=(__kt_cwd)';; "#,
-    r#"*) PROMPT_COMMAND="__kt_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}";; "#,
+    r#"*) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}__kt_cwd";; "#,
     r#"esac; "#,
     r#"HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace"; "#,
-    r#"fi; __kt_cwd; printf '\033]1337;KitonyTermsShellIntegration=done\a'"#,
+    r#"fi; __kt_cwd bootstrap; printf '\033]1337;KitonyTermsShellIntegration=done\a'"#,
     "\n"
 );
 
@@ -236,9 +236,9 @@ mod tests {
 
     #[test]
     fn bootstrap_preserves_existing_shell_hooks() {
-        // bash 标量前置追加、bash 数组追加、zsh precmd 追加都不能覆盖用户配置。
+        // bash 标量、数组与 zsh precmd 均在用户 hook 之后追加，不覆盖已有配置。
         assert!(BOOTSTRAP_COMMAND
-            .contains(r#"PROMPT_COMMAND="__kt_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#));
+            .contains(r#"PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}__kt_cwd""#));
         assert!(BOOTSTRAP_COMMAND.contains("PROMPT_COMMAND+=(__kt_cwd)"));
         assert!(BOOTSTRAP_COMMAND.contains("precmd_functions+=(__kt_cwd)"));
         assert!(
@@ -424,7 +424,7 @@ mod tests {
     }
 
     /// 覆盖用户的 `PROMPT_COMMAND` 会连带废掉他的 history 追加、窗口标题等配置，
-    /// 因此前置追加行为必须真的在 bash 里跑通，而不是只比对字符串。
+    /// 因此追加行为必须真的在 bash 里跑通，而不是只比对字符串。
     #[cfg(unix)]
     #[test]
     fn bootstrap_appends_to_bash_hooks_without_dropping_user_config() {
@@ -447,8 +447,8 @@ mod tests {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("PC=__kt_cwd;history -a|"),
-            "用户原有的 PROMPT_COMMAND 必须保留在后面，实际: {stdout:?}"
+            stdout.contains("PC=history -a;__kt_cwd|"),
+            "用户原有的 PROMPT_COMMAND 必须先执行，实际: {stdout:?}"
         );
         assert!(
             stdout.contains("HC=ignoredups:ignorespace|"),
@@ -519,5 +519,33 @@ mod tests {
                 "{shell} 的 printf 未解释擦除序列"
             );
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn history_prompt_marker_follows_user_hooks_and_not_bootstrap() {
+        let script = format!(
+            "PROMPT_COMMAND=\"printf 'user-hook'\"\n{BOOTSTRAP_COMMAND}\nprintf 'before-prompt'\neval \"$PROMPT_COMMAND\""
+        );
+        let output = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let marker = crate::command_history::PROMPT_MARKER;
+        let index = find_subslice(&output.stdout, marker).unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout[..index]).contains("before-promptuser-hook"));
+        assert_eq!(
+            output
+                .stdout
+                .windows(marker.len())
+                .filter(|part| *part == marker)
+                .count(),
+            1
+        );
+        let mut tracker = crate::command_history::CommandTracker::default();
+        tracker.output(&output.stdout[..index]);
+        assert_eq!(tracker.input(b"hook-password\r", false), None);
+        tracker.output(&output.stdout[index..]);
+        assert_eq!(tracker.input(b"pwd\r", false).as_deref(), Some("pwd"));
     }
 }

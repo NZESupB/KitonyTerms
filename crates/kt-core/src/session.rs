@@ -437,6 +437,8 @@ pub enum FromCore {
     /// 远端 shell 通过 OSC 7 上报的当前工作目录（用于文件管理跟随终端目录）。
     /// The remote shell's current working directory, reported via OSC 7.
     Cwd { id: SessionId, path: String },
+    /// 提示符门控后提交的命令；Debug 不输出命令内容。
+    CommandSubmitted { id: SessionId, command: String },
     /// Terminal bell.
     Bell { id: SessionId },
     /// SFTP 目录列表就绪。SFTP directory listing is ready.
@@ -541,6 +543,9 @@ impl fmt::Debug for FromCore {
                 .finish(),
             FromCore::Title { id, .. } => f.debug_struct("Title").field("id", id).finish(),
             FromCore::Cwd { id, .. } => f.debug_struct("Cwd").field("id", id).finish(),
+            FromCore::CommandSubmitted { id, .. } => {
+                f.debug_struct("CommandSubmitted").field("id", id).finish()
+            }
             FromCore::Bell { id } => f.debug_struct("Bell").field("id", id).finish(),
             FromCore::SftpListing {
                 id,
@@ -1525,6 +1530,7 @@ impl SessionTask {
         // Last CWD reported via OSC 7, used to dedupe repeated Cwd events.
         let mut last_cwd: Option<String> = None;
         let mut osc7_scanner = Osc7Scanner::default();
+        let mut command_tracker = crate::command_history::CommandTracker::default();
 
         // SFTP 子任务的命令发送端,首次收到 SFTP 请求时惰性建立。
         // Command sender to the SFTP subtask, created lazily on first request.
@@ -1633,6 +1639,9 @@ impl SessionTask {
                             if let Err(e) = shell.write(&data).await {
                                 close_error = Some(e.to_string());
                                 break;
+                            }
+                            if let Some(command) = command_tracker.input(&data, term.is_alt_screen()) {
+                                let _ = self.out.send(FromCore::CommandSubmitted { id, command }).await;
                             }
                         }
                         Some(SessionCmd::Resize { cols, rows }) => {
@@ -1983,6 +1992,7 @@ impl SessionTask {
                 msg = shell.next_message() => {
                     match msg {
                         Some(russh::ChannelMsg::Data { data }) => {
+                            command_tracker.output(&data);
                             // OSC 7 始终解析：注入的 hook 上报的第一个目录也在静默期内。
                             for path in osc7_scanner.feed(&data) {
                                 if last_cwd.as_deref() != Some(path.as_str()) {

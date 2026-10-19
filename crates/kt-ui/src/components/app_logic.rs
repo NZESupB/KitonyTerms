@@ -33,6 +33,7 @@ pub struct SessionTabView {
 pub struct ActiveTerminalView {
     pub id: SessionId,
     pub title: String,
+    pub command_history: Vec<crate::state::CommandEntry>,
     pub status: SessionConnectionStatus,
     pub snapshot: Option<GridSnapshot>,
     pub connected: bool,
@@ -93,6 +94,7 @@ pub fn session_state_from_profile(
     SessionState {
         id,
         title: profile.name.clone(),
+        command_history: Default::default(),
         connect_params: profile.params.clone(),
         pty: PtySize {
             cols: 100,
@@ -183,6 +185,7 @@ pub fn active_terminal_view(active: Option<&SessionState>) -> Option<ActiveTermi
     active.map(|sess| ActiveTerminalView {
         id: sess.id,
         title: sess.title.clone(),
+        command_history: sess.command_history.iter().cloned().collect(),
         status: session_connection_status(sess),
         snapshot: sess.snapshot.clone(),
         connected: sess.connected,
