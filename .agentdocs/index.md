@@ -9,13 +9,13 @@
 
 ## 当前任务
 
-- [发布 v0.1.8](workflow/261019-release-v018.md)：提交认证、文件列宽、Docker 监控与返回导航，跟踪正式流水线与产物验证。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
 
 ## 最近归档
 
+- [发布 v0.1.8](workflow/done/261019-release-v018.md)：发布提交 03edaf0；dev 与标签已推送。流水线 39229110227 的 10 项任务全部成功，12 个上传产物发布并设为 Latest；25 项身份/大小/摘要核验通过。Windows 原生构建成功，认证交互、真实 Docker 和 WebView 文件操作仍待实机验收。
 - [认证、文件列宽与运维导航](workflow/done/261019-auth-columns-docker-navigation.md)：四项实现与适用自动检查完成；工作区 569 测试通过/1 忽略，289 项 SSR 浏览器断言及 Windows 认证 API 类型检查通过。完整 Windows 检查受缺失 SDK 阻塞；原生认证、WebView 文件操作、真实 SSH/Docker 对照和性能待实机验收。
 - [发布 v0.1.7](workflow/done/261019-release-v017.md)：发布提交 0be0f5a；升级 zip 9.0.5 修复 v0.1.6 审计阻塞。流水线 39196336172 的 10 项任务全部成功，12 个资产发布并设为 Latest；桌面身份、大小与 SHA-256 摘要一致。本机应用未替换，原生系统认证/SSH/代理/重启安装待实机验收。
 - [命令历史与系统认证查看密码](workflow/done/261019-command-history-password-reveal.md)：第 4、5 项实现及自动检查完成；工作区测试 553 通过/1 忽略，517 项 SSR 浏览器检查和 Windows 认证 API 类型检查通过；原生系统认证、真实 SSH 与原生剪贴板仍待实机验收。
