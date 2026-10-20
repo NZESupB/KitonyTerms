@@ -155,6 +155,11 @@ fn discard_apple_double(reader: &mut impl Read, total: &mut u64) -> Result<()> {
 }
 
 fn checked_path(path: &Path, seen: &mut HashSet<String>) -> Result<PathBuf> {
+    // Windows 会把反斜杠拆为分隔符，必须在 components 归一化之前检查原文。
+    let raw = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("归档路径编码无效 / Invalid path encoding"))?;
+    ensure!(!raw.contains('\\'), "归档路径不安全 / Unsafe archive path");
     let mut normalized = PathBuf::new();
     for component in path.components() {
         let Component::Normal(name) = component else {
@@ -324,8 +329,21 @@ mod tests {
     use super::*;
     #[test]
     fn traversal_duplicates_and_links() {
-        for value in ["../bad", "/bad", "a/../bad", "a\\b", "C:bad", "a."] {
-            assert!(checked_path(Path::new(value), &mut HashSet::new()).is_err());
+        for value in [
+            "../bad",
+            "/bad",
+            "a/../bad",
+            "a\\b",
+            "a/b\\c",
+            "a\\b/c",
+            "a\\..\\bad",
+            "C:bad",
+            "a.",
+        ] {
+            assert!(
+                checked_path(Path::new(value), &mut HashSet::new()).is_err(),
+                "应拒绝不安全路径：{value}"
+            );
         }
         let mut seen = HashSet::new();
         checked_path(Path::new("A/b"), &mut seen).unwrap();
