@@ -118,7 +118,7 @@
 - 更新正文、标签与发布时间从同一次 Release 查询携带至 Available；正文按 UTF-8 边界限 64KiB。UI 用 pulldown-cmark 事件构建受控 Dioxus 节点，原始 HTML 显示为文字、图片仅保留替代文字、链接仅 HTTP/HTTPS；无日志不影响更新包。
 - 检查取消为 Cancelled 中性终态，保留上次成功检查时间与失败计数并将自动检查延后 6 小时；手动重试仍可立即执行。下载取消保留 Available 以便重试。
 - 更新展示位于 software_update/view.rs；点击“重启并安装”直接进入安全收尾，不再显示应用内确认页。SSH 断开和 UAC 提示在原卡片/通知中展示，准备时禁用重复操作并原位显示真实阶段。通知继续在主界面 inert 之外同步主题、强调色、字体和缩放。
-- ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。macOS 更新包使用 DMG，经 hdiutil 校验并只读挂载到 updates 下固定私有挂载点，仅复制 KitonyTerms.app，沿用路径/链接/体积限制；成功与失败均卸载，重试先回收遗留挂载。复制后以 codesign 验证签名和 bundle ID。ZIP 中的 AppleDouble 载体校验标识与体积后丢弃，不得作为普通资源加入签名包。
+- ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。归档路径在调用 Path::components 前拒绝原始反斜杠，避免 Windows 先拆分分隔符导致逐段校验漏检；统一只接受正斜杠归档路径。macOS 更新包使用 DMG，经 hdiutil 校验并只读挂载到 updates 下固定私有挂载点，仅复制 KitonyTerms.app，沿用路径/链接/体积限制；成功与失败均卸载，重试先回收遗留挂载。复制后以 codesign 验证签名和 bundle ID。ZIP 中的 AppleDouble 载体校验标识与体积后丢弃，不得作为普通资源加入签名包。
 - 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。只有匹配的 committed 事务在 GUI 启动确认后清理备份及提权/失败标记，普通启动不清除失败提权提示。失败由持有互斥的普通协调进程统一恢复，目标未改动时直接保留原版；恢复失败保留 journal 与备份。
 - Windows 的新事务使用 `TransactionStorage::UserDirectory`，暂存与备份在原用户 updates 下；字段缺省按 Legacy 解析已有记录。`copy_file_synced` 用新建写句柄复制、刷盘再设置权限，不能用只读 File::open 刷盘。普通便携版直接替换，受保护便携版经 runas 请求 UAC；安装版经已登记目录的 Inno Setup。目标卷内临时复制后同卷替换，支持跨盘。只有目标写入权限错误可提权一次，32/33/1224 及写探测识别的共享冲突按占用处理，明确只读的目标不重试 UAC；主程序失败不改名让位，辅助副本可让位且恢复失败显式报告。
 - Windows 授权集中于 install/elevation.rs：显式传递原用户事务目录与 journal 摘要，管理员入口重新校验自身、构建、目标、阶段和载荷/备份；拒绝 reparse point 并固定目录及输入文件句柄。管理员入口仅替换/恢复，结果绑定操作与摘要；普通进程继续负责 UI 重启。Shell 调用初始化 COM，保留 Win32 错误，区分取消、启动、等待、超时、非零退出；超时仍持有锁等待实际退出，不能并发回滚。
