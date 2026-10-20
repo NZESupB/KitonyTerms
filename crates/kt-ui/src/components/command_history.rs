@@ -43,7 +43,6 @@ pub fn CommandHistoryPanel(
                     Icon { name: "close" }
                 }
             }
-            p { class: "command-history-hint", "{t.history_hint}" }
             div { class: "command-history-list",
                 if count == 0 {
                     p { class: "command-history-empty", "{t.history_empty}" }

@@ -76,10 +76,49 @@ pub(crate) fn css_font_family(value: &str) -> String {
     }
 }
 
-/// 界面字体族：未配置或清洗后为空时返回 `None`，由 CSS 使用平台默认字体栈。
+/// 界面选择器保存单个字体族；用 CSS 字符串保留原名，并明确缺字时的平台回退。
 pub(crate) fn css_ui_font_family(value: Option<&str>) -> Option<String> {
-    let sanitized = sanitize_font_family(value?);
-    (!sanitized.trim().is_empty()).then_some(sanitized)
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // 通用字体族是 CSS 关键字，加引号会把 monospace 等变成不存在的具体字体名。
+    let mut family = if matches!(
+        value,
+        "serif"
+            | "sans-serif"
+            | "monospace"
+            | "cursive"
+            | "fantasy"
+            | "system-ui"
+            | "ui-serif"
+            | "ui-sans-serif"
+            | "ui-monospace"
+            | "ui-rounded"
+            | "math"
+            | "fangsong"
+    ) {
+        value.to_string()
+    } else {
+        let mut quoted = String::with_capacity(value.len() + 2);
+        quoted.push('"');
+        for character in value.chars() {
+            match character {
+                '"' | '\\' => {
+                    quoted.push('\\');
+                    quoted.push(character);
+                }
+                '\0' => quoted.push('\u{fffd}'),
+                c if c.is_control() => quoted.push_str(&format!("\\{:x} ", u32::from(c))),
+                c => quoted.push(c),
+            }
+        }
+        quoted.push('"');
+        quoted
+    };
+    family.push_str(", var(--kt-ui-font-default)");
+    Some(family)
 }
 
 #[cfg(test)]
@@ -107,19 +146,43 @@ mod tests {
     }
 
     #[test]
-    fn ui_font_family_is_optional_and_sanitized() {
-        // 未配置：交给 CSS 默认字体栈，不能落成空字符串。
+    fn ui_font_family_is_optional() {
         assert_eq!(css_ui_font_family(None), None);
         assert_eq!(css_ui_font_family(Some("   ")), None);
-        assert_eq!(css_ui_font_family(Some(";:{}")), None);
+    }
 
+    #[test]
+    fn ui_font_family_preserves_names_and_platform_fallback() {
+        for name in [
+            "Fira Sans (UI)",
+            "苹方 SC",
+            "123 Font",
+            "Font, Regular",
+            "A;:{}",
+        ] {
+            assert_eq!(
+                css_ui_font_family(Some(&format!(" {name} "))),
+                Some(format!("\"{name}\", var(--kt-ui-font-default)"))
+            );
+        }
+    }
+
+    #[test]
+    fn ui_font_family_escapes_css_strings_without_adding_declarations() {
         assert_eq!(
-            css_ui_font_family(Some("Fira Sans; color: red")),
-            Some("Fira Sans color red".to_string())
+            css_ui_font_family(Some("A\"; color: red; /*\\Font\nB\0C")),
+            Some(
+                "\"A\\\"; color: red; /*\\\\Font\\a B\u{fffd}C\", var(--kt-ui-font-default)"
+                    .to_string()
+            )
         );
+    }
+
+    #[test]
+    fn ui_font_family_keeps_generic_family_semantics() {
         assert_eq!(
-            css_ui_font_family(Some(" 苹方 SC ")),
-            Some(" 苹方 SC ".to_string())
+            css_ui_font_family(Some("monospace")),
+            Some("monospace, var(--kt-ui-font-default)".to_string())
         );
     }
 }

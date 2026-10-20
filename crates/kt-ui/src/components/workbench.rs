@@ -96,7 +96,6 @@ pub fn EmptyWorkbench(language: AppLanguage) -> Element {
             class: "empty-workbench",
             div { class: "empty-logo", AppLogo { size: "empty" } }
             h2 { "{t.empty_title}" }
-            p { "{t.empty_hint}" }
         }
     }
 }

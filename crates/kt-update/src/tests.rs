@@ -373,8 +373,21 @@ fn valid_package_commits_and_invalid_package_preserves_original() {
     };
     install::apply(&root, &task).unwrap();
     assert_eq!(fs::read(&executable).unwrap(), binary);
-    assert_eq!(fs::read(task.installation.backup()).unwrap(), b"old");
+    let journal: install::Journal = install::read_json(&root.join("journal.json")).unwrap();
+    assert_eq!(journal.stage, install::Stage::Committed);
+    let backup = if cfg!(windows) {
+        root.join("previous-executable.exe")
+    } else {
+        task.installation.backup()
+    };
+    assert_eq!(fs::read(&backup).unwrap(), b"old");
+    assert_eq!(
+        journal.storage == install::TransactionStorage::UserDirectory,
+        cfg!(windows)
+    );
     install::recover(&root, &next, &executable, true).unwrap();
+    assert!(!backup.exists());
+    assert!(!journal.staging.exists());
     fs::write(&executable, b"old").unwrap();
     fs::write(install::package_path(&root, &task.package), b"corrupt").unwrap();
     assert!(install::apply(&root, &task).is_err());

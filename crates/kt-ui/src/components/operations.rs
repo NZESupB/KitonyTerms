@@ -795,6 +795,7 @@ fn OperationsDetail(
                     class: "operations-filter-input",
                     r#type: "search",
                     placeholder: "{t.search}",
+                    aria_label: "{t.search}",
                     value: "{filter()}",
                     oninput: move |evt: Event<FormData>| { let value = evt.value(); filter.set(value.clone()); update_list_context(session_id, list, |context| context.filter = value); },
                 }
@@ -803,6 +804,7 @@ fn OperationsDetail(
                         class: "operations-filter-input",
                         r#type: "search",
                         placeholder: "{t.status_filter}",
+                        aria_label: "{t.status_filter}",
                         value: "{status_filter()}",
                         oninput: move |evt: Event<FormData>| { let value = evt.value(); status_filter.set(value.clone()); update_list_context(session_id, list, |context| context.status_filter = value); },
                     }
@@ -921,13 +923,11 @@ fn OperationsDetail(
             div { class: "operations-state",
                 Icon { name: tool.icon() }
                 p { "{t.loading_title}" }
-                small { "{t.loading_hint}" }
             }
         } else {
             div { class: "operations-state",
                 Icon { name: tool.icon() }
                 p { "{t.empty_title}" }
-                small { "{t.empty_hint}" }
             }
         }
     }
@@ -1261,7 +1261,6 @@ fn ContainerTerminalPanel(
                 div { class: "operations-state",
                     Icon { name: "terminal" }
                     p { "{t.container_starting}" }
-                    small { "{t.container_terminal_hint}" }
                 }
             } else {
                 div { class: "operations-state",

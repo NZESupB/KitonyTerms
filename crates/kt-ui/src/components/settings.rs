@@ -390,7 +390,6 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.language}" }
-                p { "{t.language_hint}" }
             }
             div {
                 class: "segmented-control",
@@ -412,7 +411,6 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.theme}" }
-                p { "{t.theme_hint}" }
             }
             div {
                 class: "segmented-control",
@@ -439,11 +437,11 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.accent_color}" }
-                p { "{t.accent_color_hint}" }
             }
             input {
                 class: "settings-color-input",
                 r#type: "color",
+                aria_label: "{t.accent_color}",
                 value: "{accent_settings.accent_color}",
                 onchange: move |evt: Event<FormData>| {
                     let value = evt.value();
@@ -461,11 +459,11 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.ui_font}" }
-                p { "{t.ui_font_hint}" }
             }
             select {
                 class: "settings-text-input settings-font-select",
                 value: "{ui_font_value}",
+                aria_label: "{t.ui_font}",
                 onchange: move |evt| {
                     let value = evt.value().replace(['\n', '\r'], "");
                     if value.len() <= 128 {
@@ -499,6 +497,7 @@ fn GeneralSection(props: SettingsBodyProps) -> Element {
                 max: "140",
                 step: "5",
                 value: "{ui_font_scale_percent}",
+                aria_label: "{t.ui_font_scale}",
                 oninput: move |evt: Event<FormData>| {
                     if let Ok(percent) = evt.value().parse::<f32>() {
                         let mut next = ui_scale_settings.clone();
@@ -560,7 +559,6 @@ fn TerminalSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.terminal_display}" }
-                p { "{t.terminal_display_hint}" }
             }
             div {
                 class: "settings-toggle-group",
@@ -743,7 +741,6 @@ fn EditorSection(props: SettingsBodyProps) -> Element {
             div {
                 class: "settings-row-copy",
                 strong { "{t.default_editor}" }
-                p { "{t.default_editor_hint}" }
             }
             select {
                 class: "settings-text-input",
@@ -883,6 +880,7 @@ fn SyncSection(props: SettingsBodyProps) -> Element {
                     class: "settings-text-input",
                     r#type: "url",
                     placeholder: "https://dav.example.com/kitonyterms.json",
+                    aria_label: "{t.sync_webdav_title} URL",
                     value: "{sync_url}",
                     oninput: move |evt| sync_url.set(evt.value()),
                 }
@@ -890,6 +888,7 @@ fn SyncSection(props: SettingsBodyProps) -> Element {
                     class: "settings-text-input",
                     r#type: "text",
                     placeholder: "{t.sync_username}",
+                    aria_label: "{t.sync_username}",
                     value: "{sync_username}",
                     oninput: move |evt| sync_username.set(evt.value()),
                 }
@@ -897,6 +896,7 @@ fn SyncSection(props: SettingsBodyProps) -> Element {
                     class: "settings-text-input",
                     r#type: "password",
                     placeholder: "{t.sync_password}",
+                    aria_label: "{t.sync_password}",
                     value: "{sync_password}",
                     oninput: move |evt| sync_password.set(evt.value()),
                 }
@@ -1003,6 +1003,7 @@ fn SyncSection(props: SettingsBodyProps) -> Element {
                     class: "settings-text-input",
                     r#type: "url",
                     placeholder: "http://192.168.1.20:12345/v2/config",
+                    aria_label: "{t.sync_lan_url}",
                     value: "{share_url}",
                     oninput: move |evt| share_url.set(evt.value()),
                 }
@@ -1010,6 +1011,7 @@ fn SyncSection(props: SettingsBodyProps) -> Element {
                     class: "settings-text-input is-code",
                     r#type: "text",
                     placeholder: "{t.sync_pairing_code}",
+                    aria_label: "{t.sync_pairing_code}",
                     autocomplete: "off",
                     autocapitalize: "characters",
                     spellcheck: false,

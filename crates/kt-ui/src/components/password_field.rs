@@ -157,6 +157,7 @@ pub(super) fn PasswordField(
                 input {
                     r#type: if visible() { "text" } else { "password" },
                     value: "{password()}",
+                    aria_label: "{t.password}",
                     autocomplete: "new-password",
                     oninput: move |event| {
                         reveal.write().clear();

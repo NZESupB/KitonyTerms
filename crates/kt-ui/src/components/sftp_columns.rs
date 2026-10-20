@@ -122,15 +122,8 @@ pub fn SftpColumns(
     });
     let t = texts(language).sftp;
     rsx! {
-        div { class: "sftp-columns-toolbar",
-            button { r#type: "button", title: "{t.reset_columns}", onclick: move |event| {
-                event.stop_propagation();
-                match crate::components::app::get_store().update_sftp_column_widths(None) {
-                    Ok(()) => { settings.with_mut(|settings| settings.sftp_column_widths = None); save_failed.set(false); bridge_version += 1; }
-                    Err(_) => save_failed.set(true),
-                }
-            }, "{t.reset_columns}" }
-            if save_failed() { span { class: "error", role: "status", "{t.columns_save_failed}" } }
+        if save_failed() {
+            p { class: "sftp-columns-error", role: "status", "{t.columns_save_failed}" }
         }
         div { id, class: "sftp-table-grid", style, "data-column-min": minima,
             {children}

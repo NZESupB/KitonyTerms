@@ -151,6 +151,15 @@ jobs:
         shell: bash
         run: python3 -B .github/scripts/test-update-manifest.py
 
+      - name: Test Windows update transactions and helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked -p kt-update --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p kt-app --bin kitonyterms update_launcher --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Prepare desktop update identity
         shell: bash
         run: python3 .github/scripts/generate-update-manifest.py metadata --channel auto --target "${{ matrix.target }}" --github-env "$GITHUB_ENV"

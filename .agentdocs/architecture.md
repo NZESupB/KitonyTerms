@@ -84,12 +84,13 @@
 - 软键盘使用真实 textarea，IME 组合期间不清空输入；键序列复用终端映射，键盘高度由 device 写入统一 CSS 变量。
 - 软键盘输入框用固定 DOM id 且桥接脚本常驻，目标会话每次渲染同步到本地 `Cell`：组件在会话切换时不重建，靠 `key` 无法改目标。
 - 桌面固定紧凑布局；旧 density 字段由配置兼容读取并在保存时移除。
-- 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用六列（名称/修改时间/类型/大小/权限/所有者组）；`SftpColumns` 集中布局与归一化，`None` 自适应，手动宽度以 `AppSettings.sftp_column_widths` 原子保存且只更新最新配置中的该字段。窄侧栏在文件区域内部横滚，最小列宽 `[96,110,64,64,78,90]`、每列最大 2048 CSS px。Pointer/键盘调整、Esc/失焦取消及双击/按钮恢复自适应共用 `sftp_columns.js`，按实例注册清理以支持 DOM 已移除时卸载。长文本省略并提供 title；手机单列布局沿用原实现。
+- 桌面侧栏默认 220px、可拖拽范围 176–720px；`sidebar_width_limit` 以主内容区、运维区和分隔条实测宽度计算上限，优先为终端保留 420px。`sidebar_layout.js` 观察尺寸并上报窗口失焦，切换设备或卸载时清理监听。文件表头与行共用六列（名称/修改时间/类型/大小/权限/所有者组）；`SftpColumns` 集中布局与归一化，`None` 自适应，手动宽度以 `AppSettings.sftp_column_widths` 原子保存且只更新最新配置中的该字段。窄侧栏在文件区域内部横滚，最小列宽 `[96,110,64,64,78,90]`、每列最大 2048 CSS px。Pointer/键盘调整、Esc/失焦取消及双击恢复自适应共用 `sftp_columns.js`，按实例注册清理以支持 DOM 已移除时卸载；界面不再提供独立恢复按钮，保存失败才显示状态行。长文本省略并提供 title；手机单列布局沿用原实现。
 - [主题](../crates/kt-ui/src/components/theme.rs)与[样式](../crates/kt-ui/src/assets/app.css)使用变量；默认终端色随主题，显式颜色保留。
 - 视觉共用规则集中于 app.css：设置、连接/安全弹窗、内置编辑器与通知共用按钮和表单表面；终端、文件 Grid 和运维保留紧凑尺寸。依赖其他 CSS 变量的强调色、菜单和悬停 token 在 `:root`、`.kt-window`、`.software-update-layer` 同时声明，确保在当前主题/强调色根节点重新计算，不能只依赖 :root 的已计算继承值。主要按钮复用 `accent_foreground` 计算的前景。
 - 设置内容区以具名 container query 在 480px 以下堆叠表单，640px 以下桌面设置导航横向换行。手机普通输入（含 URL）保持 16px/44px；连接/安全弹窗随键盘 inset 收缩，正文滚动与底部操作区分离。全局可见焦点不覆盖终端输入桥，新增悬停仅用于精确指针，减少动态效果时禁用过渡。
 - 跟随当前会话的组件状态用 `use_reactive(session_id)` 驱动，轮询另以代次收敛旧任务；Dioxus 的 `key` 只在条件渲染/迭代器产生的 Fragment 层比较，普通子节点位的 `key` 不触发重建。
 - 界面字体族与界面字号缩放经内联 `--kt-ui-font` / `--kt-ui-scale` 注入 `.kt-window` 与 `.software-update-layer` 两个渲染根（更新弹层在 `.kt-window` 之外，两处必须用同一份拼装）；界面文字尺寸统一用 `--kt-text-10..22` 令牌（在这两个根与 `:root` 声明），终端区（`.terminal-surface`/`.terminal-gutter`/`.terminal-placeholder`）与手机 iOS 16px 输入保护保持原始 px。终端字号仍只由终端设置决定，不随界面缩放；新增界面文字不得写死 px，由 `kt-ui/src/style_contract.rs` 守卫测试约束。
+- 界面选择器保存单个字体族，`fonts::css_ui_font_family` 以 CSS 字符串转义完整名称并附加 `var(--kt-ui-font-default)`；通用字体族保留关键字语义。终端继续使用独立的字体栈处理，不能用界面单字体序列化替换。界面保留原生抗锯齿与 `font-optical-sizing: auto`；浏览器 DPR 模拟只能证明匹配与布局，不能等同原生 Hinting、ClearType 或跨屏 DPI 的视觉验收。
 - 手机输入的待验收场景见[当前任务](workflow/260820-mobile-phone-ui.md)。
 
 ## 配置同步与打包
@@ -116,9 +117,10 @@
 - 更新源固定为官方仓库，清单和包绑定 GitHub 资产 ID；缓存用大小/SHA-256 验证。updates/preferences.json 独立于 config.toml，不参与配置同步。
 - 更新正文、标签与发布时间从同一次 Release 查询携带至 Available；正文按 UTF-8 边界限 64KiB。UI 用 pulldown-cmark 事件构建受控 Dioxus 节点，原始 HTML 显示为文字、图片仅保留替代文字、链接仅 HTTP/HTTPS；无日志不影响更新包。
 - 检查取消为 Cancelled 中性终态，保留上次成功检查时间与失败计数并将自动检查延后 6 小时；手动重试仍可立即执行。下载取消保留 Available 以便重试。
-- 更新展示位于 software_update/view.rs，主页面与独立弹层共享主题变量；弹层显式传入当前主题、强调色与可读前景色，始终位于主界面 inert 之外。software_update_dialog.js 管理默认稍后焦点、Tab 循环、确认时 Esc 与卸载恢复；准备期间只显示真实阶段，不推测辅助安装百分比。
+- 更新展示位于 software_update/view.rs；点击“重启并安装”直接进入安全收尾，不再显示应用内确认页。SSH 断开和 UAC 提示在原卡片/通知中展示，准备时禁用重复操作并原位显示真实阶段。通知继续在主界面 inert 之外同步主题、强调色、字体和缩放。
 - ZIP/TAR 路径、重复项、链接、体积和二进制平台必须校验。macOS 更新包使用 DMG，经 hdiutil 校验并只读挂载到 updates 下固定私有挂载点，仅复制 KitonyTerms.app，沿用路径/链接/体积限制；成功与失败均卸载，重试先回收遗留挂载。复制后以 codesign 验证签名和 bundle ID。ZIP 中的 AppleDouble 载体校验标识与体积后丢弃，不得作为普通资源加入签名包。
-- 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。匹配的 committed 事务在 GUI 启动确认后清理，其他中断事务恢复；Windows 当前 EXE 的恢复在进程退出后执行，安装版恢复限定管理员登记路径。
-- 便携版安装准备必须在 GUI 退出前检查安装父目录可写性，即使用户选择提权也不能跳过：当前暂存目录和旧版备份仍由普通权限辅助进程创建，提权仅执行最终文件替换。受保护目录应提前提示移动到用户目录或使用安装包。
-- App 提供内置/外部编辑、SFTP pending、下载选择器及同步状态保护；准备期间根界面 inert，握手后再次检查，确认后取消运维并断开连接。Android/iOS 不渲染更新入口。
+- 安装先写 journal，保留旧版本备份；替换后执行 `--update-info` 验证精确身份。只有匹配的 committed 事务在 GUI 启动确认后清理备份及提权/失败标记，普通启动不清除失败提权提示。失败由持有互斥的普通协调进程统一恢复，目标未改动时直接保留原版；恢复失败保留 journal 与备份。
+- Windows 的新事务使用 `TransactionStorage::UserDirectory`，暂存与备份在原用户 updates 下；字段缺省按 Legacy 解析已有记录。`copy_file_synced` 用新建写句柄复制、刷盘再设置权限，不能用只读 File::open 刷盘。普通便携版直接替换，受保护便携版经 runas 请求 UAC；安装版经已登记目录的 Inno Setup。目标卷内临时复制后同卷替换，支持跨盘。只有目标写入权限错误可提权一次，32/33/1224 及写探测识别的共享冲突按占用处理，明确只读的目标不重试 UAC；主程序失败不改名让位，辅助副本可让位且恢复失败显式报告。
+- Windows 授权集中于 install/elevation.rs：显式传递原用户事务目录与 journal 摘要，管理员入口重新校验自身、构建、目标、阶段和载荷/备份；拒绝 reparse point 并固定目录及输入文件句柄。管理员入口仅替换/恢复，结果绑定操作与摘要；普通进程继续负责 UI 重启。Shell 调用初始化 COM，保留 Win32 错误，区分取消、启动、等待、超时、非零退出；超时仍持有锁等待实际退出，不能并发回滚。
+- App 提供内置/外部编辑、SFTP pending、下载选择器及同步状态保护；准备期间根界面 inert，握手后再次检查，用户点击后取消运维并断开连接。Android/iOS 不渲染更新入口。
 - 更新代理属于设备本机偏好（updates/preferences.json，不参与配置同步）：System 读环境变量代理、Direct 强制直连、HTTP/HTTPS/SOCKS5 显式代理只在 URL 中带用户名且密码留空（与 core 的 TCP 代理一致，代理凭证不落盘，需要密码时用 System 加环境变量凭证）。改代理先构建新客户端再落盘（失败不留内存更新），并取消在途检查/下载、以 `generation` 丢弃过期写回；启动读到非法代理时回退 System 并把原因写进快照 message，避免坏配置阻断启动。检查与下载共用同一客户端，失败按 407 / 超时 / 连接 / 重定向 / 状态分类后再附底层原因。

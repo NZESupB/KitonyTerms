@@ -34,9 +34,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 | 移动打包 | `cargo test -p kt-app --test mobile_packaging_contract`；[契约测试](../crates/kt-app/tests/mobile_packaging_contract.rs) |
 | 桌面后台更新与安装事务 | `cargo test -p kt-update`；[本地 HTTP](../crates/kt-update/src/tests.rs)、[归档](../crates/kt-update/src/archive.rs)、[安装](../crates/kt-update/src/install.rs) |
 | 更新辅助握手、身份探测与锁竞争 | `cargo test -p kt-app update_launcher`；[辅助程序](../crates/kt-app/src/update_launcher.rs) |
-| 更新重启保护 | `cargo test -p kt-ui restart_protects`；[界面](../crates/kt-ui/src/components/software_update.rs) |
+| 更新直接重启与安全保护 | `cargo test -p kt-ui software_update`；[界面](../crates/kt-ui/src/components/software_update.rs) |
 | 桌面清单与发布契约 | `python3 -B .github/scripts/test-update-manifest.py`；`bash -n .github/scripts/publish-alpha.sh` |
-| 界面字体与缩放令牌 | `cargo test -p kt-ui style_contract`、`cargo test -p kt-config ui_font`；[样式不变量](../crates/kt-ui/src/style_contract.rs)、[配置字段](../crates/kt-config/src/lib.rs) |
+| 界面字体与缩放令牌 | `cargo test -p kt-ui components::fonts`（字体名、CSS 转义、平台回退）、`cargo test -p kt-ui style_contract`、`cargo test -p kt-config ui_font`；[字体处理](../crates/kt-ui/src/components/fonts.rs)、[样式不变量](../crates/kt-ui/src/style_contract.rs)、[配置字段](../crates/kt-config/src/lib.rs) |
 | 更新代理（含 HTTP/SOCKS5 隧道与失败分类） | `cargo test -p kt-update proxy`；[代理实现](../crates/kt-update/src/proxy.rs)、[本地代理与隧道](../crates/kt-update/src/tests.rs) |
 
 修改 shell 脚本时对改动文件执行 `bash -n`；文档变更检查本地链接和 `git diff --check`，包含暂存修改时检查 `git diff --cached --check`。
@@ -51,9 +51,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 发布清单须包含 macOS ARM64、Windows AMD64、Linux x64/aarch64 四个 target；macOS 仅 DMG，Windows 同时包含便携 ZIP 与安装器。发布契约测试固定该范围及 Node.js 24 Action 版本。Alpha 使用 GitHub run ID/attempt，正式 tag 必须匹配 Cargo 版本。使用隔离应用副本和数据目录验收，不替换开发环境应用。
 
-- Windows：便携 EXE 替换、安装版 UAC 接受/取消、安装路径不漂移、普通权限 GUI 重启、运行中 EXE 的中断恢复、单实例竞争。
+- Windows：用户目录便携版不提权；Program Files 下便携版与安装版 UAC 接受/取消；标准账户使用另一管理员凭据仍访问原用户事务；跨 C/D 盘及空格/中文路径；32/33/1224 和错误 5 掩盖的占用不循环提权，只读文件/写保护/ACL 错误保留原因；安装路径不漂移，GUI 由原普通进程重开；替换后身份失败及运行中 EXE 中断恢复；恢复取消保留 journal/备份；单实例竞争。两种主题点击均无二次确认，准备失败恢复交互。
 - macOS：签名 `.app` 的整包交换/回滚、UI 启动确认后清理备份、DMG/App Translocation/不可写目录错误；测试包含真实 DMG 的只读挂载、签名包更新/回滚、损坏镜像及越界链接清理和遗留挂载回收。原生镜像测试按完整生命周期互斥执行，镜像创建也使用有超时与输出上限的 hdiutil 调用；不代替 GUI 验收。
 - Linux：实际二进制路径和执行权限、只读目录、旧进程等待、单实例竞争、恢复和重启。
 - 三端：编辑器/外部编辑/SFTP pending/同步阻止重启，后台下载期间终端正常工作，准备失败应用保持运行；断网、限流、Alpha 资产切换可重试。
 
 跨 target 的 API 类型检查仅证明类型契约；缺少 SDK、链接器或原生运行器时必须单独记录，不能等同完整构建/安装通过。
+
+### Windows 更新验证入口
+
+在 Windows 开发终端先运行 `cargo test --locked -p kt-update --target x86_64-pc-windows-msvc`、`cargo test --locked -p kt-app --bin kitonyterms update_launcher --target x86_64-pc-windows-msvc` 和 `cargo test --locked -p kt-ui software_update`。两条发布 workflow 在注入发布身份前执行前两组测试，避免现有 development 身份测试被正式/Alpha 元数据改变。
+
+端到端使用两个具有有效发布身份的隔离构建，开发默认构建禁用更新。一次手动安装修复版可绕过已发布旧更新器自身的刷盘错误，再验收连续自动更新。不在开发机真实安装目录进行故障注入。
+
+核对 updates 下的 `error.json`、`journal.json`、`elevated-result.json`：错误应包含失败阶段/路径和系统原因；取消且原目标未改动时旧版可重开，成功 GUI 确认后事务/备份清理。需要定位时用 Process Monitor 按应用/辅助进程及目标路径筛选 CreateFile、FlushBuffersFile、重命名结果，用任务管理器检查重开 GUI 的权限；仅把实际执行的原生场景记为通过。超时的管理员进程仍运行时，协调进程会保留锁等待其退出，应检查该进程而非手动删除记录。

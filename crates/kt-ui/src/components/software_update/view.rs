@@ -21,18 +21,11 @@ pub(super) enum UpdateAction {
     Download,
     Cancel,
     Restart,
-    /// 便携副本位于受保护目录：重启前需要用户确认管理员授权。
-    ElevatedRestart,
 }
 
-pub(super) fn primary_action(
-    phase: Phase,
-    available: bool,
-    requires_elevation: bool,
-) -> Option<UpdateAction> {
+pub(super) fn primary_action(phase: Phase, available: bool) -> Option<UpdateAction> {
     match phase {
         Phase::Disabled | Phase::Checking | Phase::Downloading | Phase::Preparing => None,
-        Phase::Ready if requires_elevation => Some(UpdateAction::ElevatedRestart),
         Phase::Ready => Some(UpdateAction::Restart),
         Phase::Available | Phase::Error if available => Some(UpdateAction::Download),
         _ => Some(UpdateAction::Check),
@@ -82,40 +75,43 @@ fn channel_label(channel: Channel, t: &AppText) -> &'static str {
 fn presentation(
     snapshot: &Snapshot,
     t: &AppText,
-) -> (&'static str, &'static str, &'static str, &'static str) {
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+) {
     match snapshot.phase {
         Phase::Disabled => (
             "neutral",
             "terminal",
             t.update_development_title,
-            t.update_development,
+            Some(t.update_development),
         ),
-        Phase::Idle if snapshot.last_check.is_some() => {
-            ("success", "check", t.update_latest, t.update_latest_hint)
-        }
-        Phase::Idle => ("neutral", "sync", t.update_not_checked, t.update_hint),
-        Phase::Checking => ("busy", "sync", t.update_checking, t.update_checking_hint),
-        Phase::Cancelled => (
-            "neutral",
-            "sync",
-            t.update_cancelled,
-            t.update_cancelled_hint,
-        ),
-        Phase::Available => (
-            "available",
-            "download",
-            t.update_available,
-            t.update_available_hint,
-        ),
+        Phase::Idle if snapshot.last_check.is_some() => ("success", "check", t.update_latest, None),
+        Phase::Idle => ("neutral", "sync", t.update_not_checked, None),
+        Phase::Checking => ("busy", "sync", t.update_checking, None),
+        Phase::Cancelled => ("neutral", "sync", t.update_cancelled, None),
+        Phase::Available => ("available", "download", t.update_available, None),
         Phase::Downloading => (
             "busy",
             "download",
             t.update_downloading,
-            t.update_download_hint,
+            Some(t.update_download_hint),
         ),
-        Phase::Ready => ("success", "check", t.update_ready, t.update_ready_hint),
-        Phase::Preparing => ("busy", "sync", t.update_preparing, t.update_preparing_hint),
-        Phase::Error => ("error", "close", t.update_failed_title, t.update_failed),
+        Phase::Ready => ("success", "check", t.update_ready, None),
+        Phase::Preparing => (
+            "busy",
+            "sync",
+            t.update_preparing,
+            Some(t.update_preparing_hint),
+        ),
+        Phase::Error => (
+            "error",
+            "close",
+            t.update_failed_title,
+            Some(t.update_failed),
+        ),
     }
 }
 
@@ -145,7 +141,7 @@ pub(super) fn UpdateView(
     let target = available.map(|release| release.info.label());
     let current_label = current.label();
     let last = last_checked(snapshot.last_check).unwrap_or_else(|| t.update_never.into());
-    let primary = primary_action(phase, available.is_some(), snapshot.requires_elevation);
+    let primary = primary_action(phase, available.is_some());
     let prefs_disabled = phase == Phase::Disabled || phase.busy();
     let preferences = snapshot.preferences;
     let release_href = release_url(available);
@@ -153,14 +149,13 @@ pub(super) fn UpdateView(
         section { class: "software-update-section", aria_label: t.update_title,
             header { class: "update-page-heading",
                 h3 { "{t.update_title}" }
-                p { "{t.update_hint}" }
             }
             section { class: "update-card update-status-card is-{tone}",
                 div { class: "update-status-heading",
                     div { class: if phase == Phase::Checking || phase == Phase::Preparing { "update-state-icon is-spinning" } else { "update-state-icon" }, aria_hidden: "true", Icon { name: icon } }
                     div { class: "update-status-copy",
                         h4 { role: "status", aria_live: "polite", aria_atomic: "true", "{title}" }
-                        p { "{hint}" }
+                        if let Some(hint) = hint { p { "{hint}" } }
                     }
                 }
                 div { class: "update-version-line",
@@ -184,6 +179,7 @@ pub(super) fn UpdateView(
                 }
                 if matches!(phase, Phase::Ready | Phase::Preparing) {
                     InstallSteps { preparing: phase == Phase::Preparing, language }
+                    if phase == Phase::Ready { RestartNotice { language, elevated: snapshot.requires_elevation } }
                 }
                 if let Some(error) = error {
                     UpdateError { message: error, language }
@@ -199,9 +195,8 @@ pub(super) fn UpdateView(
                                 class: if phase == Phase::Idle && snapshot.last_check.is_some() { "settings-button update-button" } else { "settings-button primary update-button" },
                                 r#type: "button",
                                 onclick: move |_| on_action.call(action),
-                                Icon { name: match action { UpdateAction::Download => "download", UpdateAction::Restart | UpdateAction::ElevatedRestart => "refresh", _ => "sync" } }
+                                Icon { name: match action { UpdateAction::Download => "download", UpdateAction::Restart => "refresh", _ => "sync" } }
                                 {match action {
-                                    UpdateAction::ElevatedRestart => t.update_restart_elevated,
                                     UpdateAction::Restart => t.update_restart,
                                     UpdateAction::Download if phase == Phase::Error => t.update_retry_download,
                                     UpdateAction::Download => t.update_download,
@@ -227,19 +222,18 @@ pub(super) fn UpdateView(
             section { class: "update-preferences", aria_label: t.update_preferences,
                 h4 { "{t.update_preferences}" }
                 div { class: "update-card update-preferences-card",
-                    UpdateToggle { id: "update-auto-check", title: t.update_auto_check, hint: t.update_auto_check_hint, checked: preferences.auto_check, disabled: prefs_disabled,
+                    UpdateToggle { id: "update-auto-check", title: t.update_auto_check, checked: preferences.auto_check, disabled: prefs_disabled,
                         on_change: { let preferences = preferences.clone(); move |checked| on_preferences.call(Preferences { auto_check: checked, ..preferences.clone() }) }
                     }
                     UpdateToggle { id: "update-auto-download", title: t.update_auto_download, hint: t.update_auto_download_hint, checked: preferences.auto_download, disabled: prefs_disabled,
                         on_change: { let preferences = preferences.clone(); move |checked| on_preferences.call(Preferences { auto_download: checked, ..preferences.clone() }) }
                     }
                 }
-                p { class: "update-local-hint", "{t.update_local_hint}" }
             }
             section { class: "update-preferences", aria_label: t.update_network,
                 h4 { "{t.update_network}" }
                 UpdateProxyCard { language, proxy: preferences.proxy.clone(), disabled: prefs_disabled, on_apply: on_proxy }
-                p { class: "update-local-hint", "{t.update_network_hint}" }
+                p { class: "update-local-hint", "{t.update_local_hint}" }
             }
             if available.is_none() {
                 a { class: "update-release-link update-page-link", href: release_href, target: "_blank", rel: "noopener noreferrer", "{t.update_release_page}" span { aria_hidden: "true", "↗" } }
@@ -252,15 +246,18 @@ pub(super) fn UpdateView(
 fn UpdateToggle(
     id: &'static str,
     title: &'static str,
-    hint: &'static str,
+    hint: Option<&'static str>,
     checked: bool,
     disabled: bool,
     on_change: EventHandler<bool>,
 ) -> Element {
     rsx! {
         label { class: "update-preference-row", r#for: id,
-            span { class: "update-preference-copy", strong { "{title}" } span { id: "{id}-hint", "{hint}" } }
-            input { id, class: "update-toggle", r#type: "checkbox", role: "switch", aria_checked: checked, aria_describedby: "{id}-hint", checked, disabled,
+            span { class: "update-preference-copy",
+                strong { "{title}" }
+                if let Some(hint) = hint { span { id: "{id}-hint", "{hint}" } }
+            }
+            input { id, class: "update-toggle", r#type: "checkbox", role: "switch", aria_checked: checked, aria_describedby: hint.map(|_| format!("{id}-hint")), checked, disabled,
                 onchange: move |event| on_change.call(event.checked())
             }
         }
@@ -436,7 +433,10 @@ fn UpdateProxyCard(
                     }
                 }
             }
-            p { class: "update-local-hint", "{t.update_proxy_hint}" }
+            details { class: "update-proxy-help",
+                summary { "{t.update_proxy_help}" }
+                p { class: "update-local-hint", "{t.update_proxy_hint}" }
+            }
             if let Some(message) = error() {
                 p { class: "update-proxy-error", role: "alert", "{message}" }
             }
@@ -505,36 +505,12 @@ pub(super) fn UpdateError(message: String, language: AppLanguage) -> Element {
 }
 
 #[component]
-pub(super) fn RestartDialog(
-    language: AppLanguage,
-    target: String,
-    preparing: bool,
-    /// 替换需要管理员授权：确认前就告知会弹出系统授权对话框。
-    elevated: bool,
-    on_later: EventHandler<()>,
-    on_restart: EventHandler<()>,
-) -> Element {
+pub(super) fn RestartNotice(language: AppLanguage, elevated: bool) -> Element {
     let t = texts(language).app;
     rsx! {
-        div { class: "software-update-overlay",
-            section { id: "software-update-dialog", class: "software-update-dialog", role: "dialog", aria_modal: "true", aria_labelledby: "update-dialog-title", aria_describedby: "update-dialog-description", tabindex: "-1", "data-preparing": if preparing { "true" } else { "false" },
-                div { class: if preparing { "update-dialog-icon is-spinning" } else { "update-dialog-icon" }, aria_hidden: "true", Icon { name: "refresh" } }
-                h3 { id: "update-dialog-title", role: "status", if preparing { "{t.update_preparing}" } else { "{t.update_confirm_title}" } }
-                p { class: "update-dialog-target", "KitonyTerms {target}" }
-                p { id: "update-dialog-description", if preparing { "{t.update_preparing_hint}" } else if elevated { "{t.update_elevated_hint}" } else { "{t.update_confirm_hint}" } }
-                if elevated && !preparing {
-                    div { class: "update-restart-warning update-elevation-warning", Icon { name: "shield" } p { "{t.update_elevated_notice}" } }
-                }
-                if preparing {
-                    InstallSteps { preparing: true, language }
-                } else {
-                    div { class: "update-restart-warning", Icon { name: "terminal" } p { "{t.update_restart_hint}" } }
-                    div { class: "software-update-actions update-dialog-actions",
-                        button { id: "update-restart-later", class: "settings-button update-button", r#type: "button", onclick: move |_| on_later.call(()), "{t.update_later}" }
-                        button { class: "settings-button primary update-button", r#type: "button", onclick: move |_| on_restart.call(()), Icon { name: "refresh" } if elevated { "{t.update_restart_elevated}" } else { "{t.update_restart}" } }
-                    }
-                }
-            }
+        div { class: "update-restart-notice",
+            p { "{t.update_restart_hint}" }
+            if elevated { p { Icon { name: "shield" } "{t.update_elevated_notice}" } }
         }
     }
 }
@@ -550,31 +526,22 @@ mod tests {
             Phase::Downloading,
             Phase::Preparing,
         ] {
-            assert_eq!(primary_action(phase, true, false), None);
-            assert_eq!(primary_action(phase, true, true), None);
+            assert_eq!(primary_action(phase, true), None);
         }
         for phase in [Phase::Idle, Phase::Cancelled, Phase::Error] {
-            assert_eq!(
-                primary_action(phase, false, false),
-                Some(UpdateAction::Check)
-            );
+            assert_eq!(primary_action(phase, false), Some(UpdateAction::Check));
         }
         assert_eq!(
-            primary_action(Phase::Available, true, false),
+            primary_action(Phase::Available, true),
             Some(UpdateAction::Download)
         );
         assert_eq!(
-            primary_action(Phase::Error, true, false),
+            primary_action(Phase::Error, true),
             Some(UpdateAction::Download)
         );
         assert_eq!(
-            primary_action(Phase::Ready, true, false),
+            primary_action(Phase::Ready, true),
             Some(UpdateAction::Restart)
-        );
-        // 受保护目录里的便携副本：就绪状态给出提权重启，而不是普通重启。
-        assert_eq!(
-            primary_action(Phase::Ready, true, true),
-            Some(UpdateAction::ElevatedRestart)
         );
     }
     #[test]

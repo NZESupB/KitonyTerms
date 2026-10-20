@@ -130,9 +130,10 @@ impl UpdateService {
             (Some(recorded), None) => Some(recorded),
             (None, notice) => notice,
         };
-        // 便携副本位于受保护目录时（或上次替换被拒绝访问）需要管理员授权替换。
-        let requires_elevation =
-            installation.needs_elevation() || root.join("elevation.json").exists();
+        let requires_elevation = cfg!(windows)
+            && (installation.installed
+                || installation.needs_elevation()
+                || root.join("elevation.json").exists());
         let service = Arc::new(Self {
             root,
             current,
@@ -184,6 +185,13 @@ impl UpdateService {
     }
     pub fn snapshot(&self) -> Snapshot {
         self.state.lock().unwrap().snapshot.clone()
+    }
+    /// 点击时重新探测，避免 UI 快照或启动时的权限状态过期。
+    pub fn requires_elevation(&self) -> bool {
+        cfg!(windows)
+            && (self.installation.installed
+                || self.installation.needs_elevation()
+                || self.root.join("elevation.json").exists())
     }
     /// 保存更新偏好。代理变化时重建发布客户端，并取消在途任务、丢弃其过期写回。
     pub fn preferences(&self, preferences: Preferences) -> Result<()> {
@@ -388,6 +396,7 @@ impl UpdateService {
     pub fn preparation_failed(&self, message: String) {
         let mut state = self.state.lock().unwrap();
         state.snapshot.phase = Phase::Ready;
+        state.snapshot.requires_elevation = self.requires_elevation();
         state.snapshot.message = Some(message);
     }
     pub fn commit_restart(&self) -> Result<()> {
@@ -398,6 +407,14 @@ impl UpdateService {
     }
     pub fn confirm_startup(&self) -> Result<()> {
         // GUI 已持有 installation.lock，此时不存在辅助进程替换。
+        let committed = if self.root.join("journal.json").exists() {
+            let journal: install::Journal = install::read_json(&self.root.join("journal.json"))?;
+            journal.stage == install::Stage::Committed
+                && journal.task.next == self.current
+                && journal.task.installation.executable == self.installation.executable
+        } else {
+            false
+        };
         let recovered = install::recover(
             &self.root,
             &self.current,
@@ -406,8 +423,9 @@ impl UpdateService {
         );
         // 事务已确认清理：上一次失败留下的提权标记不再需要。失败时保留，
         // 让界面继续提供「以管理员权限重试」。
-        if recovered.is_ok() {
+        if recovered.is_ok() && committed {
             install::remove(&self.root.join("elevation.json"))?;
+            install::remove(&self.root.join("error.json"))?;
         }
         recovered
     }

@@ -151,7 +151,6 @@ pub(super) fn render_sidebar_panel(args: SidebarPanelArgs) -> Element {
                         div {
                             class: "empty-resource",
                             strong { "{t.no_saved_connections}" }
-                            p { "{t.saved_connections_hint}" }
                         }
                     }
 

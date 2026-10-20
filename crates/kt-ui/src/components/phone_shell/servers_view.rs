@@ -75,7 +75,6 @@ pub(super) fn render_servers_view(args: ServersViewArgs) -> Element {
                     div {
                         class: "phone-empty",
                         strong { "{t.no_saved_connections}" }
-                        p { "{t.saved_connections_hint}" }
                     }
                 }
 

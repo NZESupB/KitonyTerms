@@ -243,6 +243,7 @@ pub fn ConnectionDialog(
                                 input {
                                     r#type: "text",
                                     value: "{name()}",
+                                    aria_label: "{t.name}",
                                     oninput: move |evt| {
                                         name.set(evt.value().clone());
                                     },
@@ -260,6 +261,7 @@ pub fn ConnectionDialog(
                                     input {
                                         r#type: "text",
                                         value: "{host()}",
+                                        aria_label: "{t.host}",
                                         oninput: move |evt| {
                                             host.set(evt.value().clone());
                                         },
@@ -276,7 +278,7 @@ pub fn ConnectionDialog(
                                         oninput: move |evt| {
                                             port.set(evt.value().clone());
                                         },
-                                        placeholder: "22"
+                                        aria_label: "{t.port}"
                                     }
                                 }
                             }
@@ -290,7 +292,7 @@ pub fn ConnectionDialog(
                                     oninput: move |evt| {
                                         user.set(evt.value().clone());
                                     },
-                                    placeholder: "root"
+                                    aria_label: "{t.user}"
                                 }
                             }
 
@@ -301,6 +303,7 @@ pub fn ConnectionDialog(
                                     r#type: "text",
                                     list: "connection-groups",
                                     value: "{group()}",
+                                    aria_label: "{t.group}",
                                     oninput: move |evt| {
                                         group.set(evt.value().clone());
                                     },
@@ -334,6 +337,7 @@ pub fn ConnectionDialog(
                                     input {
                                         r#type: "text",
                                         value: "{key_path()}",
+                                        aria_label: "{t.private_key_path}",
                                         oninput: move |evt| {
                                             key_path.set(evt.value().clone());
                                         },
@@ -376,6 +380,7 @@ pub fn ConnectionDialog(
                                 select {
                                     class: "dialog-select",
                                     value: "{proxy_mode_val}",
+                                    aria_label: "{t.proxy_type}",
                                     onchange: move |evt| proxy_type.set(evt.value()),
                                     option { value: "direct", selected: proxy_mode_val == "direct", "{t.proxy_type_direct}" }
                                     option { value: "system", selected: proxy_mode_val == "system", "{t.proxy_type_system}" }
@@ -393,6 +398,7 @@ pub fn ConnectionDialog(
                                     select {
                                         class: "dialog-select",
                                         value: "{proxy_jump()}",
+                                        aria_label: "{t.proxy_jump}",
                                         onchange: move |evt| proxy_jump.set(evt.value()),
                                         option { value: "", selected: proxy_jump().is_empty(), "{t.proxy_jump_saved_manual}" }
                                         for conn in saved_connections.iter() {
@@ -406,6 +412,7 @@ pub fn ConnectionDialog(
                                     input {
                                         r#type: "text",
                                         value: "{proxy_jump()}",
+                                        aria_label: "{t.proxy_jump}",
                                         oninput: move |evt| {
                                             proxy_jump.set(evt.value().clone());
                                         },

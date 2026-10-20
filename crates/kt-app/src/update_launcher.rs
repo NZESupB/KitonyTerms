@@ -36,15 +36,19 @@ fn helper_lock(root: &Path) -> Result<File> {
 
 pub fn internal_command() -> Option<Result<()>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|argument| argument == "--elevated-replace" || argument == "--restore-update")
+    {
+        return Some(install::elevation::parse_arguments(&args).and_then(
+            |(operation, root, digest)| install::elevation::perform(&root, &digest, operation),
+        ));
+    }
     if args.len() != 1 {
         return None;
     }
     if args[0] == "--apply-update" {
         Some(apply_helper())
-    } else if args[0] == "--elevated-replace" {
-        Some(elevated_replace_helper())
-    } else if args[0] == "--restore-update" {
-        Some(restore_helper())
     } else if args[0] == "--relaunch-update" {
         Some(relaunch_helper())
     } else {
@@ -136,13 +140,13 @@ fn install_helper(root: &Path, task: &InstallTask) -> Result<()> {
         helper.file_name().unwrap_or_default().to_string_lossy()
     ));
     install::remove(&staged)?;
-    fs::copy(&task.installation.executable, &staged)?;
-    File::open(&staged)?.sync_all()?;
+    install::copy_file_synced(&task.installation.executable, &staged)
+        .context("复制更新辅助程序失败 / Cannot copy update helper")?;
     ensure!(
         download::sha256(&staged)? == task.source_sha256,
         "辅助程序复制校验失败 / Helper copy checksum failed"
     );
-    if let Err(error) = install::replace_file(&staged, &helper) {
+    if let Err(error) = install::replace_helper_file(&staged, &helper) {
         let _ = install::remove(&staged);
         return Err(error.context("放置更新辅助程序失败 / Cannot place the update helper"));
     }
@@ -185,21 +189,16 @@ fn apply_helper() -> Result<()> {
         let applied = install::apply(&root, &task).and_then(|()| verify_installed(&root, &task));
         if let Err(error) = &applied {
             let rollback = install::rollback(&root);
-            // 替换被拒绝访问：记下「需要管理员授权」，让下次启动的界面提供提权重试。
-            if replace_needs_elevation(error) {
+            if replace_needs_elevation(error, &task.installation.target) {
                 install::atomic_json(&root.join("elevation.json"), &true)?;
             }
-            install::atomic_json(
-                &root.join("error.json"),
-                &format!("更新失败 / Update failed: {error:#}; recovery: {rollback:?}"),
-            )?;
+            let message = match &rollback {
+                Ok(()) => format!("更新失败，已保留或恢复旧版本 / Update failed; previous version retained or restored: {error:#}"),
+                Err(recovery) => format!("更新失败，恢复未完成 / Update failed; recovery incomplete: {error:#}; {recovery:#}"),
+            };
+            install::atomic_json(&root.join("error.json"), &message)?;
+            rollback.with_context(|| message)?;
         }
-        FileExt::unlock(&gate)?;
-        #[cfg(windows)]
-        if applied.is_err() && task.installation.installed && root.join("journal.json").exists() {
-            elevated_restore(&root)?;
-        }
-        FileExt::try_lock_exclusive(&gate)?;
         cleanup_markers(&root)?;
         drop(instance);
         drop(gate);
@@ -224,42 +223,14 @@ fn apply_helper() -> Result<()> {
 ///
 /// 仅「拒绝访问」会给出该提示；纯粹的占用冲突由普通重试（带退避）解决，
 /// 把提权当成占用问题的解法会让界面给出错误的指引。
-fn replace_needs_elevation(error: &anyhow::Error) -> bool {
-    matches!(
-        error.downcast_ref::<install::ReplaceFailure>(),
-        Some(failure) if failure.kind == install::ReplaceKind::AccessDenied
-    )
-}
-/// 提权替换入口：只做文件交换，不启动 GUI，也不修改其他状态。
-///
-/// 由非提权的 `--apply-update` 辅助程序用 `runas` 启动；身份校验全部通过后
-/// 才执行替换，失败时以非零退出码上报，由父进程统一走回滚与错误记录。
-fn elevated_replace_helper() -> Result<()> {
-    let paths = Paths::discover()?;
-    let root = fs::canonicalize(root(&paths))?;
-    let task: InstallTask = install::read_json(&root.join("task.json"))?;
-    install::validate_task(&root, &task, &std::env::current_exe()?)?;
-    let journal = install::validate_elevated_replace(&root, &task)?;
-    install::replace_file(&journal.staging.join("payload"), &task.installation.target)
-}
-fn restore_helper() -> Result<()> {
-    let paths = Paths::discover()?;
-    let root = fs::canonicalize(root(&paths))?;
-    let journal: Journal = install::read_json(&root.join("journal.json"))?;
-    ensure!(
-        fs::canonicalize(std::env::current_exe()?)? == helper_path(&root)
-            && journal.task.current == BuildInfo::current()
-            && download::sha256(&helper_path(&root))? == journal.task.source_sha256
-            && journal.task.installation.installed,
-        "恢复辅助程序身份不匹配 / Recovery helper identity mismatch"
-    );
-    ensure!(
-        install::registered_installation(&journal.task.installation.executable),
-        "恢复目标未登记 / Recovery target is not registered"
-    );
-    let gate = install::gate(&root)?;
-    FileExt::try_lock_exclusive(&gate)?;
-    install::rollback(&root)
+fn replace_needs_elevation(error: &anyhow::Error, target: &Path) -> bool {
+    error
+        .downcast_ref::<install::ReplaceFailure>()
+        .is_some_and(|failure| {
+            failure.target == target
+                && failure.kind == install::ReplaceKind::AccessDenied
+                && !fs::metadata(target).is_ok_and(|metadata| metadata.permissions().readonly())
+        })
 }
 fn cleanup_markers(root: &Path) -> Result<()> {
     for name in [
@@ -338,41 +309,6 @@ fn process_alive(pid: u32) -> Result<bool> {
     }
     ensure!(result != 0, "查询进程失败 / Cannot query process");
     Ok(code == 259)
-}
-#[cfg(windows)]
-fn elevated_restore(root: &Path) -> Result<()> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{GetExitCodeProcess, WaitForSingleObject},
-        UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
-    };
-    let wide = |s: &OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let helper = wide(helper_path(root).as_os_str());
-    let verb = wide(OsStr::new("runas"));
-    let params = wide(OsStr::new("--restore-update"));
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = helper.as_ptr();
-    info.lpParameters = params.as_ptr();
-    info.nShow = 0;
-    ensure!(
-        unsafe { ShellExecuteExW(&mut info) } != 0,
-        "恢复需要管理员权限 / Recovery requires administrator approval"
-    );
-    let wait = unsafe { WaitForSingleObject(info.hProcess, 120000) };
-    let mut code = 1;
-    let read = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
-    unsafe {
-        CloseHandle(info.hProcess);
-    }
-    ensure!(
-        wait == 0 && read != 0 && code == 0,
-        "恢复程序失败 / Recovery helper failed"
-    );
-    Ok(())
 }
 
 fn verify_installed(root: &Path, task: &InstallTask) -> Result<()> {
@@ -513,13 +449,9 @@ fn relaunch_helper() -> Result<()> {
         );
         #[cfg(windows)]
         {
-            if journal.task.installation.installed {
-                elevated_restore(&root)?;
-            } else {
-                let gate = install::gate(&root)?;
-                wait_lock(&gate, Duration::from_secs(10))?;
-                install::rollback(&root)?;
-            }
+            let gate = install::gate(&root)?;
+            wait_lock(&gate, Duration::from_secs(10))?;
+            install::rollback(&root)?;
             install::atomic_json(
                 &root.join("error.json"),
                 &"上次更新被中断，已恢复旧版本 / Interrupted update restored",
@@ -582,6 +514,75 @@ fn spawn_ready(root: &Path, argument: &str, digest: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn helper_copy_flushes_verifies_and_respects_the_running_helper_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("updates");
+        install::private_root(&root).unwrap();
+        let executable = directory.path().join("application");
+        fs::write(&executable, b"current binary").unwrap();
+        let current = BuildInfo::current();
+        let task = InstallTask {
+            installation: Installation::from_executable(executable.clone()).unwrap(),
+            current: current.clone(),
+            next: current,
+            source_sha256: download::sha256(&executable).unwrap(),
+            package: kt_update::metadata::Package {
+                name: "kitonyterms-test.zip".into(),
+                size: 1,
+                sha256: "0".repeat(64),
+                kind: kt_update::metadata::PackageKind::Zip,
+            },
+            parent_pid: std::process::id(),
+            elevate: false,
+        };
+        install_helper(&root, &task).unwrap();
+        assert_eq!(fs::read(helper_path(&root)).unwrap(), b"current binary");
+        install_helper(&root, &task).unwrap();
+        let locked = helper_lock(&root).unwrap();
+        FileExt::try_lock_exclusive(&locked).unwrap();
+        assert!(install_helper(&root, &task)
+            .unwrap_err()
+            .to_string()
+            .contains("still running"));
+        assert_eq!(fs::read(helper_path(&root)).unwrap(), b"current binary");
+    }
+
+    #[test]
+    fn helper_copy_failures_do_not_become_target_elevation_requests() {
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
+            .context("复制更新辅助程序失败");
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("application.exe");
+        fs::write(&target, b"current binary").unwrap();
+        assert!(!replace_needs_elevation(&error, &target));
+        for (kind, expected) in [
+            (install::ReplaceKind::AccessDenied, true),
+            (install::ReplaceKind::InUse, false),
+        ] {
+            let error = anyhow::Error::new(install::ReplaceFailure {
+                target: target.clone(),
+                kind,
+                source: std::io::Error::from_raw_os_error(if expected { 5 } else { 32 }),
+            });
+            assert_eq!(replace_needs_elevation(&error, &target), expected);
+            assert!(!replace_needs_elevation(
+                &error,
+                &directory.path().join("another.exe")
+            ));
+        }
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        let error = anyhow::Error::new(install::ReplaceFailure {
+            target: target.clone(),
+            kind: install::ReplaceKind::AccessDenied,
+            source: std::io::Error::from_raw_os_error(5),
+        });
+        assert!(!replace_needs_elevation(&error, &target));
+        install::remove(&target).unwrap();
+    }
+
     #[test]
     fn process_exit_and_lock_timeout() {
         assert!(process_alive(std::process::id()).unwrap());

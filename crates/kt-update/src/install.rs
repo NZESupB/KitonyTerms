@@ -1,4 +1,8 @@
-//! 安装事务：目标同目录暂存、保留备份，启动确认后才清理。
+//! 安装事务：普通平台同目录暂存，Windows 使用用户目录；启动确认前保留备份。
+pub mod elevation;
+#[cfg(test)]
+mod regression;
+
 use crate::{
     archive,
     client::Available,
@@ -81,7 +85,7 @@ impl Installation {
             installed,
         })
     }
-    /// 探测替换所需的权限；已由提权安装器登记的安装恒为 `Writable`。
+    /// 安装版由系统安装器写入；便携版探测父目录的普通写权限。
     pub fn access(&self) -> Access {
         if self.installed {
             return Access::Writable;
@@ -134,6 +138,15 @@ impl Installation {
         }
     }
 }
+
+/// 事务存储布局；缺省按旧版布局读取，恢复已有记录时不猜测备份位置。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionStorage {
+    #[default]
+    Legacy,
+    UserDirectory,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallTask {
     pub installation: Installation,
@@ -161,6 +174,8 @@ pub struct Journal {
     #[serde(default)]
     pub staged_sha256: String,
     pub stage: Stage,
+    #[serde(default)]
+    pub storage: TransactionStorage,
 }
 
 pub fn private_root(path: &Path) -> Result<()> {
@@ -214,9 +229,14 @@ pub fn prepare(
             && available.info.target == current.target,
         "更新身份不匹配 / Update identity mismatch"
     );
-    // 提权辅助程序只负责最终替换；暂存和备份仍由普通权限进程创建。
-    // 必须在退出应用之前确认目录可写，提权选项不能跳过此检查。
-    installation.preflight()?;
+    match installation.access() {
+        Access::Writable => {}
+        Access::NeedsElevation if cfg!(windows) && elevate && !installation.bundle => {}
+        _ => installation.preflight()?,
+    }
+    private_root(root)?;
+    tempfile::NamedTempFile::new_in(root)
+        .context("更新目录不可写 / Update directory is not writable")?;
     ensure!(
         !root.join("task.json").exists() && !root.join("journal.json").exists(),
         "存在未完成的安装 / Pending installation exists"
@@ -228,7 +248,9 @@ pub fn prepare(
         source_sha256: download::sha256(&installation.executable)?,
         package: available.package.clone(),
         parent_pid: std::process::id(),
-        elevate: elevate && !installation.installed,
+        elevate: cfg!(windows)
+            && !installation.installed
+            && (elevate || installation.needs_elevation()),
     };
     let package_path = package_path(root, &task.package);
     download::verify(&package_path, &task.package)?;
@@ -278,45 +300,9 @@ pub fn validate_task(root: &Path, task: &InstallTask, helper: &Path) -> Result<(
     );
     download::verify(&package_path(root, &task.package), &task.package)
 }
-/// 提权替换入口的校验：只接受便携副本、已备份且载荷摘要一致的安装记录。
-///
-/// 提权进程运行的是用户可写目录里的辅助程序，因此在做任何文件操作之前必须把
-/// 事务、目标路径与暂存载荷三条身份都复核一遍。
-pub fn validate_elevated_replace(root: &Path, task: &InstallTask) -> Result<Journal> {
-    ensure!(
-        task.elevate && !task.installation.installed && !task.installation.bundle,
-        "提权替换不适用于该安装 / Elevated replacement does not apply"
-    );
-    let journal: Journal = read_json(&root.join("journal.json"))?;
-    validate_journal(root, &journal)?;
-    ensure!(
-        journal.task.source_sha256 == task.source_sha256
-            && journal.task.installation.executable == task.installation.executable
-            && journal.stage == Stage::BackedUp,
-        "提权替换状态无效 / Invalid elevated replacement state"
-    );
-    ensure!(
-        !journal.staged_sha256.is_empty()
-            && download::sha256(&journal.staging.join("payload"))? == journal.staged_sha256,
-        "暂存载荷校验失败 / Staged payload checksum mismatch"
-    );
-    Ok(journal)
-}
+/// 执行安装；失败后的恢复由持有互斥的协调进程统一处理。
 pub fn apply(root: &Path, task: &InstallTask) -> Result<()> {
-    let result = apply_inner(root, task);
-    if let Err(error) = &result {
-        let restored = rollback(root);
-        let message = match restored {
-            Ok(()) => format!(
-                "更新失败，已恢复旧版本 / Update failed; previous version restored: {error:#}"
-            ),
-            Err(recovery) => {
-                format!("更新失败，恢复失败 / Update and recovery failed: {error:#}; {recovery:#}")
-            }
-        };
-        atomic_json(&root.join("error.json"), &message)?;
-    }
-    result
+    apply_inner(root, task)
 }
 fn apply_inner(root: &Path, task: &InstallTask) -> Result<()> {
     let install = &task.installation;
@@ -326,22 +312,28 @@ fn apply_inner(root: &Path, task: &InstallTask) -> Result<()> {
     );
     let package = package_path(root, &task.package);
     download::verify(&package, &task.package)?;
-    let backup = backup_path(root, install);
+    let storage = if cfg!(windows) {
+        TransactionStorage::UserDirectory
+    } else {
+        TransactionStorage::Legacy
+    };
+    let backup = backup_path(root, install, storage);
     ensure!(
         !backup.exists(),
         "备份路径已存在 / Backup path already exists"
     );
     let staging_dir = tempfile::Builder::new()
         .prefix(".kt-update-stage-")
-        .tempdir_in(if install.installed {
-            root
-        } else {
-            install.target.parent().unwrap()
-        })?;
+        .tempdir_in(
+            if storage == TransactionStorage::UserDirectory || install.installed {
+                root
+            } else {
+                install.target.parent().unwrap()
+            },
+        )?;
     let staged = staging_dir.path().join("payload");
     if install.installed {
-        fs::copy(&install.executable, &staged)?;
-        File::open(&staged)?.sync_all()?;
+        copy_file_synced(&install.executable, &staged)?;
     } else {
         let extraction = tempfile::tempdir_in(root)?;
         let extracted = extraction.path().join("archive");
@@ -368,6 +360,7 @@ fn apply_inner(root: &Path, task: &InstallTask) -> Result<()> {
             download::sha256(&staged)?
         },
         stage: Stage::Prepared,
+        storage,
     };
     atomic_json(&root.join("journal.json"), &journal)?;
     copy_tree(&install.target, &backup)?;
@@ -377,22 +370,30 @@ fn apply_inner(root: &Path, task: &InstallTask) -> Result<()> {
     if install.installed {
         run_installer(root, task)?;
     } else if task.elevate {
-        // 受保护目录：替换只能由提权辅助进程完成，校验后由它单独执行文件交换。
-        ensure!(
-            !journal.staged_sha256.is_empty(),
-            "缺少暂存校验值 / Missing staged checksum"
-        );
-        run_elevated_replace(root, task)?;
+        elevation::request(root, elevation::Operation::Replace)?;
+    } else {
+        let result = replace_payload(&staged, install);
+        #[cfg(windows)]
+        let result = match result {
+            Err(error)
+                if target_access_denied(&error, &install.target)
+                    && download::sha256(&install.executable)? == task.source_sha256 =>
+            {
+                // 目录探测后 ACL/目标权限仍可能变化；只对本次目标写入请求一次 UAC。
+                journal.task.elevate = true;
+                atomic_json(&root.join("journal.json"), &journal)?;
+                atomic_json(&root.join("elevation.json"), &true)?;
+                elevation::request(root, elevation::Operation::Replace)
+            }
+            result => result,
+        };
+        result?;
+    }
+    if !install.bundle && !install.installed {
         ensure!(
             download::sha256(&install.target)? == journal.staged_sha256,
-            "提权替换结果校验失败 / Elevated replacement checksum mismatch"
+            "替换结果校验失败 / Replacement checksum mismatch"
         );
-    } else {
-        replace(
-            &journal.staging.join("payload"),
-            &install.target,
-            install.bundle,
-        )?;
     }
     sync_directory(install.target.parent().unwrap())?;
     journal.stage = Stage::Committed;
@@ -402,14 +403,27 @@ fn apply_inner(root: &Path, task: &InstallTask) -> Result<()> {
 fn validate_journal(root: &Path, j: &Journal) -> Result<()> {
     let install = &j.task.installation;
     ensure!(
+        install.target.file_name().is_some()
+            && install.target.parent().is_some()
+            && [&install.target, &install.executable, &j.staging]
+                .iter()
+                .all(|path| !path.components().any(|component| matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                ))),
+        "安装记录路径含无效分量 / Invalid transaction path components"
+    );
+    ensure!(
         install.target.is_absolute()
             && install.executable.is_absolute()
             && j.staging.parent()
-                == Some(if install.installed {
-                    root
-                } else {
-                    install.target.parent().unwrap()
-                })
+                == Some(
+                    if j.storage == TransactionStorage::UserDirectory || install.installed {
+                        root
+                    } else {
+                        install.target.parent().unwrap()
+                    }
+                )
             && j.staging
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with(".kt-update-stage-")),
@@ -437,9 +451,20 @@ pub fn rollback(root: &Path) -> Result<()> {
     let journal: Journal = read_json(&path)?;
     validate_journal(root, &journal)?;
     let install = &journal.task.installation;
-    let backup = backup_path(root, install);
-    // 备份复制尚未完成，或安装器未改动文件时，原版本本身仍是有效恢复点。
-    if (journal.stage == Stage::Prepared || install.installed)
+    let backup = backup_path(root, install, journal.storage);
+    // 原文件仍有效时无需目标目录写权限，UAC 取消不会触发第二次提权。
+    if journal.stage != Stage::Prepared && backup.exists() {
+        let original = if install.bundle {
+            backup.join(install.relative_executable())
+        } else {
+            backup.clone()
+        };
+        ensure!(
+            download::sha256(&original)? == journal.task.source_sha256,
+            "旧版本备份校验失败 / Backup checksum mismatch"
+        );
+    }
+    if (!install.bundle || journal.stage == Stage::Prepared)
         && download::sha256(&install.executable)
             .is_ok_and(|digest| digest == journal.task.source_sha256)
     {
@@ -458,12 +483,18 @@ pub fn rollback(root: &Path) -> Result<()> {
             download::sha256(&original)? == journal.task.source_sha256,
             "旧版本备份校验失败 / Backup checksum mismatch"
         );
-        if install.installed {
-            fs::copy(&backup, &install.target)?;
-            File::open(&install.target)?.sync_all()?;
-        } else {
-            replace(&backup, &install.target, install.bundle)?;
+        #[cfg(windows)]
+        if install.installed || journal.task.elevate || install.needs_elevation() {
+            elevation::request(root, elevation::Operation::Restore)?;
+        } else if let Err(error) = replace_payload(&backup, install) {
+            if target_access_denied(&error, &install.target) {
+                elevation::request(root, elevation::Operation::Restore)?;
+            } else {
+                return Err(error);
+            }
         }
+        #[cfg(not(windows))]
+        replace(&backup, &install.target, install.bundle)?;
         remove(&backup)?;
         sync_directory(install.target.parent().unwrap())?;
     } else {
@@ -490,7 +521,11 @@ pub fn recover(root: &Path, current: &BuildInfo, executable: &Path, confirm: boo
     );
     if journal.stage == Stage::Committed && &journal.task.next == current {
         if confirm {
-            remove(&backup_path(root, &journal.task.installation))?;
+            remove(&backup_path(
+                root,
+                &journal.task.installation,
+                journal.storage,
+            ))?;
             remove(&journal.staging)?;
             fs::remove_file(path)?;
         }
@@ -503,8 +538,8 @@ pub fn recover(root: &Path, current: &BuildInfo, executable: &Path, confirm: boo
     }
     Ok(())
 }
-fn backup_path(root: &Path, install: &Installation) -> PathBuf {
-    if install.installed {
+fn backup_path(root: &Path, install: &Installation, storage: TransactionStorage) -> PathBuf {
+    if install.installed || storage == TransactionStorage::UserDirectory {
         root.join("previous-executable.exe")
     } else {
         install.backup()
@@ -512,13 +547,114 @@ fn backup_path(root: &Path, install: &Installation) -> PathBuf {
 }
 pub fn remove(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path)?,
-        Ok(_) => fs::remove_file(path)?,
+        Ok(meta) if meta.is_dir() => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes()
+                    & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                    != 0
+                {
+                    fs::remove_dir(path)?;
+                    return Ok(());
+                }
+            }
+            for entry in fs::read_dir(path)? {
+                remove(&entry?.path())?;
+            }
+            fs::remove_dir(path)?;
+        }
+        Ok(_meta) => {
+            #[cfg(windows)]
+            if _meta.is_file() && !_meta.file_type().is_symlink() && _meta.permissions().readonly()
+            {
+                let mut permissions = _meta.permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(path, permissions)?;
+            }
+            fs::remove_file(path)?;
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
     Ok(())
 }
+/// 持有写句柄直到刷盘完成；Windows 的 FlushFileBuffers 不接受只读句柄。
+/// 仅创建新目标，防止误截断当前应用或已有恢复文件。
+pub fn copy_file_synced(source: &Path, target: &Path) -> Result<()> {
+    let mut input = File::open(source).with_context(|| {
+        format!(
+            "读取复制源失败 / Cannot open copy source: {}",
+            source.display()
+        )
+    })?;
+    let permissions = input.metadata()?.permissions();
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .with_context(|| {
+            format!(
+                "创建复制目标失败 / Cannot create copy target: {}",
+                target.display()
+            )
+        })?;
+    std::io::copy(&mut input, &mut output).with_context(|| {
+        format!(
+            "复制文件失败 / Cannot copy file: {} -> {}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    output
+        .sync_all()
+        .with_context(|| format!("刷盘失败 / Cannot flush file: {}", target.display()))?;
+    output.set_permissions(permissions)?;
+    output.sync_all().with_context(|| {
+        format!(
+            "权限刷盘失败 / Cannot flush file permissions: {}",
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// 在目标卷创建临时副本，再执行同卷替换；源载荷/备份保留到事务确认。
+fn replace_payload(source: &Path, installation: &Installation) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let target = &installation.target;
+        let dir = tempfile::Builder::new()
+            .prefix(".kt-update-replace-")
+            .tempdir_in(
+                target
+                    .parent()
+                    .context("缺少安装目录 / Missing install directory")?,
+            )
+            .map_err(|error| ReplaceFailure::new(target, error))?;
+        let local = dir.path().join("payload");
+        copy_file_synced(source, &local)?;
+        ensure!(
+            download::sha256(&local)? == download::sha256(source)?,
+            "目标卷副本校验失败 / Target-volume copy checksum mismatch"
+        );
+        replace_file(&local, target)
+    }
+    #[cfg(not(windows))]
+    replace(source, &installation.target, installation.bundle)
+}
+
+#[cfg(windows)]
+pub fn target_access_denied(error: &anyhow::Error, target: &Path) -> bool {
+    error
+        .downcast_ref::<ReplaceFailure>()
+        .is_some_and(|failure| {
+            failure.target == target
+                && failure.kind == ReplaceKind::AccessDenied
+                && !fs::metadata(target).is_ok_and(|metadata| metadata.permissions().readonly())
+        })
+}
+
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(source)?;
     if meta.file_type().is_symlink() {
@@ -539,8 +675,7 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
             meta.is_file(),
             "不支持的安装文件 / Unsupported installation file"
         );
-        fs::copy(source, target)?;
-        File::open(target)?.sync_all()?;
+        copy_file_synced(source, target)?;
     }
     Ok(())
 }
@@ -584,10 +719,10 @@ pub enum ReplaceKind {
 #[cfg(any(windows, test))]
 impl ReplaceKind {
     fn from_os_error(code: Option<i32>) -> Self {
-        // 5=拒绝访问、32=共享冲突、33=锁冲突、1231=网络资源不可用。
+        // 5=拒绝访问，32/33=共享或锁冲突，1224=文件仍有映射。
         match code {
             Some(5) => Self::AccessDenied,
-            Some(32) | Some(33) => Self::InUse,
+            Some(32) | Some(33) | Some(1224) => Self::InUse,
             _ => Self::Other,
         }
     }
@@ -597,6 +732,7 @@ impl ReplaceKind {
 pub struct ReplaceFailure {
     pub target: PathBuf,
     pub kind: ReplaceKind,
+    pub source: std::io::Error,
 }
 impl std::fmt::Display for ReplaceFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -610,7 +746,30 @@ impl std::fmt::Display for ReplaceFailure {
         write!(f, "{reason}: {}", self.target.display())
     }
 }
-impl std::error::Error for ReplaceFailure {}
+impl std::error::Error for ReplaceFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+#[cfg(windows)]
+impl ReplaceFailure {
+    fn new(target: &Path, source: std::io::Error) -> Self {
+        let mut kind = ReplaceKind::from_os_error(source.raw_os_error());
+        if kind == ReplaceKind::AccessDenied {
+            // 映射中的 EXE 可能以错误 5 上报；不截断文件的写探测可识别共享冲突。
+            if let Err(probe) = OpenOptions::new().write(true).open(target) {
+                if ReplaceKind::from_os_error(probe.raw_os_error()) == ReplaceKind::InUse {
+                    kind = ReplaceKind::InUse;
+                }
+            }
+        }
+        Self {
+            target: target.to_path_buf(),
+            kind,
+            source,
+        }
+    }
+}
 
 /// 目标被占用/拒绝访问时的重试预算与间隔。
 #[cfg(windows)]
@@ -620,49 +779,54 @@ const REPLACE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_milli
 /// 让位文件标记：`.<文件名>.kt-replaced-<时间戳>`，启动时统一回收。
 const REPLACE_ASIDE_MARKER: &str = ".kt-replaced-";
 
-/// 统一替换原语：Windows 上目标被占用或拒绝访问时重试，必要时先让位再放入。
+/// 应用替换失败时保留原文件，不通过改名绕过仍在运行的应用。
 pub fn replace_file(source: &Path, target: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        match move_file(source, target) {
-            Ok(()) => return Ok(()),
-            Err(kind @ ReplaceKind::Other) => {
-                return Err(anyhow::Error::new(ReplaceFailure {
-                    target: target.to_path_buf(),
-                    kind,
-                }))
-            }
-            Err(kind) => {
-                // 旧文件先改名让位：运行中的程序可以改名，但不能被覆盖。
-                let aside = replace_aside_path(target)?;
-                if let Err(aside_kind) = move_file(target, &aside) {
-                    return Err(anyhow::Error::new(ReplaceFailure {
-                        target: target.to_path_buf(),
-                        // 让位失败时以原有分类上报，除非让位给出了更具体的占用信息。
-                        kind: if aside_kind == ReplaceKind::Other {
-                            kind
-                        } else {
-                            aside_kind
-                        },
-                    }));
-                }
-                if let Err(kind) = move_file(source, target) {
-                    // 放不回新文件时尽力恢复旧文件，避免留下空路径。
-                    let _ = move_file(&aside, target);
-                    return Err(anyhow::Error::new(ReplaceFailure {
-                        target: target.to_path_buf(),
-                        kind,
-                    }));
-                }
-                return Ok(());
-            }
-        }
+        move_file(source, target).map_err(|error| ReplaceFailure::new(target, error).into())
     }
     #[cfg(not(windows))]
     {
-        fs::rename(source, target)?;
-        Ok(())
+        fs::rename(source, target).with_context(|| {
+            format!(
+                "替换文件失败 / Cannot replace file: {} -> {}",
+                source.display(),
+                target.display()
+            )
+        })
     }
+}
+
+/// 只有辅助副本允许让位；放入失败后必须检查旧副本是否恢复。
+pub fn replace_helper_file(source: &Path, target: &Path) -> Result<()> {
+    #[cfg(windows)]
+    if let Err(error) = replace_file(source, target) {
+        if !error
+            .downcast_ref::<ReplaceFailure>()
+            .is_some_and(|failure| {
+                matches!(failure.kind, ReplaceKind::InUse | ReplaceKind::AccessDenied)
+            })
+        {
+            return Err(error);
+        }
+        let aside = replace_aside_path(target)?;
+        move_file(target, &aside).map_err(|error| ReplaceFailure::new(target, error))?;
+        if let Err(error) = replace_file(source, target) {
+            if let Err(restore) = move_file(&aside, target) {
+                return Err(error.context(format!(
+                    "辅助副本恢复失败 / Helper restoration failed: {} -> {}: {restore}",
+                    aside.display(),
+                    target.display()
+                )));
+            }
+            return Err(error);
+        }
+        return Ok(());
+    } else {
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    replace_file(source, target)
 }
 
 /// 回收 `replace_file` 留下的让位文件；仍被占用时保留到下次启动。
@@ -710,7 +874,7 @@ fn replace_aside_path(target: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn move_file(source: &Path, target: &Path) -> std::result::Result<(), ReplaceKind> {
+fn move_file(source: &Path, target: &Path) -> std::io::Result<()> {
     use std::{os::windows::ffi::OsStrExt, time::Instant};
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
     let wide = |path: &Path| {
@@ -728,9 +892,10 @@ fn move_file(source: &Path, target: &Path) -> std::result::Result<(), ReplaceKin
         if moved != 0 {
             return Ok(());
         }
-        let kind = ReplaceKind::from_os_error(std::io::Error::last_os_error().raw_os_error());
-        if kind == ReplaceKind::Other || Instant::now() >= deadline {
-            return Err(kind);
+        let error = std::io::Error::last_os_error();
+        let kind = ReplaceKind::from_os_error(error.raw_os_error());
+        if kind != ReplaceKind::InUse || Instant::now() >= deadline {
+            return Err(error);
         }
         std::thread::sleep(REPLACE_RETRY_DELAY);
     }
@@ -751,103 +916,33 @@ pub fn helper_path(root: &Path) -> PathBuf {
         "update-helper"
     })
 }
-/// 提权替换：辅助程序在此入口只做文件交换，不启动 GUI，也不做其他工作。
-#[cfg(windows)]
-fn run_elevated_replace(root: &Path, _task: &InstallTask) -> Result<()> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{GetExitCodeProcess, WaitForSingleObject},
-        UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
-    };
-    const ELEVATED_TIMEOUT_MS: u32 = 5 * 60 * 1000;
-    let helper = helper_path(root);
-    ensure!(
-        helper.is_file(),
-        "缺少更新辅助程序 / Update helper is missing"
-    );
-    let wide = |s: &OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let file = wide(helper.as_os_str());
-    let verb = wide(OsStr::new("runas"));
-    let params = wide(OsStr::new("--elevated-replace"));
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = file.as_ptr();
-    info.lpParameters = params.as_ptr();
-    info.nShow = 0;
-    ensure!(
-        unsafe { ShellExecuteExW(&mut info) } != 0,
-        "无法请求管理员授权替换应用 / Cannot request administrator approval"
-    );
-    let wait = unsafe { WaitForSingleObject(info.hProcess, ELEVATED_TIMEOUT_MS) };
-    let mut code = 1;
-    let read = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
-    unsafe {
-        CloseHandle(info.hProcess);
-    }
-    ensure!(
-        wait == 0 && read != 0 && code == 0,
-        "提权替换失败或被取消 / Elevated replacement failed or was cancelled ({code})"
-    );
-    Ok(())
-}
-#[cfg(not(windows))]
-fn run_elevated_replace(_: &Path, _: &InstallTask) -> Result<()> {
-    anyhow::bail!("此平台不支持提权替换 / Elevated replacement unsupported")
-}
 #[cfg(windows)]
 fn run_installer(root: &Path, task: &InstallTask) -> Result<()> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{GetExitCodeProcess, WaitForSingleObject},
-        UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
-    };
+    use std::ffi::OsString;
+    ensure!(
+        registered_installation(&task.installation.executable),
+        "安装目标未登记 / Install target is not registered"
+    );
     let setup = root.join("update-setup.exe");
-    fs::copy(package_path(root, &task.package), &setup).with_context(|| {
-        format!(
-            "写入安装器失败 / Cannot stage installer: {}",
-            setup.display()
-        )
-    })?;
-    let wide = |s: &OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let file = wide(setup.as_os_str());
-    let verb = wide(OsStr::new("runas"));
-    let folder = task
-        .installation
-        .executable
-        .parent()
-        .unwrap()
-        .to_str()
-        .context("安装目录编码无效 / Invalid install path")?;
-    ensure!(!folder.contains('"'), "安装路径无效 / Invalid install path");
-    let params = wide(OsStr::new(&format!(
-        "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=\"{folder}\""
-    )));
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = file.as_ptr();
-    info.lpParameters = params.as_ptr();
-    info.nShow = 1;
-    ensure!(
-        unsafe { ShellExecuteExW(&mut info) } != 0,
-        "无法启动安装器或 UAC 被取消 / Installer launch or UAC cancelled"
+    remove(&setup)?;
+    copy_file_synced(&package_path(root, &task.package), &setup)?;
+    download::verify(&setup, &task.package)?;
+    let mut folder = OsString::from("/DIR=");
+    folder.push(
+        task.installation
+            .executable
+            .parent()
+            .context("缺少安装目录 / Missing install directory")?,
     );
-    let wait = unsafe { WaitForSingleObject(info.hProcess, 10 * 60 * 1000) };
-    let mut code = 1;
-    let read = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
-    unsafe {
-        CloseHandle(info.hProcess);
-    }
-    ensure!(
-        wait == 0 && read != 0 && code == 0,
-        "安装器失败 / Installer failed ({code})"
-    );
-    Ok(())
+    let arguments = [
+        OsString::from("/VERYSILENT"),
+        OsString::from("/SUPPRESSMSGBOXES"),
+        OsString::from("/NORESTART"),
+        OsString::from("/SP-"),
+        folder,
+    ];
+    elevation::run(&setup, &arguments, std::time::Duration::from_secs(600))
+        .context("系统安装器失败 / System installer failed")
 }
 #[cfg(not(windows))]
 fn run_installer(_: &Path, _: &InstallTask) -> Result<()> {
@@ -943,6 +1038,7 @@ mod tests {
             staging,
             staged_sha256: String::new(),
             stage: Stage::Prepared,
+            storage: TransactionStorage::Legacy,
         };
         atomic_json(&root.join("journal.json"), &j).unwrap();
         // 覆盖备份后、阶段记录前被中断。
@@ -976,6 +1072,7 @@ mod tests {
             staging: dir.path().join(".kt-update-stage-test"),
             staged_sha256: String::new(),
             stage: Stage::BackedUp,
+            storage: TransactionStorage::Legacy,
         };
         atomic_json(&root.join("journal.json"), &j).unwrap();
         assert!(rollback(&root).is_err());
@@ -999,6 +1096,7 @@ mod tests {
             staging,
             staged_sha256: String::new(),
             stage: Stage::BackedUp,
+            storage: TransactionStorage::Legacy,
         };
         atomic_json(&root.join("journal.json"), &j).unwrap();
         recover(&root, &task.current, &task.installation.executable, false).unwrap();
@@ -1023,6 +1121,7 @@ mod tests {
             staging,
             staged_sha256: String::new(),
             stage: Stage::Prepared,
+            storage: TransactionStorage::Legacy,
         };
         atomic_json(&root.join("journal.json"), &j).unwrap();
         rollback(&root).unwrap();

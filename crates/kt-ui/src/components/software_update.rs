@@ -2,7 +2,7 @@
 mod release_notes;
 mod view;
 
-use self::view::{RestartDialog, UpdateAction, UpdateError, UpdateView};
+use self::view::{RestartNotice, UpdateAction, UpdateError, UpdateView};
 use crate::components::icons::Icon;
 use crate::{components::app::get_state, i18n::texts};
 use dioxus::prelude::*;
@@ -27,27 +27,20 @@ struct UpdateUi {
     context: UpdateContext,
     snapshot: Signal<Snapshot>,
     error: Signal<Option<String>>,
-    confirm: Signal<bool>,
     restarting: Signal<bool>,
-    /// 本次重启是否已由用户确认使用管理员权限替换受保护目录里的副本。
-    elevate: Signal<bool>,
     safety: Rc<dyn Fn() -> RestartSafety>,
 }
 pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Signal<bool> {
     let context = use_context::<UpdateContext>();
     let snapshot = use_signal(|| context.service.snapshot());
     let error = use_signal(|| None::<String>);
-    let confirm = use_signal(|| false);
     let restarting = use_signal(|| false);
-    let elevate = use_signal(|| false);
     let safety = use_hook(|| Rc::new(safety) as Rc<dyn Fn() -> RestartSafety>);
     let ui = UpdateUi {
         context: context.clone(),
         snapshot,
         error,
-        confirm,
         restarting,
-        elevate,
         safety,
     };
     use_context_provider(|| ui);
@@ -75,30 +68,33 @@ pub fn use_software_updates(safety: impl Fn() -> RestartSafety + 'static) -> Sig
     });
     restarting
 }
-fn request_restart(mut ui: UpdateUi, language: AppLanguage, elevate: bool) {
-    ui.error.set(None);
-    if (ui.safety)().blocked() {
-        ui.error
-            .set(Some(texts(language).app.update_blocked.into()));
-    } else {
-        ui.elevate.set(elevate);
-        ui.confirm.set(true);
+fn restart_permitted(restarting: bool, phase: Phase, safety: RestartSafety) -> Result<bool, ()> {
+    if restarting || phase != Phase::Ready {
+        return Ok(false);
     }
+    if safety.blocked() {
+        return Err(());
+    }
+    Ok(true)
 }
+
 fn restart(mut ui: UpdateUi, language: AppLanguage) {
-    if (ui.restarting)() {
-        return;
+    match restart_permitted(
+        (ui.restarting)(),
+        ui.context.service.snapshot().phase,
+        (ui.safety)(),
+    ) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(()) => {
+            ui.error
+                .set(Some(texts(language).app.update_blocked.into()));
+            return;
+        }
     }
-    if (ui.safety)().blocked() {
-        ui.confirm.set(false);
-        ui.error
-            .set(Some(texts(language).app.update_blocked.into()));
-        return;
-    }
-    ui.confirm.set(false);
     ui.restarting.set(true);
     ui.error.set(None);
-    let elevate = (ui.elevate)();
+    let elevate = ui.context.service.requires_elevation();
     let window = dioxus::desktop::use_window();
     spawn(async move {
         let service = Arc::clone(&ui.context.service);
@@ -197,11 +193,7 @@ fn act(mut ui: UpdateUi, action: UpdateAction, language: AppLanguage) {
             Ok(())
         }
         UpdateAction::Restart => {
-            request_restart(ui.clone(), language, false);
-            Ok(())
-        }
-        UpdateAction::ElevatedRestart => {
-            request_restart(ui.clone(), language, true);
+            restart(ui.clone(), language);
             Ok(())
         }
     };
@@ -257,16 +249,7 @@ pub fn SoftwareUpdateOverlay(
 ) -> Element {
     let ui = use_context::<UpdateUi>();
     let mut dismissed = use_signal(|| None::<kt_update::metadata::BuildInfo>);
-    let confirm = ui.confirm;
     let restarting = ui.restarting;
-    use_effect(move || {
-        if confirm() || restarting() {
-            dioxus::document::eval(include_str!("../assets/software_update_dialog.js"));
-        }
-    });
-    use_drop(|| {
-        dioxus::document::eval("window.ktUpdateDialogCleanup?.();");
-    });
     let snapshot = (ui.snapshot)();
     let target = snapshot
         .available
@@ -274,8 +257,15 @@ pub fn SoftwareUpdateOverlay(
         .map(|release| release.info.clone());
     let label = target.as_ref().map(|info| info.label()).unwrap_or_default();
     let t = texts(language).app;
-    let modal = confirm() || restarting();
-    let notice = snapshot.phase == Phase::Ready && target.is_some() && dismissed() != target;
+    let notice_icon = if restarting() { "refresh" } else { "check" };
+    let notice_title = if restarting() {
+        t.update_preparing
+    } else {
+        t.update_notice_title
+    };
+    let notice = matches!(snapshot.phase, Phase::Ready | Phase::Preparing)
+        && target.is_some()
+        && (dismissed() != target || restarting());
     let ink = crate::components::theme::accent_foreground(&accent);
     let layer_style = crate::components::theme::interface_root_style(
         &accent,
@@ -288,25 +278,16 @@ pub fn SoftwareUpdateOverlay(
         div {
             class: if theme == "light" { "software-update-layer theme-light" } else { "software-update-layer" },
             style: "{layer_style}",
-            if modal {
-                RestartDialog {
-                    language,
-                    target: label.clone(),
-                    preparing: restarting(),
-                    elevated: snapshot.requires_elevation,
-                    on_later: { let mut ui = ui.clone(); move |_| { if !(ui.restarting)() { ui.confirm.set(false); } } },
-                    on_restart: { let ui = ui.clone(); move |_| restart(ui.clone(), language) },
-                }
-            }
             if notice {
-                aside { class: "software-update-notice", hidden: modal, aria_label: t.update_notice_title,
-                    div { class: "update-notice-icon", aria_hidden: "true", Icon { name: "check" } }
-                    div { class: "update-notice-copy", role: "status", strong { "{t.update_notice_title}" } span { "KitonyTerms {label}" } }
+                aside { class: "software-update-notice", aria_label: t.update_notice_title,
+                    div { class: if restarting() { "update-notice-icon is-spinning" } else { "update-notice-icon" }, aria_hidden: "true", Icon { name: notice_icon } }
+                    div { class: "update-notice-copy", role: "status", strong { "{notice_title}" } span { "KitonyTerms {label}" } }
                     div { class: "software-update-actions",
-                        button { class: "settings-button update-button", r#type: "button", onclick: move |_| dismissed.set(target.clone()), "{t.update_later}" }
-                        // 通知里的重启直接沿用当前安装位置的授权需求。
-                        button { class: "settings-button primary update-button", r#type: "button", onclick: { let ui = ui.clone(); let elevate = snapshot.requires_elevation; move |_| request_restart(ui.clone(), language, elevate) }, if snapshot.requires_elevation { "{t.update_restart_elevated}" } else { "{t.update_restart}" } }
+                        button { class: "settings-button update-button", r#type: "button", disabled: restarting(), onclick: move |_| dismissed.set(target.clone()), "{t.update_later}" }
+                        button { class: "settings-button primary update-button", r#type: "button", disabled: restarting(), onclick: { let ui = ui.clone(); move |_| restart(ui.clone(), language) }, "{t.update_restart}" }
                     }
+                    if restarting() { p { class: "update-notice-hint", role: "status", "{t.update_preparing_hint}" } }
+                    else { RestartNotice { language, elevated: snapshot.requires_elevation } }
                     if let Some(error) = (ui.error)().or(snapshot.message) { UpdateError { message: error, language } }
                 }
             }
@@ -317,6 +298,27 @@ pub fn SoftwareUpdateOverlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restart_starts_directly_once_and_can_retry_after_preparation_failure() {
+        let safe = RestartSafety::default();
+        assert_eq!(restart_permitted(false, Phase::Ready, safe), Ok(true));
+        assert_eq!(restart_permitted(true, Phase::Ready, safe), Ok(false));
+        assert_eq!(restart_permitted(false, Phase::Preparing, safe), Ok(false));
+        assert_eq!(restart_permitted(false, Phase::Available, safe), Ok(false));
+        assert_eq!(
+            restart_permitted(
+                false,
+                Phase::Ready,
+                RestartSafety {
+                    editing: true,
+                    ..safe
+                }
+            ),
+            Err(())
+        );
+        assert_eq!(restart_permitted(false, Phase::Ready, safe), Ok(true));
+    }
+
     #[test]
     fn restart_protects_each_kind_of_pending_work() {
         assert!(!RestartSafety::default().blocked());
