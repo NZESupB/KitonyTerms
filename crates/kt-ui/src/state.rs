@@ -13,8 +13,8 @@ use kt_core::term::GridSnapshot;
 use kt_core::PtySize;
 use kt_core::{
     AuthChallenge, ExecId, FromCore, OperationId, OperationsDomain, OperationsError,
-    OperationsRequest, OperationsResult, SessionId, SessionManager, SftpEntry, SftpOp, SftpRequest,
-    SftpRequestId, ToCore,
+    OperationsRequest, OperationsResult, SessionId, SessionManager, SftpBatchProgress, SftpEntry,
+    SftpOp, SftpRequest, SftpRequestId, ToCore,
 };
 
 const MAX_SFTP_OUTCOMES: usize = 256;
@@ -41,6 +41,7 @@ pub struct SftpProgressState {
     pub name: String,
     pub transferred: u64,
     pub total: u64,
+    pub batch: Option<SftpBatchProgress>,
 }
 
 /// 单一运维查询的会话内快照。失败保留最后一次成功结果。
@@ -986,6 +987,7 @@ impl AppState {
                 name,
                 transferred,
                 total,
+                batch,
             } => {
                 if let Some(sess) = self.sessions.get_mut(&id) {
                     if !sess.sftp_pending_requests.contains(&request_id) {
@@ -1001,6 +1003,7 @@ impl AppState {
                         name,
                         transferred,
                         total,
+                        batch,
                     });
                 }
             }
@@ -3439,6 +3442,10 @@ mod tests {
             name: "demo.bin".to_string(),
             transferred: 10,
             total: 20,
+            batch: Some(SftpBatchProgress {
+                transferred: 10,
+                total: Some(20),
+            }),
         });
         let id = sess.id;
         app_state.sessions.insert(id, sess);
@@ -3512,6 +3519,10 @@ mod tests {
             name: "current.bin".to_string(),
             transferred: 20,
             total: 40,
+            batch: Some(SftpBatchProgress {
+                transferred: 60,
+                total: Some(100),
+            }),
         });
         let id = sess.id;
         app_state.sessions.insert(id, sess);
@@ -3522,6 +3533,10 @@ mod tests {
             name: "stale.bin".to_string(),
             transferred: 1,
             total: 2,
+            batch: Some(SftpBatchProgress {
+                transferred: 1,
+                total: Some(2),
+            }),
         });
 
         let sess = app_state.sessions.get(&id).unwrap();
@@ -3529,6 +3544,7 @@ mod tests {
         assert_eq!(progress.request_id, SftpRequestId(2));
         assert_eq!(progress.name, "current.bin");
         assert_eq!(progress.transferred, 20);
+        assert_eq!(progress.batch.unwrap().transferred, 60);
 
         app_state.handle_event(FromCore::SftpProgress {
             id,
@@ -3536,9 +3552,74 @@ mod tests {
             name: "current.bin".to_string(),
             transferred: 30,
             total: 40,
+            batch: Some(SftpBatchProgress {
+                transferred: 70,
+                total: Some(100),
+            }),
         });
         let progress = app_state.sessions[&id].sftp_progress.as_ref().unwrap();
         assert_eq!(progress.transferred, 30);
+        assert_eq!(
+            progress.batch,
+            Some(SftpBatchProgress {
+                transferred: 70,
+                total: Some(100)
+            })
+        );
+    }
+
+    #[test]
+    fn download_outcome_clears_batch_progress_and_rejects_late_ticks() {
+        for success in [true, false] {
+            let mut app_state = app_state();
+            let mut sess = session_state(true);
+            let request_id = SftpRequestId(7);
+            sess.sftp_pending_requests.insert(request_id);
+            let id = sess.id;
+            app_state.sessions.insert(id, sess);
+            let progress = || FromCore::SftpProgress {
+                id,
+                request_id,
+                name: "nested/file.bin".into(),
+                transferred: 30,
+                total: 50,
+                batch: Some(SftpBatchProgress {
+                    transferred: 80,
+                    total: Some(100),
+                }),
+            };
+            app_state.handle_event(progress());
+            assert_eq!(
+                app_state.sessions[&id]
+                    .sftp_progress
+                    .as_ref()
+                    .unwrap()
+                    .batch
+                    .unwrap()
+                    .transferred,
+                80
+            );
+            app_state.handle_event(if success {
+                FromCore::SftpDone {
+                    id,
+                    request_id,
+                    op: SftpOp::Download,
+                    path: "/folder".into(),
+                }
+            } else {
+                FromCore::SftpError {
+                    id,
+                    request_id,
+                    message: "连接已关闭".into(),
+                }
+            });
+            app_state.handle_event(progress());
+            let sess = &app_state.sessions[&id];
+            assert!(sess.sftp_progress.is_none());
+            assert!(!sess.sftp_pending_requests.contains(&request_id));
+            assert_eq!(sess.sftp_completions.len(), usize::from(success));
+            assert_eq!(sess.sftp_failures.len(), usize::from(!success));
+        }
     }
 
     #[test]

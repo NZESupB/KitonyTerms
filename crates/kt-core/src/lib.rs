@@ -30,7 +30,8 @@ pub use remote_ops::{
 };
 pub use session::{
     AuthChallenge, AuthPrompt, AuthProviderFactory, AuthResponse, ExecId, FromCore, SessionId,
-    SessionManager, SftpBatchEntry, SftpEntry, SftpOp, SftpRequest, SftpRequestId, ToCore,
+    SessionManager, SftpBatchEntry, SftpBatchProgress, SftpEntry, SftpOp, SftpRequest,
+    SftpRequestId, ToCore,
 };
 pub use ssh::{AuthProvider, HostKeyVerifier, PtySize, SshError, SshShell};
 pub use term::{GridSnapshot, TermEngine, TermEvent};

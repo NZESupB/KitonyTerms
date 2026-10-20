@@ -482,6 +482,7 @@ pub struct SftpText {
     pub download: &'static str,
     pub download_folder: &'static str,
     pub downloading: &'static str,
+    pub download_progress: &'static str,
     pub downloaded: &'static str,
     pub download_conflict: &'static str,
     pub end_edit: &'static str,

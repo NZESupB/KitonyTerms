@@ -423,6 +423,13 @@ impl fmt::Debug for ToCore {
     }
 }
 
+/// 下载批次累计字节；总量未知时为 None，空批次的已知总量为 Some(0)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SftpBatchProgress {
+    pub transferred: u64,
+    pub total: Option<u64>,
+}
+
 /// Events emitted from the core out to the UI.
 pub enum FromCore {
     /// Connection + auth + shell are up.
@@ -455,6 +462,7 @@ pub enum FromCore {
         name: String,
         transferred: u64,
         total: u64,
+        batch: Option<SftpBatchProgress>,
     },
     /// SFTP 操作完成。An SFTP operation finished successfully.
     SftpDone {

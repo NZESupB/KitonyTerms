@@ -16,8 +16,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::session::{
-    FromCore, SessionEventSender, SessionId, SftpBatchEntry, SftpEntry, SftpOp, SftpRequest,
-    SftpRequestId,
+    FromCore, SessionEventSender, SessionId, SftpBatchEntry, SftpBatchProgress, SftpEntry, SftpOp,
+    SftpRequest, SftpRequestId,
 };
 use crate::ssh::SshConnectionGuard;
 
@@ -387,7 +387,19 @@ async fn upload_file(
         .await
         .map_err(|e| format!("创建远端临时文件 {temp_path} 失败：{e}"))?;
     let transfer_result = async {
-        copy_with_progress(&mut src, &mut dst, id, request_id, &name, total, out).await?;
+        copy_with_progress(
+            &mut src,
+            &mut dst,
+            TransferProgress {
+                id,
+                request_id,
+                name: &name,
+                total,
+                batch: None,
+            },
+            out,
+        )
+        .await?;
         // 先关闭远端临时文件，确保服务器提交写入后再执行 rename。
         dst.shutdown().await.map_err(|e| e.to_string())
     }
@@ -501,7 +513,19 @@ where
     let _cleanup = download::LocalTempGuard(temp_path.clone());
     let mut dst = dst;
     let transfer_result = async {
-        copy_with_progress(src, &mut dst, id, request_id, name, total, out).await?;
+        copy_with_progress(
+            src,
+            &mut dst,
+            TransferProgress {
+                id,
+                request_id,
+                name,
+                total,
+                batch: None,
+            },
+            out,
+        )
+        .await?;
         dst.flush().await.map_err(|error| error.to_string())?;
         dst.sync_all().await.map_err(|error| error.to_string())
     }
@@ -633,17 +657,46 @@ fn append_cleanup_error(primary: String, temp_path: &str, cleanup_error: &str) -
     format!("{primary}；清理临时文件 {temp_path} 失败：{cleanup_error}")
 }
 
-/// 分块拷贝并周期上报进度。完成时补发一条 100% 进度。
-/// Copy in chunks while emitting throttled progress; emit a final 100% tick.
+struct TransferProgress<'a> {
+    id: SessionId,
+    request_id: SftpRequestId,
+    name: &'a str,
+    total: u64,
+    batch: Option<SftpBatchProgress>,
+}
+
+impl TransferProgress<'_> {
+    async fn emit(&self, transferred: u64, out: &SessionEventSender) {
+        let batch = self.batch.map(|batch| SftpBatchProgress {
+            transferred: batch.transferred.saturating_add(transferred),
+            total: if transferred > self.total {
+                None
+            } else {
+                batch.total
+            },
+        });
+        let _ = send_sftp_event(
+            out,
+            FromCore::SftpProgress {
+                id: self.id,
+                request_id: self.request_id,
+                name: self.name.to_string(),
+                transferred,
+                total: self.total,
+                batch,
+            },
+        )
+        .await;
+    }
+}
+
+/// 分块拷贝并周期上报进度；返回实际传输字节供批次累计。
 async fn copy_with_progress<R, W>(
     src: &mut R,
     dst: &mut W,
-    id: SessionId,
-    request_id: SftpRequestId,
-    name: &str,
-    total: u64,
+    mut progress: TransferProgress<'_>,
     out: &SessionEventSender,
-) -> Result<(), String>
+) -> Result<u64, String>
 where
     R: AsyncReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
@@ -651,6 +704,9 @@ where
     let mut buf = vec![0u8; CHUNK];
     let mut transferred = 0u64;
     let mut last_emit = 0u64;
+    if progress.batch.is_some() {
+        progress.emit(0, out).await;
+    }
     loop {
         let n = src.read(&mut buf).await.map_err(|e| e.to_string())?;
         if n == 0 {
@@ -660,31 +716,16 @@ where
         transferred += n as u64;
         if transferred - last_emit >= PROGRESS_STEP {
             last_emit = transferred;
-            let _ = send_sftp_event(
-                out,
-                FromCore::SftpProgress {
-                    id,
-                    request_id,
-                    name: name.to_string(),
-                    transferred,
-                    total,
-                },
-            )
-            .await;
+            progress.emit(transferred, out).await;
         }
     }
-    let _ = send_sftp_event(
-        out,
-        FromCore::SftpProgress {
-            id,
-            request_id,
-            name: name.to_string(),
-            transferred,
-            total,
-        },
-    )
-    .await;
-    Ok(())
+    if transferred != progress.total {
+        if let Some(batch) = progress.batch.as_mut() {
+            batch.total = None;
+        }
+    }
+    progress.emit(transferred, out).await;
+    Ok(transferred)
 }
 
 async fn send_sftp_event(out: &SessionEventSender, event: FromCore) -> bool {
@@ -1053,10 +1094,13 @@ mod tests {
         copy_with_progress(
             &mut src,
             &mut dst,
-            SessionId(3),
-            SftpRequestId(9),
-            "hello.txt",
-            5,
+            TransferProgress {
+                id: SessionId(3),
+                request_id: SftpRequestId(9),
+                name: "hello.txt",
+                total: 5,
+                batch: None,
+            },
             &out,
         )
         .await
@@ -1070,10 +1114,107 @@ mod tests {
                     request_id: SftpRequestId(9),
                     transferred: 5,
                     total: 5,
+                    batch: None,
                     ..
                 },
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn batch_progress_accumulates_across_files_and_emits_before_reading() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let out = SessionEventSender::new(SessionId(3), 0, tx);
+        let sizes = [3 * CHUNK, 10 * CHUNK + 1];
+        let total = sizes.iter().sum::<usize>() as u64;
+        let mut completed = 0;
+        let mut previous = 0;
+        for (index, size) in sizes.into_iter().enumerate() {
+            let name = format!("folder/{index}.bin");
+            let mut src = std::io::Cursor::new(vec![0; size]);
+            let copied = copy_with_progress(
+                &mut src,
+                &mut tokio::io::sink(),
+                TransferProgress {
+                    id: SessionId(3),
+                    request_id: SftpRequestId(9),
+                    name: &name,
+                    total: size as u64,
+                    batch: Some(SftpBatchProgress {
+                        transferred: completed,
+                        total: Some(total),
+                    }),
+                },
+                &out,
+            )
+            .await
+            .unwrap();
+            let mut ticks = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                let FromCore::SftpProgress {
+                    request_id,
+                    name: current,
+                    transferred,
+                    batch,
+                    ..
+                } = event.event
+                else {
+                    panic!("应为进度事件")
+                };
+                assert_eq!(request_id, SftpRequestId(9));
+                assert_eq!(current, name);
+                let batch = batch.unwrap();
+                assert_eq!(batch.total, Some(total));
+                assert_eq!(batch.transferred, completed + transferred);
+                assert!(batch.transferred >= previous);
+                previous = batch.transferred;
+                ticks.push(transferred);
+            }
+            assert_eq!(ticks.first(), Some(&0));
+            assert_eq!(ticks.last(), Some(&(size as u64)));
+            assert_eq!(copied, size as u64);
+            completed += copied;
+        }
+        assert_eq!(previous, total);
+    }
+
+    #[tokio::test]
+    async fn batch_progress_does_not_claim_known_total_when_file_size_changes() {
+        for (expected, actual) in [(10, 5), (5, 10), (0, 5)] {
+            let (tx, mut rx) = mpsc::channel(4);
+            let out = SessionEventSender::new(SessionId(3), 0, tx);
+            let copied = copy_with_progress(
+                &mut std::io::Cursor::new(vec![0; actual]),
+                &mut tokio::io::sink(),
+                TransferProgress {
+                    id: SessionId(3),
+                    request_id: SftpRequestId(9),
+                    name: "changed.bin",
+                    total: expected,
+                    batch: Some(SftpBatchProgress {
+                        transferred: 20,
+                        total: Some(100),
+                    }),
+                },
+                &out,
+            )
+            .await
+            .unwrap();
+            assert_eq!(copied, actual as u64);
+            let mut last = None;
+            while let Ok(event) = rx.try_recv() {
+                if let FromCore::SftpProgress { batch, .. } = event.event {
+                    last = batch;
+                }
+            }
+            assert_eq!(
+                last,
+                Some(SftpBatchProgress {
+                    transferred: 20 + copied,
+                    total: None
+                })
+            );
+        }
     }
 }

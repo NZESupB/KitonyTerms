@@ -68,6 +68,20 @@ mod tests {
     }
 
     #[test]
+    fn file_sizes_cover_zero_and_unit_boundaries() {
+        for (bytes, expected) in [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KB"),
+            (1024 * 1024, "1.0 MB"),
+            (1024 * 1024 * 1024, "1.0 GB"),
+            (5 * 1024 * 1024 * 1024 / 2, "2.5 GB"),
+        ] {
+            assert_eq!(format_bytes(bytes), expected);
+        }
+    }
+
+    #[test]
     fn uptime_uses_compact_days_and_hours() {
         assert_eq!(format_uptime(3600), "1h");
         assert_eq!(format_uptime(25 * 3600), "1d 1h");

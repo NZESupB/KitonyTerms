@@ -1,9 +1,11 @@
 //! 桌面下载选择与进度；独立于当前选中的会话。
-use super::{app::get_state, sftp::join_path, sidebar::SftpEntryContext};
-use crate::i18n::texts;
+use super::{
+    app::get_state, metrics_format::format_bytes, sftp::join_path, sidebar::SftpEntryContext,
+};
+use crate::{i18n::texts, state::SftpProgressState};
 use dioxus::prelude::*;
 use kt_config::AppLanguage;
-use kt_core::{SessionId, SftpRequest, SftpRequestId};
+use kt_core::{SessionId, SftpBatchProgress, SftpRequest, SftpRequestId};
 use std::path::{Path, PathBuf};
 
 fn folder_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
@@ -13,23 +15,53 @@ fn folder_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(parent.join(name))
 }
 
+#[derive(Clone, PartialEq)]
+enum DownloadNotice {
+    Downloading {
+        name: String,
+        size: Option<u64>,
+        batch: Option<SftpBatchProgress>,
+    },
+    Complete(String),
+    Error(String),
+}
+
+impl DownloadNotice {
+    fn percentage(&self) -> Option<u64> {
+        match self {
+            Self::Downloading { batch, .. } => {
+                let batch = batch.as_ref()?;
+                let total = batch.total?;
+                // 文件落盘提交仍可能失败，成功事件到达后才展示 100%。
+                Some(if total == 0 {
+                    0
+                } else {
+                    ((u128::from(batch.transferred) * 100 / u128::from(total)).min(99)) as u64
+                })
+            }
+            Self::Complete(_) => Some(100),
+            Self::Error(_) => None,
+        }
+    }
+}
+
 #[component]
 pub(crate) fn DownloadController(
     mut pending: Signal<Option<SftpEntryContext>>,
     language: AppLanguage,
 ) -> Element {
     let mut busy = use_signal(|| false);
-    let mut message = use_signal(|| None::<String>);
+    let mut notice = use_signal(|| None::<DownloadNotice>);
     use_effect(move || {
         let Some(ctx) = pending() else {
             return;
         };
         pending.set(None);
         if *busy.peek() {
-            message.set(Some(texts(language).sftp.downloading.to_string()));
             return;
         }
         busy.set(true);
+        notice.set(None);
         spawn(async move {
             let t = texts(language).sftp;
             let result = async {
@@ -85,34 +117,97 @@ pub(crate) fn DownloadController(
                             overwrite,
                         },
                     )?;
-                message.set(Some(format!("{}: {}", t.downloading, ctx.entry.name)));
+                notice.set(Some(DownloadNotice::Downloading {
+                    name: ctx.entry.name.clone(),
+                    size: (!ctx.entry.is_dir).then_some(ctx.entry.size),
+                    batch: None,
+                }));
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let status = download_status(ctx.session_id, request_id, language)?;
-                    match status {
+                    match download_status(ctx.session_id, request_id, language)? {
                         DownloadStatus::Done => return Ok(Some(local)),
-                        DownloadStatus::Pending(Some(progress)) => message.set(Some(progress)),
+                        DownloadStatus::Pending(Some(progress)) => {
+                            notice.set(Some(DownloadNotice::Downloading {
+                                name: progress.name,
+                                size: Some(progress.total),
+                                batch: progress.batch,
+                            }));
+                        }
                         DownloadStatus::Pending(None) => {}
                     }
                 }
             }
             .await;
             match result {
-                Ok(Some(local)) => {
-                    message.set(Some(format!("{}: {}", t.downloaded, local.display())))
-                }
-                Ok(None) => {}
-                Err(error) => message.set(Some(format!("{}: {error}", t.error_prefix))),
+                Ok(Some(local)) => notice.set(Some(DownloadNotice::Complete(format!(
+                    "{}: {}",
+                    t.downloaded,
+                    local.display()
+                )))),
+                Ok(None) => notice.set(None),
+                Err(error) => notice.set(Some(DownloadNotice::Error(format!(
+                    "{}: {error}",
+                    t.error_prefix
+                )))),
             }
             busy.set(false);
         });
     });
     rsx! {
-        if let Some(text) = message() {
-            div { class: "sftp-download-notice", role: "status",
-                span { "{text}" }
-                if !busy() {
-                    button { onclick: move |_| message.set(None), "{texts(language).sftp.close}" }
+        if let Some(current) = notice() {
+            DownloadNoticeView {
+                notice: current,
+                language,
+                on_close: move |_| notice.set(None),
+            }
+        }
+    }
+}
+
+#[component]
+fn DownloadNoticeView(
+    notice: DownloadNotice,
+    language: AppLanguage,
+    on_close: EventHandler<()>,
+) -> Element {
+    let t = texts(language).sftp;
+    let downloading = matches!(&notice, DownloadNotice::Downloading { .. });
+    let show_progress = !matches!(&notice, DownloadNotice::Error(_));
+    let percentage = notice.percentage();
+    rsx! {
+        div { class: "sftp-download-notice", role: "status",
+            div { class: "sftp-download-header",
+                match &notice {
+                    DownloadNotice::Downloading { name, size, .. } => rsx! {
+                        span { class: "sftp-download-copy", title: "{name}",
+                            "{t.downloading} {name.rsplit('/').next().unwrap_or(name)}"
+                            if let Some(size) = size {
+                                " "
+                                span { class: "sftp-download-size", "{format_bytes(*size)}" }
+                            }
+                        }
+                    },
+                    DownloadNotice::Complete(message) | DownloadNotice::Error(message) => rsx! {
+                        span { class: "sftp-download-copy", "{message}" }
+                    },
+                }
+                if !downloading {
+                    button { onclick: move |_| on_close.call(()), "{t.close}" }
+                }
+            }
+            if show_progress {
+                div { class: "sftp-download-progress",
+                    div { class: "sftp-download-progress-meta",
+                        span { "{t.download_progress}" }
+                        if let Some(percent) = percentage {
+                            span { "{percent}%" }
+                        }
+                    }
+                    if let Some(percent) = percentage {
+                        progress { max: 100, value: percent, aria_label: t.download_progress, aria_valuetext: "{percent}%" }
+                    } else {
+                        progress { max: 100, aria_label: t.download_progress }
+                    }
                 }
             }
         }
@@ -120,7 +215,7 @@ pub(crate) fn DownloadController(
 }
 
 enum DownloadStatus {
-    Pending(Option<String>),
+    Pending(Option<SftpProgressState>),
     Done,
 }
 fn download_status(
@@ -155,18 +250,14 @@ fn download_status(
             .sftp_progress
             .as_ref()
             .filter(|p| p.request_id == request_id)
-            .map(|p| {
-                format!(
-                    "{}: {} ({}/{})",
-                    t.downloading, p.name, p.transferred, p.total
-                )
-            }),
+            .cloned(),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn folder_mapping_preserves_name_without_escape() {
         assert_eq!(
@@ -176,5 +267,29 @@ mod tests {
         for name in ["..", "../escape", "/absolute", "C:escape", "a\\b"] {
             assert!(folder_target(Path::new("/downloads"), name).is_err());
         }
+    }
+
+    #[test]
+    fn overall_percentage_uses_batch_bytes_and_waits_for_success() {
+        let downloading = |transferred, total| DownloadNotice::Downloading {
+            name: "folder/second.bin".into(),
+            size: Some(80),
+            batch: Some(SftpBatchProgress { transferred, total }),
+        };
+        assert_eq!(downloading(20, Some(100)).percentage(), Some(20));
+        assert_eq!(downloading(60, Some(100)).percentage(), Some(60));
+        assert_eq!(downloading(100, Some(100)).percentage(), Some(99));
+        assert_eq!(downloading(150, Some(100)).percentage(), Some(99));
+        assert_eq!(downloading(0, Some(0)).percentage(), Some(0));
+        assert_eq!(downloading(40, None).percentage(), None);
+        assert_eq!(
+            downloading(u64::MAX / 2, Some(u64::MAX)).percentage(),
+            Some(49)
+        );
+        assert_eq!(
+            DownloadNotice::Complete("完成".into()).percentage(),
+            Some(100)
+        );
+        assert_eq!(DownloadNotice::Error("断线".into()).percentage(), None);
     }
 }

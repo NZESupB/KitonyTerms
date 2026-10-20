@@ -40,6 +40,7 @@ struct Entry {
     local: PathBuf,
     display: String,
     is_dir: bool,
+    size: Option<u64>,
 }
 
 /// 检查目标及相对根的所有现存父目录，不跟随本地链接。
@@ -144,8 +145,16 @@ pub(super) async fn download_tree(
             local,
             display,
             is_dir: meta.is_dir(),
+            size: meta.size,
         });
     }
+    let mut batch = SftpBatchProgress {
+        transferred: 0,
+        total: entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .try_fold(0u64, |total, entry| total.checked_add(entry.size?)),
+    };
     for entry in entries {
         let exists = check_target(&entry.local, &root, entry.is_dir)?;
         if exists && !confirmed.contains(&entry.local) {
@@ -173,6 +182,9 @@ pub(super) async fn download_tree(
             }
             continue;
         }
+        if meta.size != entry.size {
+            batch.total = None;
+        }
         let mut src = session
             .open(entry.remote.clone())
             .await
@@ -182,13 +194,16 @@ pub(super) async fn download_tree(
             .map_err(|e| e.to_string())?;
         let guard = LocalTempGuard(temp.clone());
         let mut dst = dst;
-        copy_with_progress(
+        let transferred = copy_with_progress(
             &mut src,
             &mut dst,
-            id,
-            request_id,
-            &entry.display,
-            meta.size.unwrap_or(0),
+            TransferProgress {
+                id,
+                request_id,
+                name: &entry.display,
+                total: meta.size.unwrap_or(0),
+                batch: Some(batch),
+            },
             out,
         )
         .await?;
@@ -198,6 +213,10 @@ pub(super) async fn download_tree(
         check_target(&entry.local, &root, false)?;
         commit_local(&temp, &entry.local, confirmed.contains(&entry.local))?;
         drop(guard);
+        batch.transferred = batch.transferred.saturating_add(transferred);
+        if Some(transferred) != meta.size {
+            batch.total = None;
+        }
     }
     Ok(())
 }
@@ -281,6 +300,8 @@ mod protocol_tests {
         std::fs::create_dir_all(base.join("remote/nested/empty")).unwrap();
         std::fs::write(base.join("remote/nested/中文.txt"), "中文内容").unwrap();
         std::fs::write(base.join("remote/zero"), "").unwrap();
+        std::fs::write(base.join("remote/a-first.bin"), vec![1; 4096]).unwrap();
+        std::fs::write(base.join("remote/z-last.bin"), vec![2; 600 * 1024]).unwrap();
         let base = base.canonicalize().unwrap();
         let remote = base.join("remote").to_str().unwrap().to_string();
         let target = base.join("download");
@@ -303,7 +324,36 @@ mod protocol_tests {
         );
         assert!(target.join("nested/empty").is_dir());
         assert_eq!(std::fs::metadata(target.join("zero")).unwrap().len(), 0);
-        assert!(rx.try_recv().is_ok());
+        let mut ticks = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let FromCore::SftpProgress {
+                request_id,
+                name,
+                transferred,
+                batch,
+                ..
+            } = event.event
+            {
+                assert_eq!(request_id, SftpRequestId(1));
+                ticks.push((name, transferred, batch.unwrap()));
+            }
+        }
+        let total = 4096 + "中文内容".len() as u64 + 600 * 1024;
+        assert!(ticks.len() >= 10);
+        assert!(ticks.iter().all(|(_, _, batch)| batch.total == Some(total)));
+        assert!(ticks
+            .windows(2)
+            .all(|pair| pair[0].2.transferred <= pair[1].2.transferred));
+        assert_eq!(ticks.last().unwrap().2.transferred, total);
+        let last_start = ticks
+            .iter()
+            .find(|(name, bytes, _)| name.ends_with("/z-last.bin") && *bytes == 0)
+            .unwrap();
+        assert_eq!(last_start.2.transferred, 4096 + "中文内容".len() as u64);
+        assert_eq!(
+            std::fs::read(target.join("z-last.bin")).unwrap(),
+            vec![2; 600 * 1024]
+        );
         std::fs::write(target.join("nested/中文.txt"), "old").unwrap();
         assert!(download_tree(
             &session,
@@ -361,6 +411,55 @@ mod protocol_tests {
         .await
         .is_err());
         assert!(!base.join("rejected").exists());
+        // 空目录和全零字节目录也必须发出成功终态。
+        std::fs::create_dir_all(base.join("only-zero")).unwrap();
+        std::fs::write(base.join("only-zero/zero"), "").unwrap();
+        for (request, source, destination) in [
+            (6, format!("{remote}/nested/empty"), "empty-download"),
+            (
+                7,
+                base.join("only-zero").to_str().unwrap().to_owned(),
+                "zero-download",
+            ),
+        ] {
+            handle_inner(
+                &session,
+                SessionId(1),
+                SftpRequestId(request),
+                &SftpRequest::DownloadBatch {
+                    remote: source,
+                    local: base.join(destination),
+                    overwrite: false,
+                },
+                &out,
+            )
+            .await
+            .unwrap();
+            let mut done = false;
+            while let Ok(event) = rx.try_recv() {
+                match event.event {
+                    FromCore::SftpDone { request_id, .. }
+                        if request_id == SftpRequestId(request) =>
+                    {
+                        done = true
+                    }
+                    FromCore::SftpProgress {
+                        request_id, batch, ..
+                    } if request_id == SftpRequestId(request) => {
+                        assert_eq!(
+                            batch,
+                            Some(SftpBatchProgress {
+                                transferred: 0,
+                                total: Some(0)
+                            })
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            assert!(done);
+            assert!(base.join(destination).is_dir());
+        }
         session.close().await.unwrap();
         child.kill().await.unwrap();
         a.abort();

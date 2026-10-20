@@ -4786,6 +4786,18 @@ button[title]:focus-visible::after {
 }
 .external-edit-sessions { bottom: 96px; flex-direction: column; }
 
+.sftp-download-notice { display: grid; width: 420px; gap: 12px; }
+.sftp-download-header { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.sftp-download-copy { flex: 1; min-width: 0; line-height: 1.5; }
+.sftp-download-size { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sftp-download-header button { flex: 0 0 auto; }
+.sftp-download-progress { display: grid; gap: 6px; min-width: 0; }
+.sftp-download-progress-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: var(--kt-text-12); font-variant-numeric: tabular-nums; }
+.sftp-download-progress progress { display: block; appearance: none; -webkit-appearance: none; width: 100%; min-width: 0; height: 6px; overflow: hidden; border: 0; border-radius: 5px; background: var(--border-soft); accent-color: var(--blue); }
+.sftp-download-progress progress::-webkit-progress-bar { background: var(--border-soft); border-radius: 5px; }
+.sftp-download-progress progress::-webkit-progress-value { background: var(--blue); border-radius: 5px; }
+.sftp-download-progress progress::-moz-progress-bar { background: var(--blue); border-radius: 5px; }
+
 /* 软件更新：展示层与主界面共享主题，重启准备时弹层仍可访问。 */
 .software-update-section {
     --update-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
