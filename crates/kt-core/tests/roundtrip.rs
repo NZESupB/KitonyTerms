@@ -22,6 +22,103 @@ use kt_core::{
     FromCore, OperationId, OperationsDomain, OperationsRequest, PtySize, SessionManager, ToCore,
 };
 
+fn selection_request(
+    manager: &SessionManager,
+    id: SessionId,
+    exec_id: Option<kt_core::ExecId>,
+    owner: &str,
+    action: kt_core::term::selection::SelectionAction,
+) -> Result<kt_core::term::selection::SelectionReply, String> {
+    use kt_core::term::selection::SelectionCommand;
+    let (reply, mut receiver) = tokio::sync::oneshot::channel();
+    assert!(manager.send(ToCore::TerminalSelection {
+        id,
+        exec_id,
+        command: SelectionCommand {
+            owner: owner.into(),
+            action,
+            reply
+        },
+    }));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match receiver.try_recv() {
+            Ok(result) => return result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => panic!("选区请求缺少终态"),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                assert!(std::time::Instant::now() < deadline, "选区请求超时");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+fn verify_buffer_copy(
+    manager: &SessionManager,
+    id: SessionId,
+    exec_id: Option<kt_core::ExecId>,
+    snapshot: &kt_core::GridSnapshot,
+    needle: &str,
+) {
+    use kt_core::term::selection::{SelectionAction, SelectionMode, SelectionPoint};
+    let (row, column) = (0..snapshot.rows)
+        .find_map(|row| snapshot.row_text(row).find(needle).map(|col| (row, col)))
+        .expect("测试文本应已渲染");
+    let anchor = SelectionPoint {
+        row,
+        column,
+        right: false,
+        revision: snapshot.revision,
+        display_offset: snapshot.display_offset,
+    };
+    let focus = SelectionPoint {
+        column: column + needle.len() - 1,
+        right: true,
+        ..anchor
+    };
+    assert!(
+        selection_request(
+            manager,
+            id,
+            exec_id,
+            "test-pane",
+            SelectionAction::Begin {
+                point: anchor,
+                mode: SelectionMode::Simple
+            }
+        )
+        .unwrap()
+        .accepted
+    );
+    assert!(
+        selection_request(
+            manager,
+            id,
+            exec_id,
+            "test-pane",
+            SelectionAction::Extend {
+                point: focus,
+                scroll: 0
+            }
+        )
+        .unwrap()
+        .accepted
+    );
+    assert_eq!(
+        selection_request(manager, id, exec_id, "test-pane", SelectionAction::Copy)
+            .unwrap()
+            .text
+            .as_deref(),
+        Some(needle)
+    );
+    assert!(
+        selection_request(manager, id, exec_id, "other-pane", SelectionAction::Copy)
+            .unwrap()
+            .text
+            .is_none()
+    );
+}
+
 /// Minimal server handler: accepts password "test", echoes a banner on shell
 /// request, and echoes back any input the client types (upper-cased so we can
 /// distinguish server output from a naive loopback).
@@ -434,12 +531,14 @@ fn full_roundtrip_through_term_engine() {
     });
 
     let mut saw_echo = false;
+    let mut echo_snapshot = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline && !saw_echo {
         match recv_timeout(&mut mgr, Duration::from_secs(5)) {
             Some(FromCore::Render { snapshot, .. }) => {
                 if snapshot.to_plain_text().contains("DSR_OK HI") {
                     saw_echo = true;
+                    echo_snapshot = Some(*snapshot);
                 }
             }
             Some(FromCore::Closed { error, .. }) => panic!("closed during echo: {error:?}"),
@@ -451,6 +550,15 @@ fn full_roundtrip_through_term_engine() {
         saw_echo,
         "server echo 'HI' never appeared in the rendered grid"
     );
+    verify_buffer_copy(&mgr, id, None, echo_snapshot.as_ref().unwrap(), "DSR_OK HI");
+    assert!(selection_request(
+        &mgr,
+        SessionId(9999),
+        None,
+        "test-pane",
+        kt_core::term::selection::SelectionAction::Copy
+    )
+    .is_err());
 
     // 3) Clean disconnect.
     mgr.send(ToCore::Disconnect { id });
@@ -1066,6 +1174,7 @@ fn container_pty_is_isolated_validated_and_rendered() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut started = false;
     let mut saw_ready = false;
+    let mut ready_snapshot = None;
     while std::time::Instant::now() < deadline && !(started && saw_ready) {
         match recv_timeout(&mut mgr, Duration::from_secs(2)) {
             Some(FromCore::ExecStarted {
@@ -1086,6 +1195,9 @@ fn container_pty_is_isolated_validated_and_rendered() {
                 assert_eq!(event_id, id);
                 assert_eq!(event_exec_id, exec_id);
                 saw_ready |= snapshot.to_plain_text().contains("container-ready");
+                if saw_ready {
+                    ready_snapshot = Some(*snapshot);
+                }
             }
             Some(FromCore::ExecClosed {
                 error: Some(error), ..
@@ -1096,6 +1208,21 @@ fn container_pty_is_isolated_validated_and_rendered() {
     }
     assert!(started, "container exec was not acknowledged");
     assert!(saw_ready, "container output was not rendered");
+    verify_buffer_copy(
+        &mgr,
+        id,
+        Some(exec_id),
+        ready_snapshot.as_ref().unwrap(),
+        "container-ready",
+    );
+    assert!(selection_request(
+        &mgr,
+        id,
+        Some(kt_core::ExecId(9999)),
+        "test-pane",
+        kt_core::term::selection::SelectionAction::Copy
+    )
+    .is_err());
     let state_after_open = state.lock().unwrap();
     assert_eq!(
         state_after_open.exec_commands,

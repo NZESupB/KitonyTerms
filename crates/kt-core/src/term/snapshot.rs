@@ -92,6 +92,8 @@ pub struct GridSnapshot {
     /// 终端是否处于备用屏（vim、top、less 等全屏程序）。此时向 PTY 写入 shell
     /// 命令会被该程序当成按键消费，因此目录同步必须拒绝写入。
     pub alt_screen: bool,
+    /// 带终端实例归属的可见选区；实际锚点保留在核心缓冲区。
+    pub selection: Option<super::selection::SnapshotSelection>,
 }
 
 impl GridSnapshot {
@@ -108,6 +110,19 @@ impl GridSnapshot {
         } else {
             None
         }
+    }
+
+    pub fn cell_selected(&self, owner: &str, row: usize, col: usize) -> bool {
+        let Some(selection) = self.selection.as_ref().filter(|s| s.owner == owner) else {
+            return false;
+        };
+        let Some(Some((start, end))) = selection.rows.get(row) else {
+            return false;
+        };
+        (col >= *start && col < *end)
+            || self
+                .cell(row, col)
+                .is_some_and(|cell| cell.attrs.wide && col + 1 >= *start && col + 1 < *end)
     }
 
     /// Render row `row` to a plain `String` (used by the headless printer/tests).

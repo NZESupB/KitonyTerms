@@ -22,6 +22,7 @@ use alacritty_terminal::term::{point_to_viewport, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape as VteCursorShape, NamedColor, Processor};
 
 pub mod color;
+pub mod selection;
 pub mod snapshot;
 
 pub use color::Rgb;
@@ -121,6 +122,9 @@ pub struct TermEngine {
     proxy: EventProxy,
     size: TermSize,
     revision: u64,
+    // 仅网格内容/尺寸变化使前端坐标失效；滚动与选区帧仍可使用原坐标。
+    coordinate_revision: u64,
+    selection_owner: Option<String>,
 }
 
 impl TermEngine {
@@ -139,6 +143,8 @@ impl TermEngine {
             proxy,
             size,
             revision: 0,
+            coordinate_revision: 0,
+            selection_owner: None,
         }
     }
 
@@ -156,6 +162,7 @@ impl TermEngine {
     pub fn advance(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
         self.revision = self.revision.wrapping_add(1);
+        self.coordinate_revision = self.revision;
     }
 
     /// Resize the grid. Caller is responsible for sending `window-change` to
@@ -165,6 +172,7 @@ impl TermEngine {
         self.term.resize(size);
         self.size = size;
         self.revision = self.revision.wrapping_add(1);
+        self.coordinate_revision = self.revision;
     }
 
     /// Drain any pending terminal events (bell, title, pty write-backs).
@@ -297,6 +305,7 @@ impl TermEngine {
             history_size: self.term.grid().history_size(),
             wrapped,
             alt_screen: self.term.mode().contains(TermMode::ALT_SCREEN),
+            selection: self.snapshot_selection(),
         }
     }
 }

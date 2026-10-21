@@ -1982,14 +1982,30 @@ button[title]:focus-visible::after {
     line-height: 1.25;
 }
 
-/* 行号/时间戳 gutter：绝对定位在 surface 左内边距带内，与终端行等高对齐。
-   surface 的左内边距已加宽为 gutter 宽度，resize 脚本会自动扣除该内边距，
-   保证 PTY 列数不受影响。 */
+/* gutter 内容宽度由 Rust 下发，实际盒宽与正文起点共用同一份几何。 */
+.terminal-surface.has-gutter {
+    --terminal-gutter-left: 8px;
+    --terminal-gutter-right: 12px;
+    --terminal-gutter-rule-width: 1px;
+    --terminal-content-gap: 12px;
+    --terminal-gutter-rule-color: rgba(127, 143, 166, 0.24);
+    --terminal-gutter-box-width: calc(var(--terminal-gutter-left) + var(--terminal-gutter-content-width) + var(--terminal-gutter-right) + var(--terminal-gutter-rule-width));
+    padding-left: calc(var(--terminal-gutter-box-width) + var(--terminal-content-gap));
+}
+
+.kt-window.theme-light .terminal-surface.has-gutter {
+    --terminal-gutter-rule-color: rgba(74, 90, 110, 0.22);
+}
+
 .terminal-gutter {
     position: absolute;
     top: var(--terminal-surface-padding);
     left: 0;
-    padding-left: 8px;
+    box-sizing: border-box;
+    width: var(--terminal-gutter-box-width);
+    padding-left: var(--terminal-gutter-left);
+    padding-right: var(--terminal-gutter-right);
+    border-right: var(--terminal-gutter-rule-width) solid var(--terminal-gutter-rule-color);
     display: flex;
     flex-direction: column;
     color: var(--terminal-gutter-lineno);
@@ -1998,6 +2014,7 @@ button[title]:focus-visible::after {
     font-variant-numeric: tabular-nums;
     line-height: var(--terminal-row-height);
     user-select: none;
+    -webkit-user-select: none;
     pointer-events: none;
     white-space: pre;
 }
@@ -2013,6 +2030,7 @@ button[title]:focus-visible::after {
 .terminal-gutter-lineno {
     display: inline-block;
     width: var(--terminal-gutter-lineno-width, 5ch);
+    flex-shrink: 0;
     text-align: right;
     color: var(--terminal-gutter-lineno);
 }
@@ -2024,6 +2042,7 @@ button[title]:focus-visible::after {
 .terminal-gutter-time {
     display: inline-block;
     width: var(--terminal-gutter-time-width, 10ch);
+    flex-shrink: 0;
     color: var(--terminal-gutter-time);
 }
 
@@ -2031,6 +2050,28 @@ button[title]:focus-visible::after {
     width: max-content;
     min-width: 100%;
     min-height: 100%;
+}
+
+.terminal-surface {
+    --terminal-selection-bg: #355778;
+    --terminal-selection-fg: #ffffff;
+}
+
+.kt-window.theme-light .terminal-surface {
+    --terminal-selection-bg: #b2d5ff;
+    --terminal-selection-fg: #142235;
+}
+
+.terminal-surface.is-mouse-selection .terminal-screen {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* 选区覆盖显式 ANSI 色，光标伪元素仍绘制在上方。 */
+.terminal-row > .is-selected {
+    color: var(--terminal-selection-fg) !important;
+    background: var(--terminal-selection-bg) !important;
+    opacity: 1 !important;
 }
 
 .terminal-row {

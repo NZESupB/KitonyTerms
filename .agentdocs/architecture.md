@@ -61,6 +61,8 @@
 - 输入推断仅作有限兜底，不猜测任意脚本或别名；百分号路径解码仍需注意兼容性。
 - 历史视口收到非空输入先恢复实时底部；双宽字符保留占位语义，显式 ANSI 色不被主题覆盖。
 - 桌面粘贴优先[原生剪贴板](../crates/kt-ui/src/clipboard.rs)，失败再回退 WebView。
+- [模型选区](../crates/kt-core/src/term/selection.rs)保存在 Alacritty 缓冲区，快照仅携带带实例归属的可见列区间。`terminal_selection.js` 捕获鼠标指针并将视口行、列、半格、`display_offset` 和 `revision` 经有序命令送入宿主/容器终端；输出或尺寸变化使旧坐标失效，前端等待新帧重采样，普通滚动不丢弃锚点。复制使用 `selection_to_string()`，不读取 DOM 字符串、不全局 trim 或替换 NBSP；保留软/硬换行、组合字符和宽字符语义。范围以仍保留的 scrollback 为边界，列数变化遵循引擎清除选区。终端目标切换往返须生成新 owner，旧请求只能清理自己的选区；快捷键、右键、手机菜单与原生 `copy` 事件共用路径，桌面优先原生剪贴板。
+- gutter 内容列宽由 `terminal.rs` 的常量统一下发，`app.css` 共用变量计算内容宽度、左右留白、边线与正文起点；resize 继续扣除实际计算 padding。辅助 gutter 不可选且 `aria-hidden`。
 - 桌面断线 Enter 复用 `AppState::reconnect_disconnected_session`，在状态锁内检查并切入连接中；认证/主机密钥确认阶段和重复/IME 按键不发起重连。`terminal_focus.js` 共享桌面终端与占位页的焦点恢复策略，避开输入框、编辑器、弹窗和 inert 区域；手机继续由输入桥管理焦点。
 
 ## 运维

@@ -15,6 +15,8 @@ use crate::components::main_shell::SplitMode;
 use crate::i18n::texts;
 use crate::state::AppState;
 
+mod selection;
+
 /// 单行 gutter 元数据：内容签名 + 首次出现该内容时的时钟时间戳。
 #[derive(Clone, Default)]
 struct RowMeta {
@@ -80,6 +82,7 @@ pub fn Terminal(
     let terminal_id_for_click = terminal_id.clone();
     let terminal_id_for_horizontal_scroll = terminal_id.clone();
     let terminal_screen_id = terminal_screen_id(&terminal_id);
+    let selection_owner = selection::use_terminal_selection(&terminal_id, session_id, exec_id);
     let mut terminal_context_menu = use_signal(|| None::<TerminalContextMenuState>);
     let t = texts(language).app;
 
@@ -378,6 +381,7 @@ pub fn Terminal(
             if show_gutter {
                 div {
                     class: "terminal-gutter",
+                    aria_hidden: "true",
                     for (idx, meta) in gutter_rows.iter().enumerate() {
                         div {
                             key: "gutter-{idx}",
@@ -403,10 +407,15 @@ pub fn Terminal(
             div {
                 id: "{terminal_screen_id}",
                 class: "terminal-screen",
+                "data-revision": "{snapshot.revision}",
+                "data-display-offset": "{snapshot.display_offset}",
+                "data-rows": "{rows}",
+                "data-cols": "{cols}",
 
                 for row in 0..rows {
                     div {
                         key: "{row}",
+                        "data-row": "{row}",
                         class: if row_matches_trigger(snapshot, row, &trigger_highlights) {
                             "terminal-row is-trigger-highlight"
                         } else {
@@ -422,6 +431,9 @@ pub fn Terminal(
                                     rsx! {
                                         span {
                                             key: "{idx}",
+                                            "data-col": "{col}",
+                                            "data-columns": "1",
+                                            "data-spacer": "true",
                                             style: "{terminal_spacer_style()}"
                                         }
                                     }
@@ -433,6 +445,8 @@ pub fn Terminal(
                                             row == snapshot.cursor.line && col == snapshot.cursor.column,
                                             cursor_shape_for_style(cursor_style, snapshot.cursor.shape),
                                         ),
+                                        snapshot.cell_selected(&selection_owner, row, col),
+                                        col,
                                     )
                                 }
                             }
@@ -571,12 +585,12 @@ fn gutter_surface_style(show_line_numbers: bool, show_timestamps: bool) -> Strin
     if width == 0 {
         return String::new();
     }
-    // 覆盖左内边距为 gutter 宽度 + 原有 8px 视觉留白，并下发列宽变量。
+    // Rust 下发内容宽度；CSS 统一计算列宽、留白、边线与正文起点。
     format!(
         "--terminal-gutter-lineno-width: {GUTTER_LINENO_CH}ch; \
          --terminal-gutter-time-width: {GUTTER_TIME_CH}ch; \
          --terminal-gutter-gap: {GUTTER_GAP_CH}ch; \
-         padding-left: calc({width}ch + 8px);"
+         --terminal-gutter-content-width: {width}ch;"
     )
 }
 
@@ -682,49 +696,9 @@ fn terminal_context_menu_style(menu: TerminalContextMenuState) -> String {
 }
 
 pub(crate) fn copy_selected_terminal_text(terminal_id: &str) {
-    let terminal_id = format!("{terminal_id:?}");
-    let script = format!(
-        r#"
-        (() => {{
-            const root = document.getElementById({terminal_id});
-            const selection = window.getSelection ? window.getSelection() : null;
-            if (!root || !selection || selection.rangeCount === 0) {{
-                return;
-            }}
-
-            const range = selection.getRangeAt(0);
-            const node = range.commonAncestorContainer;
-            const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-            if (!element || !root.contains(element)) {{
-                return;
-            }}
-
-            const text = selection.toString().replace(/\u00a0/g, " ");
-            if (!text) {{
-                return;
-            }}
-
-            const fallbackCopy = (value) => {{
-                const el = document.createElement("textarea");
-                el.value = value;
-                el.style.position = "fixed";
-                el.style.opacity = "0";
-                document.body.appendChild(el);
-                el.select();
-                document.execCommand("copy");
-                document.body.removeChild(el);
-            }};
-
-            if (navigator.clipboard && navigator.clipboard.writeText) {{
-                navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-            }} else {{
-                fallbackCopy(text);
-            }}
-            root.focus();
-        }})();
-        "#
-    );
-    dioxus::document::eval(&script);
+    dioxus::document::eval(&format!(
+        "document.getElementById({terminal_id:?})?.__ktSelection?.copy().catch(() => {{}});"
+    ));
 }
 
 /// 读取系统剪贴板并写入终端。
@@ -810,27 +784,9 @@ fn terminal_paste_input(text: &str) -> Vec<u8> {
 }
 
 pub(crate) fn select_terminal_contents(terminal_screen_id: &str) {
-    let terminal_screen_id = format!("{terminal_screen_id:?}");
-    let script = format!(
-        r#"
-        (() => {{
-            const root = document.getElementById({terminal_screen_id});
-            if (!root) {{
-                return;
-            }}
-            const selection = window.getSelection ? window.getSelection() : null;
-            if (!selection) {{
-                return;
-            }}
-            const range = document.createRange();
-            range.selectNodeContents(root);
-            selection.removeAllRanges();
-            selection.addRange(range);
-            root.parentElement?.focus();
-        }})();
-        "#
-    );
-    dioxus::document::eval(&script);
+    dioxus::document::eval(&format!(
+        "document.getElementById({terminal_screen_id:?})?.parentElement?.__ktSelection?.selectAll().catch(() => {{}});"
+    ));
 }
 
 /// 占位页和宿主终端共用重连键策略，避免把 IME 确认或修饰键当作重连。
@@ -1101,15 +1057,29 @@ fn line_matches_trigger(line: &str, triggers: &[String]) -> bool {
         .any(|trigger| line.contains(&trigger))
 }
 
-fn render_cell(cell: &SnapshotCell, idx: usize, cursor_class: &'static str) -> Element {
+fn render_cell(
+    cell: &SnapshotCell,
+    idx: usize,
+    cursor_class: &'static str,
+    selected: bool,
+    column: usize,
+) -> Element {
     let style = terminal_cell_style(cell);
     let char_to_display = terminal_cell_text(cell);
+    let class = if selected {
+        format!("{cursor_class} is-selected")
+    } else {
+        cursor_class.to_owned()
+    };
+    let columns = if cell.attrs.wide { 2 } else { 1 };
 
     rsx! {
         span {
             key: "{idx}",
+            "data-col": "{column}",
+            "data-columns": "{columns}",
             style: "{style}",
-            class: "{cursor_class}",
+            class: "{class}",
             "{char_to_display}"
         }
     }
@@ -1588,6 +1558,17 @@ mod tests {
             "{style}"
         );
         assert!(style.contains("--terminal-gutter-gap: 1ch"), "{style}");
+        assert!(
+            style.contains(&format!(
+                "--terminal-gutter-content-width: {}ch",
+                gutter_width_ch(true, true)
+            )),
+            "{style}"
+        );
+        assert!(
+            !style.contains("padding-left:"),
+            "尺寸预留应由共享 CSS 变量计算"
+        );
     }
 
     #[test]
@@ -1619,6 +1600,7 @@ mod tests {
             history_size: 0,
             wrapped: vec![false, false],
             alt_screen: false,
+            selection: None,
         };
 
         let first = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1659,6 +1641,7 @@ mod tests {
             history_size: 0,
             wrapped: vec![true, false],
             alt_screen: false,
+            selection: None,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1705,6 +1688,7 @@ mod tests {
             history_size: 0,
             wrapped: vec![false, false, false],
             alt_screen: false,
+            selection: None,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);
@@ -1735,6 +1719,7 @@ mod tests {
             history_size: 0,
             wrapped: vec![false, false],
             alt_screen: false,
+            selection: None,
         };
 
         let rows = compute_gutter_rows(&store, &snapshot, true, true);

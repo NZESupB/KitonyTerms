@@ -29,6 +29,7 @@ use crate::remote_ops::{
 };
 use crate::shell_integration;
 use crate::ssh::{AuthProvider, ChannelCloseGuard, HostKeyVerifier, PtySize, SshError, SshShell};
+use crate::term::selection::SelectionCommand;
 use crate::term::{GridSnapshot, TermEngine, TermEvent};
 
 const AUTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -224,6 +225,12 @@ pub enum ToCore {
     UpdateTerminalSettings { id: SessionId, scrollback: usize },
     /// Scroll the viewport by `delta` lines (positive = into history).
     Scroll { id: SessionId, delta: i32 },
+    /// 宿主或独立容器终端的模型选区；回复与选区更新经过同一命令队列。
+    TerminalSelection {
+        id: SessionId,
+        exec_id: Option<ExecId>,
+        command: SelectionCommand,
+    },
     /// An SFTP request on this session (opens the subsystem lazily on first use).
     Sftp {
         id: SessionId,
@@ -327,6 +334,11 @@ impl fmt::Debug for ToCore {
                 .field("id", id)
                 .field("delta", delta)
                 .finish(),
+            ToCore::TerminalSelection { id, exec_id, .. } => f
+                .debug_struct("TerminalSelection")
+                .field("id", id)
+                .field("exec_id", exec_id)
+                .finish_non_exhaustive(),
             ToCore::Sftp {
                 id,
                 request_id,
@@ -863,6 +875,7 @@ fn to_core_kind(command: &ToCore) -> &'static str {
         ToCore::Resize { .. } => "resize",
         ToCore::UpdateTerminalSettings { .. } => "update_terminal_settings",
         ToCore::Scroll { .. } => "scroll",
+        ToCore::TerminalSelection { .. } => "terminal_selection",
         ToCore::Sftp { .. } => "sftp",
         ToCore::StartMonitor { .. } => "start_monitor",
         ToCore::Operations { .. } => "operations",
@@ -984,6 +997,24 @@ async fn core_loop(
             ToCore::Scroll { id, delta } => {
                 if let Some(h) = sessions.get(&id) {
                     let _ = h.cmd_tx.send(SessionCmd::Scroll(delta));
+                }
+            }
+            ToCore::TerminalSelection {
+                id,
+                exec_id,
+                command,
+            } => {
+                if let Some(h) = sessions.get(&id) {
+                    if let Err(error) = h
+                        .cmd_tx
+                        .send(SessionCmd::TerminalSelection { exec_id, command })
+                    {
+                        if let SessionCmd::TerminalSelection { command, .. } = error.0 {
+                            let _ = command.reply.send(Err("终端会话任务已结束".into()));
+                        }
+                    }
+                } else {
+                    let _ = command.reply.send(Err("终端会话不存在或已关闭".into()));
                 }
             }
             ToCore::Sftp {
@@ -1275,6 +1306,10 @@ enum SessionCmd {
         scrollback: usize,
     },
     Scroll(i32),
+    TerminalSelection {
+        exec_id: Option<ExecId>,
+        command: SelectionCommand,
+    },
     Sftp {
         request_id: SftpRequestId,
         req: SftpRequest,
@@ -1479,6 +1514,7 @@ enum ContainerExecCmd {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     Scroll(i32),
+    Selection(SelectionCommand),
     Close(Option<String>),
 }
 
@@ -1667,6 +1703,23 @@ impl SessionTask {
                         Some(SessionCmd::Scroll(delta)) => {
                             term.scroll(delta);
                             self.emit_render(&term);
+                        }
+                        Some(SessionCmd::TerminalSelection { exec_id, command }) => {
+                            if let Some(exec_id) = exec_id {
+                                if let Some(handle) = container_exec.as_ref().filter(|h| h.exec_id == exec_id) {
+                                    if let Err(error) = handle.cmd_tx.send(ContainerExecCmd::Selection(command)) {
+                                        if let ContainerExecCmd::Selection(command) = error.0 {
+                                            let _ = command.reply.send(Err("容器终端任务已结束".into()));
+                                        }
+                                    }
+                                } else {
+                                    let _ = command.reply.send(Err("容器终端不存在或已关闭".into()));
+                                }
+                            } else if !command.reply.is_closed() || matches!(command.action, crate::term::selection::SelectionAction::Clear) {
+                                let result = term.select(&command.owner, command.action);
+                                self.emit_render(&term);
+                                let _ = command.reply.send(result);
+                            }
                         }
                         Some(SessionCmd::Sftp { request_id, req }) => {
                             // 首次使用时在同一会话上开 SFTP 子系统,并 move 进独立子任务。
@@ -2641,6 +2694,16 @@ async fn run_container_exec(
                             break 'run;
                         }
                     }
+                    Some(ContainerExecCmd::Selection(command)) => {
+                        if !command.reply.is_closed() || matches!(command.action, crate::term::selection::SelectionAction::Clear) {
+                            let result = term.select(&command.owner, command.action);
+                            if !send_exec_render(id, exec_id, &term, &out).await {
+                                let _ = command.reply.send(Err("容器终端渲染通道已关闭".into()));
+                                break 'run;
+                            }
+                            let _ = command.reply.send(result);
+                        }
+                    }
                     Some(ContainerExecCmd::Close(error)) => {
                         close_error = error;
                         break 'run;
@@ -2909,6 +2972,7 @@ mod tests {
             history_size: 0,
             wrapped: vec![false],
             alt_screen: false,
+            selection: None,
         })
     }
 
