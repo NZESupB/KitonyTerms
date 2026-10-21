@@ -2,6 +2,8 @@
 pub mod elevation;
 #[cfg(test)]
 mod regression;
+#[cfg(windows)]
+mod windows_path;
 
 use crate::{
     archive,
@@ -413,17 +415,17 @@ fn validate_journal(root: &Path, j: &Journal) -> Result<()> {
                 ))),
         "安装记录路径含无效分量 / Invalid transaction path components"
     );
+    let expected_parent = if j.storage == TransactionStorage::UserDirectory || install.installed {
+        root
+    } else {
+        install.target.parent().unwrap()
+    };
     ensure!(
         install.target.is_absolute()
             && install.executable.is_absolute()
-            && j.staging.parent()
-                == Some(
-                    if j.storage == TransactionStorage::UserDirectory || install.installed {
-                        root
-                    } else {
-                        install.target.parent().unwrap()
-                    }
-                )
+            // 已有事务可能由 helper 写成扩展路径，GUI 则从普通路径进入恢复。
+            && fs::canonicalize(j.staging.parent().context("缺少暂存父目录 / Missing staging parent")?)?
+                == fs::canonicalize(expected_parent)?
             && j.staging
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with(".kt-update-stage-")),
@@ -918,7 +920,6 @@ pub fn helper_path(root: &Path) -> PathBuf {
 }
 #[cfg(windows)]
 fn run_installer(root: &Path, task: &InstallTask) -> Result<()> {
-    use std::ffi::OsString;
     ensure!(
         registered_installation(&task.installation.executable),
         "安装目标未登记 / Install target is not registered"
@@ -927,22 +928,38 @@ fn run_installer(root: &Path, task: &InstallTask) -> Result<()> {
     remove(&setup)?;
     copy_file_synced(&package_path(root, &task.package), &setup)?;
     download::verify(&setup, &task.package)?;
-    let mut folder = OsString::from("/DIR=");
-    folder.push(
-        task.installation
-            .executable
-            .parent()
-            .context("缺少安装目录 / Missing install directory")?,
-    );
-    let arguments = [
+    let arguments = installer_arguments(root, task)?;
+    let log = root.join("update-install.log");
+    remove(&log)?;
+    elevation::run(&setup, &arguments, std::time::Duration::from_secs(600)).with_context(|| {
+        format!(
+            "系统安装器阶段失败，安装日志 / System installer stage failed; installation log: {}",
+            log.display()
+        )
+    })
+}
+#[cfg(windows)]
+fn installer_arguments(root: &Path, task: &InstallTask) -> Result<Vec<std::ffi::OsString>> {
+    use std::ffi::OsString;
+    let option = |name: &str, path: &Path| -> Result<OsString> {
+        let mut argument = OsString::from(name);
+        argument.push(windows_path::external(path)?);
+        Ok(argument)
+    };
+    Ok(vec![
         OsString::from("/VERYSILENT"),
         OsString::from("/SUPPRESSMSGBOXES"),
         OsString::from("/NORESTART"),
         OsString::from("/SP-"),
-        folder,
-    ];
-    elevation::run(&setup, &arguments, std::time::Duration::from_secs(600))
-        .context("系统安装器失败 / System installer failed")
+        option(
+            "/DIR=",
+            task.installation
+                .executable
+                .parent()
+                .context("缺少安装目录 / Missing install directory")?,
+        )?,
+        option("/LOG=", &root.join("update-install.log"))?,
+    ])
 }
 #[cfg(not(windows))]
 fn run_installer(_: &Path, _: &InstallTask) -> Result<()> {

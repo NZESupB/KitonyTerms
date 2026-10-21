@@ -274,9 +274,10 @@ pub fn SoftwareUpdateOverlay(
         ui_font.as_deref(),
         ui_scale,
     );
+    let theme_class = crate::components::main_shell::theme_class(&theme);
     rsx! {
         div {
-            class: if theme == "light" { "software-update-layer theme-light" } else { "software-update-layer" },
+            class: "software-update-layer {theme_class}",
             style: "{layer_style}",
             if notice {
                 aside { class: "software-update-notice", aria_label: t.update_notice_title,
@@ -298,6 +299,25 @@ pub fn SoftwareUpdateOverlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notification_uses_the_resolved_window_theme_including_system_changes() {
+        use crate::components::{main_shell::theme_class, theme::concrete_theme_name};
+        for (preference, light, expected) in [
+            ("default-light", false, "theme-light"),
+            ("light", false, "theme-light"),
+            ("default-dark", true, "theme-dark"),
+            ("dark", true, "theme-dark"),
+            ("system", true, "theme-light"),
+            ("system", false, "theme-dark"),
+            ("system", true, "theme-light"),
+        ] {
+            assert_eq!(
+                theme_class(concrete_theme_name(preference, light)),
+                expected
+            );
+        }
+    }
+
     #[test]
     fn restart_starts_directly_once_and_can_retry_after_preparation_failure() {
         let safe = RestartSafety::default();

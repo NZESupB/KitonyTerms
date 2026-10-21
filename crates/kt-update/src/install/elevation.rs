@@ -279,7 +279,8 @@ pub(super) fn run(file: &Path, arguments: &[OsString], budget: Duration) -> Resu
         ensure!(!units.contains(&0), "路径包含 NUL / Path contains NUL");
         Ok(units.into_iter().chain(Some(0)).collect())
     };
-    let file = wide(file.as_os_str())?;
+    let compatible_file = super::windows_path::external(file)?;
+    let file = wide(compatible_file.as_os_str())?;
     let verb = wide(OsStr::new("runas"))?;
     let mut params = Vec::new();
     for argument in arguments {

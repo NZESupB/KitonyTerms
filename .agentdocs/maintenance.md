@@ -64,4 +64,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 端到端使用两个具有有效发布身份的隔离构建，开发默认构建禁用更新。一次手动安装修复版可绕过已发布旧更新器自身的刷盘错误，再验收连续自动更新。不在开发机真实安装目录进行故障注入。
 
-核对 updates 下的 `error.json`、`journal.json`、`elevated-result.json`：错误应包含失败阶段/路径和系统原因；取消且原目标未改动时旧版可重开，成功 GUI 确认后事务/备份清理。需要定位时用 Process Monitor 按应用/辅助进程及目标路径筛选 CreateFile、FlushBuffersFile、重命名结果，用任务管理器检查重开 GUI 的权限；仅把实际执行的原生场景记为通过。超时的管理员进程仍运行时，协调进程会保留锁等待其退出，应检查该进程而非手动删除记录。
+核对 updates 下的 `error.json`、`journal.json`、`elevated-result.json`、`update-install.log`：错误应包含失败阶段/路径和系统原因；安装器未启动时可能没有 Inno 日志，以 error 中的 Shell 启动错误为准。取消且原目标未改动时旧版可重开，成功 GUI 确认后事务/备份清理。新增路径回归覆盖普通 GUI 目录与规范 helper 目录、盘符/UNC/中文/空格及无法等价简化的路径；隔离构建连续更新后再次检查，确认不遗留 journal 阻断下一次准备。需要定位时用 Process Monitor 按应用/辅助进程及目标路径筛选 CreateFile、FlushBuffersFile、重命名结果，用任务管理器检查重开 GUI 的权限；仅把实际执行的原生场景记为通过。超时的管理员进程仍运行时，协调进程会保留锁等待其退出，应检查该进程而非手动删除记录。

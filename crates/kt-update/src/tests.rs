@@ -371,7 +371,8 @@ fn valid_package_commits_and_invalid_package_preserves_original() {
         parent_pid: 1,
         elevate: false,
     };
-    install::apply(&root, &task).unwrap();
+    // 按真实链路从规范化 helper 路径安装，再从未规范化 GUI 路径确认。
+    install::apply(&fs::canonicalize(&root).unwrap(), &task).unwrap();
     assert_eq!(fs::read(&executable).unwrap(), binary);
     let journal: install::Journal = install::read_json(&root.join("journal.json")).unwrap();
     assert_eq!(journal.stage, install::Stage::Committed);

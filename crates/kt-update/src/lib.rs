@@ -9,7 +9,7 @@ pub mod proxy;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use client::{Available, ReleaseClient, RetryAfter};
 use install::Installation;
 use metadata::{BuildInfo, Channel};
@@ -112,6 +112,9 @@ impl UpdateService {
         notice: Option<String>,
     ) -> Result<Arc<Self>> {
         install::private_root(&root)?;
+        // 与 helper 使用同一规范路径，避免 Windows 的普通/扩展路径令事务确认失败。
+        let root = std::fs::canonicalize(root)
+            .context("解析更新目录失败 / Cannot resolve update directory")?;
         let recorded = if root.join("error.json").exists() {
             Some(install::read_json(&root.join("error.json"))?)
         } else {

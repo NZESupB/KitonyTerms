@@ -165,28 +165,21 @@ fn apply_helper() -> Result<()> {
         &(std::process::id(), task.source_sha256.clone()),
     )?;
     let result = (|| {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while process_alive(task.parent_pid)? {
-            if root.join("abort.json").exists() {
-                cleanup_markers(&root)?;
-                return Ok(());
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "旧进程退出超时 / Old process exit timed out"
-            );
-            std::thread::sleep(Duration::from_millis(50));
+        if !wait_for_restart(&root, task.parent_pid, Duration::from_secs(60))? {
+            cleanup_markers(&root)?;
+            return Ok(());
         }
-        ensure!(
-            root.join("commit.json").exists() && !root.join("abort.json").exists(),
-            "重启未确认，取消安装 / Restart not confirmed; installation cancelled"
-        );
         let gate = install::gate(&root)?;
         wait_lock(&gate, Duration::from_secs(10))?;
         let instance =
             crate::single_instance::SingleInstanceLock::try_acquire(&paths.instance_lock_file())?
                 .context("应用实例尚未退出 / Application instance still running")?;
-        let applied = install::apply(&root, &task).and_then(|()| verify_installed(&root, &task));
+        let applied = install::apply(&root, &task)
+            .context("安装执行阶段失败 / Installation stage failed")
+            .and_then(|()| {
+                verify_installed(&root, &task)
+                    .context("安装后身份验证阶段失败 / Post-install identity verification failed")
+            });
         if let Err(error) = &applied {
             let rollback = install::rollback(&root);
             if replace_needs_elevation(error, &task.installation.target) {
@@ -218,6 +211,28 @@ fn apply_helper() -> Result<()> {
         cleanup_markers(&root)?;
     }
     result
+}
+
+/// 就绪握手不是安装授权：必须等旧进程退出且收到 commit，取消时保留原程序。
+fn wait_for_restart(root: &Path, parent_pid: u32, timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    while process_alive(parent_pid)
+        .context("等待旧进程阶段失败 / Waiting for old process failed")?
+    {
+        if root.join("abort.json").exists() {
+            return Ok(false);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "旧进程退出超时 / Old process exit timed out"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ensure!(
+        root.join("commit.json").exists() && !root.join("abort.json").exists(),
+        "重启未确认，取消安装 / Restart not confirmed; installation cancelled"
+    );
+    Ok(true)
 }
 /// 替换失败是否指向「缺少管理员授权」：界面据此提供提权重试入口。
 ///
@@ -514,6 +529,65 @@ fn spawn_ready(root: &Path, argument: &str, digest: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restart_parent_child() {
+        let Some(marker) = std::env::var_os("KT_TEST_PARENT_EXIT") else {
+            return;
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !Path::new(&marker).exists() {
+            assert!(Instant::now() < deadline, "测试父进程未收到退出标记");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn handshake_requires_parent_exit_and_commit_and_honors_abort() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let marker = root.join("exit-parent");
+        let mut parent = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "update_launcher::tests::restart_parent_child"])
+            .env("KT_TEST_PARENT_EXIT", &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = parent.id();
+        install::atomic_json(&root.join("helper-ready.json"), &(pid, "digest")).unwrap();
+        install::atomic_json(&root.join("commit.json"), &true).unwrap();
+        std::thread::scope(|scope| {
+            let (send, receive) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                send.send(wait_for_restart(root, pid, Duration::from_secs(5)))
+                    .unwrap()
+            });
+            assert!(matches!(
+                receive.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            fs::write(&marker, b"exit").unwrap();
+            assert!(parent.wait().unwrap().success());
+            assert!(receive
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap());
+        });
+        install::remove(&root.join("commit.json")).unwrap();
+        assert!(wait_for_restart(root, pid, Duration::from_secs(1))
+            .unwrap_err()
+            .to_string()
+            .contains("Restart not confirmed"));
+        install::atomic_json(&root.join("abort.json"), &true).unwrap();
+        assert!(!wait_for_restart(root, std::process::id(), Duration::from_secs(1)).unwrap());
+        install::remove(&root.join("abort.json")).unwrap();
+        assert!(wait_for_restart(root, std::process::id(), Duration::ZERO)
+            .unwrap_err()
+            .to_string()
+            .contains("timed out"));
+    }
+
     #[test]
     fn helper_copy_flushes_verifies_and_respects_the_running_helper_lock() {
         let directory = tempfile::tempdir().unwrap();

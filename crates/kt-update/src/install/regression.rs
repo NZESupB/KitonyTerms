@@ -132,6 +132,59 @@ fn startup_retains_failure_marker_until_matching_committed_gui_confirmation() {
 }
 
 #[test]
+fn helper_transaction_is_confirmed_from_plain_gui_root_without_leaving_a_pending_update() {
+    let (directory, helper_root, mut journal) = fixture();
+    // 刻意不规范化 GUI 路径；Windows 的 helper_root 带有扩展路径前缀。
+    let gui_root = directory.path().join("updates");
+    #[cfg(windows)]
+    assert_ne!(gui_root, helper_root);
+    journal.stage = Stage::Committed;
+    atomic_json(&helper_root.join("journal.json"), &journal).unwrap();
+    let service =
+        crate::UpdateService::open(gui_root.clone(), journal.task.installation.clone()).unwrap();
+    assert_eq!(service.root, fs::canonicalize(&gui_root).unwrap());
+    service.confirm_startup().unwrap();
+    assert!(!gui_root.join("journal.json").exists());
+    assert!(!gui_root.join("previous-executable.exe").exists());
+    assert!(!journal.staging.exists());
+    // 旧版服务可能以普通路径直接进入 recover/rollback，同一记录仍可恢复。
+    fs::create_dir(&journal.staging).unwrap();
+    copy_file_synced(
+        &journal.task.installation.executable,
+        &helper_root.join("previous-executable.exe"),
+    )
+    .unwrap();
+    atomic_json(&helper_root.join("journal.json"), &journal).unwrap();
+    recover(
+        &gui_root,
+        &journal.task.next,
+        &journal.task.installation.executable,
+        true,
+    )
+    .unwrap();
+    assert!(!gui_root.join("journal.json").exists());
+    fs::create_dir(&journal.staging).unwrap();
+    atomic_json(&helper_root.join("journal.json"), &journal).unwrap();
+    rollback(&gui_root).unwrap();
+    assert!(!gui_root.join("journal.json").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn installer_parameters_keep_the_install_directory_and_create_a_separate_log() {
+    let (_directory, _root, mut journal) = fixture();
+    journal.task.installation.executable =
+        PathBuf::from(r"\\?\C:\Program Files\中文\kitonyterms.exe");
+    let arguments =
+        installer_arguments(Path::new(r"\\?\C:\Users\中文 用户\updates"), &journal.task).unwrap();
+    assert!(arguments.contains(&std::ffi::OsString::from(r"/DIR=C:\Program Files\中文")));
+    assert!(arguments.contains(&std::ffi::OsString::from(
+        r"/LOG=C:\Users\中文 用户\updates\update-install.log"
+    )));
+    assert!(arguments.contains(&std::ffi::OsString::from("/NORESTART")));
+}
+
+#[test]
 fn replacement_error_preserves_the_original_os_error() {
     let error = anyhow::Error::new(ReplaceFailure {
         target: PathBuf::from("application.exe"),
