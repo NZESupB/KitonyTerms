@@ -28,6 +28,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 | SFTP 覆盖提交 | `cargo test -p kt-core upload_commit`；[提交测试](../crates/kt-core/src/sftp.rs) |
 | shell 注入与输出过滤 | `cargo test -p kt-core shell_integration`；[shell 测试](../crates/kt-core/src/shell_integration.rs) |
 | SSH、运维取消与容器 PTY | `cargo test -p kt-core --test roundtrip`；[回环测试](../crates/kt-core/tests/roundtrip.rs) |
+| 终端选区桥生命周期与缓冲区复制 | `node --test crates/kt-ui/tests/terminal_selection_bridge.cjs`、`node --check crates/kt-ui/src/assets/terminal_selection.js`、`cargo test -p kt-core term::selection`、`cargo test -p kt-ui owner_survives_rerenders`；[桥接回归](../crates/kt-ui/tests/terminal_selection_bridge.cjs)覆盖 eval 返回关闭通道、拖拽/立即复制、实例替换与卸载后的回复 |
 | vault、信任与落盘 | `cargo test -p kt-ui store::tests`；[Store 测试](../crates/kt-ui/src/store.rs) |
 | 命令历史采集与提示符顺序 | `cargo test -p kt-core command_history`、`cargo test -p kt-core history_prompt_marker`、`cargo test -p kt-ui command_history`；[采集器](../crates/kt-core/src/command_history.rs) |
 | 保存密码查看的代次隔离与存在性 | `cargo test -p kt-ui password_field`、`cargo test -p kt-ui secret_presence`；[字段状态](../crates/kt-ui/src/components/password_field.rs)、[系统认证](../crates/kt-ui/src/os_auth.rs) |

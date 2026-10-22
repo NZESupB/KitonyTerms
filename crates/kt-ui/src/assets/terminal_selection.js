@@ -1,10 +1,11 @@
 // terminalId、bridgeKey 由 Rust 注入；每个实例只有一条有序请求链。
-(() => {
+// Dioxus 在 eval 返回后关闭回复通道；必须保持到 cleanup 才结束。
+return new Promise(resolve => {
     const bridges = window.__ktTerminalSelectionBridges ||= new Map();
     bridges.get(bridgeKey)?.cleanup();
     const surface = document.getElementById(terminalId);
     const screen = document.getElementById(`${terminalId}-screen`);
-    if (!surface || !screen) { dioxus.send(null); return; }
+    if (!surface || !screen) { dioxus.send(null); resolve(); return; }
     surface.__ktSelection?.cleanup();
     const abort = new AbortController();
     let disposed = false;
@@ -300,8 +301,9 @@
             if (surface.__ktSelection === controller) delete surface.__ktSelection;
             if (bridges.get(bridgeKey) === controller) bridges.delete(bridgeKey);
             dioxus.send(null);
+            resolve();
         },
     };
     surface.__ktSelection = controller;
     bridges.set(bridgeKey, controller);
-})();
+});
