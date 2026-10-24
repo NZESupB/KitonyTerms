@@ -70,6 +70,28 @@ pub fn use_state_controller(
             tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;
             if let Ok(mut app_state) = state.lock() {
                 app_state.pump_events();
+                // 终端快照随事件泵提交，不再等待另一个 100ms 采样周期。
+                let changed = {
+                    let displayed = all_sessions.peek();
+                    displayed.len() != app_state.sessions.len()
+                        || displayed.iter().any(|session| {
+                            app_state.sessions.get(&session.id).is_none_or(|latest| {
+                                latest.snapshot.as_ref().map(|frame| frame.revision)
+                                    != session.snapshot.as_ref().map(|frame| frame.revision)
+                                    || latest.container_terminal != session.container_terminal
+                            })
+                        })
+                };
+                if changed {
+                    let mut sessions: Vec<_> = app_state.sessions.values().cloned().collect();
+                    sessions.sort_by_key(|session| session.id);
+                    all_sessions.set(sessions);
+                }
+                let next_active =
+                    resolve_active_session_id(*active_session_id.peek(), &all_sessions.peek());
+                if *active_session_id.peek() != next_active {
+                    active_session_id.set(next_active);
+                }
             }
         }
     });
@@ -79,13 +101,13 @@ pub fn use_state_controller(
         spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // 非终端状态还可能由 UI 直接修改，保留原来的完整状态同步。
                 if let Ok(s) = state.lock() {
                     let mut sessions: Vec<SessionState> = s.sessions.values().cloned().collect();
-                    sessions.sort_by_key(|sess| sess.id);
-                    all_sessions.set(sessions.clone());
-
+                    sessions.sort_by_key(|session| session.id);
                     let next_active =
                         resolve_active_session_id(*active_session_id.peek(), &sessions);
+                    all_sessions.set(sessions);
                     if *active_session_id.peek() != next_active {
                         active_session_id.set(next_active);
                     }

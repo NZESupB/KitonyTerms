@@ -330,6 +330,9 @@ impl server::Handler for EchoHandler {
         data: &[u8],
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
+        if terminal_render::scripted_output(channel, data, session)? {
+            return Ok(());
+        }
         {
             let mut state = self.state.lock().unwrap();
             if let Some(monitor) = state
@@ -1461,3 +1464,6 @@ fn monitor_latency_tracks_remote_response_and_recovers_after_timeout() {
         );
     }
 }
+
+#[path = "roundtrip/terminal_render.rs"]
+mod terminal_render;

@@ -63,6 +63,7 @@
 - 桌面粘贴优先[原生剪贴板](../crates/kt-ui/src/clipboard.rs)，失败再回退 WebView。
 - [模型选区](../crates/kt-core/src/term/selection.rs)保存在 Alacritty 缓冲区，快照仅携带带实例归属的可见列区间。`terminal_selection.js` 捕获鼠标指针并将视口行、列、半格、`display_offset` 和 `revision` 经有序命令送入宿主/容器终端；输出或尺寸变化使旧坐标失效，前端等待新帧重采样，普通滚动不丢弃锚点。复制使用 `selection_to_string()`，不读取 DOM 字符串、不全局 trim 或替换 NBSP；保留软/硬换行、组合字符和宽字符语义。范围以仍保留的 scrollback 为边界，列数变化遵循引擎清除选区。终端目标切换往返须生成新 owner，旧请求只能清理自己的选区；快捷键、右键、手机菜单与原生 `copy` 事件共用路径，桌面优先原生剪贴板。
 - 终端选区桥的 eval 返回生命周期 Promise，缺少节点或 `cleanup()` 时才 resolve。Dioxus Desktop 0.7.10 在 eval 返回后关闭 query 回复通道，单纯注册监听后返回会使首个 `dioxus.recv()` 挂起，进而阻塞整个选区请求队列。生命周期回归见 `kt-ui/tests/terminal_selection_bridge.cjs`；测试必须覆盖 eval 返回时关闭回复通道，不能只提供永远可用的 send/recv 替身。
+- [输出调度](../crates/kt-core/src/term/render.rs)持续解析 PTY 字节，普通输出按 8ms 静默窗口/首块最长 16ms 合并快照；宿主队列满后保留最新网格并延后一帧重试，空闲无计时器。宿主/容器事件循环同时等待解析器同步更新截止时间，超时调用 `stop_sync`、推进坐标版本并处理 PTY 回写；交互帧不得清除仍在同步中的输出。关闭前限时提交尾帧，实际尺寸变化前先在旧几何下释放同步缓冲，相同尺寸不推进版本或破坏选区。16ms UI 事件泵按宿主快照版本/容器状态变化同步会话，其他 UI 直接修改的会话状态保留 100ms 完整同步。普通分块间隔超过合帧预算时仍可能出现中间态，原子更新需终端同步协议。
 - gutter 内容列宽由 `terminal.rs` 的常量统一下发，`app.css` 共用变量计算内容宽度、左右留白、边线与正文起点；resize 继续扣除实际计算 padding。辅助 gutter 不可选且 `aria-hidden`。
 - 桌面断线 Enter 复用 `AppState::reconnect_disconnected_session`，在状态锁内检查并切入连接中；认证/主机密钥确认阶段和重复/IME 按键不发起重连。`terminal_focus.js` 共享桌面终端与占位页的焦点恢复策略，避开输入框、编辑器、弹窗和 inert 区域；手机继续由输入桥管理焦点。
 

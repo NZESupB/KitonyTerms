@@ -1566,7 +1566,7 @@ impl SessionTask {
         let mut term = TermEngine::new(self.pty.cols as usize, self.pty.rows as usize, scrollback);
 
         // Emit the initial (blank) frame.
-        self.emit_render(&term);
+        self.emit_render(&mut term);
 
         let mut close_error: Option<String> = None;
 
@@ -1602,7 +1602,18 @@ impl SessionTask {
         let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<SessionInternal>();
 
         loop {
+            let render_deadline = term.render_deadline();
             tokio::select! {
+                _ = wait_for_terminal_render(render_deadline) => {
+                    if term.prepare_render(Instant::now()) {
+                        let writes = handle_term_events(id, self.out.clone(), term.take_events()).await;
+                        if let Err(error) = write_pty_responses(&shell, writes).await {
+                            close_error = Some(error.to_string());
+                            break;
+                        }
+                        self.emit_render(&mut term);
+                    }
+                }
                 internal = internal_rx.recv() => {
                     match internal {
                         Some(SessionInternal::OperationCompleted { operation_id, result }) => {
@@ -1672,13 +1683,13 @@ impl SessionTask {
                                         close_error = Some(error.to_string());
                                         break;
                                     }
-                                    self.emit_render(&term);
+                                    self.emit_render(&mut term);
                                 }
                             }
                             // 用户在查看历史输出时开始输入，应立即回到当前命令行；
                             // 空输入不改变视口，也避免实时视图下每次按键产生额外渲染。
                             if prepare_terminal_for_input(&mut term, &data) {
-                                self.emit_render(&term);
+                                self.emit_render(&mut term);
                             }
                             if let Err(e) = shell.write(&data).await {
                                 close_error = Some(e.to_string());
@@ -1689,20 +1700,33 @@ impl SessionTask {
                             }
                         }
                         Some(SessionCmd::Resize { cols, rows }) => {
+                            if (terminal_cols, terminal_rows) == (cols, rows) {
+                                continue;
+                            }
                             terminal_cols = cols;
                             terminal_rows = rows;
                             term.resize(cols as usize, rows as usize, scrollback);
+                            let writes = handle_term_events(id, self.out.clone(), term.take_events()).await;
+                            if let Err(error) = write_pty_responses(&shell, writes).await {
+                                close_error = Some(error.to_string());
+                                break;
+                            }
                             let _ = shell.resize(cols, rows).await;
-                            self.emit_render(&term);
+                            self.emit_render(&mut term);
                         }
                         Some(SessionCmd::UpdateTerminalSettings { scrollback: next }) => {
                             scrollback = next.clamp(1_000, 100_000);
                             term.resize(terminal_cols as usize, terminal_rows as usize, scrollback);
-                            self.emit_render(&term);
+                            let writes = handle_term_events(id, self.out.clone(), term.take_events()).await;
+                            if let Err(error) = write_pty_responses(&shell, writes).await {
+                                close_error = Some(error.to_string());
+                                break;
+                            }
+                            self.emit_render(&mut term);
                         }
                         Some(SessionCmd::Scroll(delta)) => {
                             term.scroll(delta);
-                            self.emit_render(&term);
+                            self.emit_render(&mut term);
                         }
                         Some(SessionCmd::TerminalSelection { exec_id, command }) => {
                             if let Some(exec_id) = exec_id {
@@ -1717,7 +1741,7 @@ impl SessionTask {
                                 }
                             } else if !command.reply.is_closed() || matches!(command.action, crate::term::selection::SelectionAction::Clear) {
                                 let result = term.select(&command.owner, command.action);
-                                self.emit_render(&term);
+                                self.emit_render(&mut term);
                                 let _ = command.reply.send(result);
                             }
                         }
@@ -2075,7 +2099,6 @@ impl SessionTask {
                                 close_error = Some(error.to_string());
                                 break;
                             }
-                            self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
                             // stderr 不参与 bootstrap 过滤，登录脚本的诊断信息也必须可见。
@@ -2089,7 +2112,6 @@ impl SessionTask {
                                 close_error = Some(error.to_string());
                                 break;
                             }
-                            self.emit_render(&term);
                         }
                         Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
                             break;
@@ -2104,6 +2126,20 @@ impl SessionTask {
                         None => break, // channel fully closed
                     }
                 }
+            }
+        }
+
+        if term.flush_pending_output() {
+            let delivered = send_exec_event(
+                &self.out,
+                FromCore::Render {
+                    id,
+                    snapshot: Box::new(term.snapshot()),
+                },
+            )
+            .await;
+            if !delivered {
+                tracing::debug!("会话关闭时终端尾帧未能送达");
             }
         }
 
@@ -2148,19 +2184,26 @@ impl SessionTask {
             .await;
     }
 
-    fn emit_render(&self, term: &TermEngine) {
+    fn emit_render(&self, term: &mut TermEngine) {
         let snapshot = Box::new(term.snapshot());
-        if let Err(err) = self.out.try_send(FromCore::Render {
+        match self.out.try_send(FromCore::Render {
             id: self.id,
             snapshot,
         }) {
-            match err {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::debug!("core 输出队列已满，丢弃一帧终端渲染");
-                }
-                mpsc::error::TrySendError::Closed(_) => {}
+            Ok(()) => term.mark_rendered(),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                term.retry_render(Instant::now());
+                tracing::debug!("core 输出队列已满，保留最新网格并延后一帧重试");
             }
+            Err(mpsc::error::TrySendError::Closed(_)) => term.mark_rendered(),
         }
+    }
+}
+
+async fn wait_for_terminal_render(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -2631,7 +2674,7 @@ async fn run_container_exec(
             return error;
         }
     }
-    if !send_exec_render(id, exec_id, &term, &out).await {
+    if !send_exec_render(id, exec_id, &mut term, &out).await {
         let error = Some("容器终端初始渲染失败".to_string());
         channel.close().await;
         send_exec_closed_once(id, exec_id, error.clone(), &out, &closed).await;
@@ -2639,7 +2682,14 @@ async fn run_container_exec(
     }
 
     'run: loop {
+        let render_deadline = term.render_deadline();
         tokio::select! {
+            _ = wait_for_terminal_render(render_deadline) => {
+                if term.prepare_render(Instant::now())
+                    && !send_exec_render(id, exec_id, &mut term, &out).await {
+                    break 'run;
+                }
+            }
             cancellation = &mut cancel_rx => {
                 close_error = cancellation.unwrap_or(None);
                 break 'run;
@@ -2656,7 +2706,7 @@ async fn run_container_exec(
                         if data.is_empty() {
                             continue;
                         }
-                        if term.scroll_to_bottom() && !send_exec_render(id, exec_id, &term, &out).await {
+                        if term.scroll_to_bottom() && !send_exec_render(id, exec_id, &mut term, &out).await {
                             break 'run;
                         }
                         match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
@@ -2672,6 +2722,9 @@ async fn run_container_exec(
                         }
                     }
                     Some(ContainerExecCmd::Resize { cols, rows }) => {
+                        if term.dimensions() == (cols as usize, rows as usize) {
+                            continue;
+                        }
                         term.resize(cols as usize, rows as usize, SCROLLBACK);
                         match container_window_change_with_cancel(&channel, &mut cancel_rx, cols, rows).await {
                             ContainerIoResult::Sent => {}
@@ -2684,20 +2737,20 @@ async fn run_container_exec(
                                 break 'run;
                             }
                         }
-                        if !send_exec_render(id, exec_id, &term, &out).await {
+                        if !send_exec_render(id, exec_id, &mut term, &out).await {
                             break 'run;
                         }
                     }
                     Some(ContainerExecCmd::Scroll(delta)) => {
                         term.scroll(delta);
-                        if !send_exec_render(id, exec_id, &term, &out).await {
+                        if !send_exec_render(id, exec_id, &mut term, &out).await {
                             break 'run;
                         }
                     }
                     Some(ContainerExecCmd::Selection(command)) => {
                         if !command.reply.is_closed() || matches!(command.action, crate::term::selection::SelectionAction::Clear) {
                             let result = term.select(&command.owner, command.action);
-                            if !send_exec_render(id, exec_id, &term, &out).await {
+                            if !send_exec_render(id, exec_id, &mut term, &out).await {
                                 let _ = command.reply.send(Err("容器终端渲染通道已关闭".into()));
                                 break 'run;
                             }
@@ -2718,31 +2771,6 @@ async fn run_container_exec(
                     Some(russh::ChannelMsg::Data { data })
                     | Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
                         term.advance(&data);
-                        let writes = match tokio::time::timeout(
-                            EXEC_EVENT_TIMEOUT,
-                            handle_term_events(id, out.clone(), term.take_events()),
-                        )
-                        .await
-                        {
-                            Ok(writes) => writes,
-                            Err(_) => break 'run,
-                        };
-                        for data in writes {
-                            match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
-                                ContainerIoResult::Sent => {}
-                                ContainerIoResult::Cancelled(error) => {
-                                    close_error = error;
-                                    break 'run;
-                                }
-                                ContainerIoResult::Failed(error) => {
-                                    close_error = Some(error);
-                                    break 'run;
-                                }
-                            }
-                        }
-                        if close_error.is_some() || !send_exec_render(id, exec_id, &term, &out).await {
-                            break 'run;
-                        }
                     }
                     Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
                         if exit_status != 0 {
@@ -2761,6 +2789,33 @@ async fn run_container_exec(
                 }
             }
         }
+        // 数据、尺寸变化和同步超时都可能产生 PTY 回写，统一在本轮处理。
+        let writes = match tokio::time::timeout(
+            EXEC_EVENT_TIMEOUT,
+            handle_term_events(id, out.clone(), term.take_events()),
+        )
+        .await
+        {
+            Ok(writes) => writes,
+            Err(_) => break 'run,
+        };
+        for data in writes {
+            match container_data_with_cancel(&channel, &mut cancel_rx, data).await {
+                ContainerIoResult::Sent => {}
+                ContainerIoResult::Cancelled(error) => {
+                    close_error = error;
+                    break 'run;
+                }
+                ContainerIoResult::Failed(error) => {
+                    close_error = Some(error);
+                    break 'run;
+                }
+            }
+        }
+    }
+
+    if term.flush_pending_output() && !send_exec_render(id, exec_id, &mut term, &out).await {
+        tracing::debug!("容器终端关闭时尾帧未能送达");
     }
 
     // 普通 Channel 被 drop 时不会自动发送 CHANNEL_CLOSE；运行阶段任何退出原因
@@ -2773,10 +2828,10 @@ async fn run_container_exec(
 async fn send_exec_render(
     id: SessionId,
     exec_id: ExecId,
-    term: &TermEngine,
+    term: &mut TermEngine,
     out: &SessionEventSender,
 ) -> bool {
-    send_exec_event(
+    let delivered = send_exec_event(
         out,
         FromCore::ExecRender {
             id,
@@ -2784,7 +2839,11 @@ async fn send_exec_render(
             snapshot: Box::new(term.snapshot()),
         },
     )
-    .await
+    .await;
+    if delivered {
+        term.mark_rendered();
+    }
+    delivered
 }
 
 #[derive(Debug)]
@@ -3345,6 +3404,65 @@ mod tests {
             auth_response_rx.try_recv(),
             Ok(AuthResponse::Answers(answers)) if answers == vec!["current"]
         ));
+    }
+
+    #[test]
+    fn full_render_queue_retries_the_latest_grid_without_more_output() {
+        let id = SessionId(1);
+        let (tx, mut rx) = mpsc::channel(1);
+        let out = SessionEventSender::new(id, 7, tx);
+        out.try_send(FromCore::Bell { id }).unwrap();
+        let (_cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let task = SessionTask {
+            id,
+            params: ConnectParams {
+                host: "127.0.0.1".into(),
+                port: 22,
+                user: "tester".into(),
+                auth: Vec::new(),
+                vault_id: None,
+                proxy_jump: None,
+                proxy: kt_config::ProxyConfig::Direct,
+                forward_agent: false,
+            },
+            pty: PtySize { cols: 20, rows: 3 },
+            verifier: Arc::new(AcceptAllVerifier),
+            provider: Box::new(NoopAuth),
+            out,
+            cmd_rx,
+        };
+        let mut term = TermEngine::new(20, 3, 100);
+        term.advance(b"old");
+        let attempted = Instant::now();
+        task.emit_render(&mut term);
+        assert!(term.render_deadline().unwrap() > attempted);
+        term.advance(b"\r\x1b[2Klatest");
+        task.emit_render(&mut term);
+        let deadline = term.render_deadline().unwrap();
+        assert!(!term.prepare_render(deadline - Duration::from_millis(1)));
+        assert!(matches!(
+            rx.try_recv().unwrap().event,
+            FromCore::Bell { .. }
+        ));
+
+        // 没有后续 PTY 数据也必须重试；过时的失败快照不能覆盖最新网格。
+        assert!(term.prepare_render(deadline));
+        task.emit_render(&mut term);
+        let delivered = rx.try_recv().unwrap();
+        assert_eq!(delivered.generation, 7);
+        match delivered.event {
+            FromCore::Render {
+                id: actual,
+                snapshot,
+            } => {
+                assert_eq!(actual, id);
+                assert_eq!(snapshot.row_text(0), "latest");
+                assert_eq!(snapshot.revision, term.snapshot().revision);
+            }
+            other => panic!("期望恢复后的最新终端帧，实际收到 {other:?}"),
+        }
+        assert!(term.render_deadline().is_none());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

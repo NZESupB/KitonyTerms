@@ -13,6 +13,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -22,6 +23,7 @@ use alacritty_terminal::term::{point_to_viewport, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape as VteCursorShape, NamedColor, Processor};
 
 pub mod color;
+mod render;
 pub mod selection;
 pub mod snapshot;
 
@@ -125,6 +127,7 @@ pub struct TermEngine {
     // 仅网格内容/尺寸变化使前端坐标失效；滚动与选区帧仍可使用原坐标。
     coordinate_revision: u64,
     selection_owner: Option<String>,
+    render_schedule: render::RenderSchedule,
 }
 
 impl TermEngine {
@@ -145,6 +148,7 @@ impl TermEngine {
             revision: 0,
             coordinate_revision: 0,
             selection_owner: None,
+            render_schedule: render::RenderSchedule::default(),
         }
     }
 
@@ -160,15 +164,23 @@ impl TermEngine {
 
     /// Feed raw bytes from the PTY into the parser/grid.
     pub fn advance(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         self.parser.advance(&mut self.term, bytes);
         self.revision = self.revision.wrapping_add(1);
         self.coordinate_revision = self.revision;
+        self.render_schedule.queue(Instant::now());
     }
 
     /// Resize the grid. Caller is responsible for sending `window-change` to
     /// the SSH channel separately.
     pub fn resize(&mut self, columns: usize, rows: usize, scrollback: usize) {
         let size = TermSize::new(columns, rows, scrollback);
+        if size == self.size {
+            return;
+        }
+        self.finish_synchronized_update();
         self.term.resize(size);
         self.size = size;
         self.revision = self.revision.wrapping_add(1);
