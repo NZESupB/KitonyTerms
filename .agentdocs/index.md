@@ -9,6 +9,7 @@
 
 ## 当前任务
 
+- [发布 v0.1.17 并合并 main](workflow/261025-release-v0117.md)：无新增功能的补丁版本重打包、全平台产物验收及 main 同步。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。
 - [设置拖动、编辑缓存与下载](workflow/260926-settings-editor-download.md)：实现及协议测试完成；v0.1.1 已验证跨平台构建，真实桌面交互待验收。
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
