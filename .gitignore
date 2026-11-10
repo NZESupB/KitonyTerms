@@ -1,9 +1,8 @@
-# Rust 构建产物 / Rust build artifacts
-/target
-**/*.rs.bk
+# 本机构建与调试产物
 *.pdb
-# 注意:本仓库含可执行程序(kt-app),Cargo.lock 应当提交,故不忽略。
-# Note: this workspace ships a binary (kt-app), so Cargo.lock IS committed.
+/dist/
+/app/*.syso
+/app/.local-data/
 
 # 代码覆盖率 / 性能分析 / Coverage & profiling
 *.profraw
@@ -38,3 +37,23 @@ TODO
 # PI/代理本地状态：计划快照与技能队列不纳入版本管理
 .pi/
 .agents/
+
+# Wails 新工程本机产物
+/app/bin/
+/app/frontend/node_modules/
+/app/frontend/dist/
+/app/.data/
+/app/build/android/.gradle/
+/app/build/android/local.properties
+/app/build/android/app/build/
+/app/build/android/app/src/main/jniLibs/
+/app/build/android/gen/
+/app/build/android/overlay.json
+/app/build/ios/xcode/
+/app/build/ios/gen/
+/app/build/ios/overlay.json
+/app/*.test
+/app/coverage*
+!/app/internal/storage/testdata/*.vault
+/app/build/android/build/
+/app/.task/

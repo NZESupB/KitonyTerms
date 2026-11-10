@@ -1,8 +1,5 @@
-# Rust 开发基线
+# 历史 Rust 开发基线
 
-适用依据：本会话项目指令；工具链与依赖分别见 [rust-toolchain.toml](../../rust-toolchain.toml)、[Cargo.toml](../../Cargo.toml) 和 [Cargo.lock](../../Cargo.lock)。
+此文件仅解释旧标签中的 Rust/Cargo/Dioxus 工作区。2026-11-10 起，当前生产入口为 `app/` 的 Go/Wails/React；不再要求安装 Rust，也不再运行 Cargo 或旧互通工具。当前架构和检查见[架构约束](../architecture.md)及[维护规程](../maintenance.md)。
 
-- 修改限于任务范围，复用现有模块；功能变化保留对应回归测试。
-- 按[维护规程](../maintenance.md)执行适用检查；失败或未执行的检查不得记为通过。
-- 密码、私钥、验证码与令牌不得进入明文配置或日志。
-- 文件、外部命令、认证和并发操作需保留输入校验、失败反馈与资源清理。
+旧源码与构建依赖从历史 tag 获取；公开 TOML/vault、同步和更新记录的冻结夹具保留在 Go 测试目录。历史跨语言测试是已有证据，不代表当前检查仍运行 Rust。

@@ -1,0 +1,30 @@
+{
+	"fixed": {
+		"file_version": "0.1.18.0",
+		"product_version": "0.1.18.0"
+	},
+	"info": {
+		"0409": {
+			"ProductVersion": "0.1.18.0",
+			"FileVersion": "0.1.18.0",
+			"CompanyName": "Kitony",
+			"FileDescription": "SSH and server management workspace",
+			"LegalCopyright": "© 2026 KitonyTerms",
+			"ProductName": "KitonyTerms",
+			"InternalName": "kitonyterms",
+			"OriginalFilename": "kitonyterms.exe",
+			"Comments": "Wails preview build"
+		},
+		"0804": {
+			"ProductVersion": "0.1.18.0",
+			"FileVersion": "0.1.18.0",
+			"CompanyName": "Kitony",
+			"FileDescription": "跨平台 SSH 与服务器管理工作台",
+			"LegalCopyright": "© 2026 KitonyTerms",
+			"ProductName": "KitonyTerms",
+			"InternalName": "kitonyterms",
+			"OriginalFilename": "kitonyterms.exe",
+			"Comments": "Wails 预发布版"
+		}
+	}
+}

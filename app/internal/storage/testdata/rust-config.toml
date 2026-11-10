@@ -1,0 +1,52 @@
+groups = ["生产环境"]
+
+[settings]
+language = "english"
+font_family = "Menlo"
+font_size = 13.0
+ui_font_family = "测试字体"
+ui_font_scale = 1.0
+theme = "default-dark"
+accent_color = "#5aa7ff"
+scrollback_lines = 10000
+cursor_style = "block"
+use_ssh_config = true
+trigger_highlights = [
+    "error",
+    "failed",
+    "warning",
+    "panic",
+]
+show_line_numbers = false
+show_timestamps = false
+terminal_wrap = true
+sftp_auto_sync = false
+sftp_column_widths = [
+    100,
+    120,
+    80,
+    80,
+    90,
+    110,
+]
+
+[[sessions]]
+name = "Rust 夹具"
+group = "生产环境"
+host = "test.invalid"
+port = 22
+user = "tester"
+forward_agent = false
+
+[[sessions.auth]]
+kind = "password"
+
+[[sessions.auth]]
+kind = "public_key"
+key_path = "~/.ssh/id_ed25519"
+
+[[sessions.auth]]
+kind = "keyboard_interactive"
+
+[[sessions.auth]]
+kind = "agent"

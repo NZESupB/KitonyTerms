@@ -12,23 +12,28 @@ TARGETS = {
     "aarch64-unknown-linux-gnu": "linux-aarch64",
     "aarch64-apple-darwin": "macos-aarch64",
     "x86_64-pc-windows-msvc": "windows-x64",
+    "x86_64-apple-darwin": "macos-x64",
+    "aarch64-pc-windows-msvc": "windows-aarch64",
 }
 IDENTITY_KEYS = ("schema", "channel", "version", "commit", "build", "attempt", "label")
 MAX_PACKAGE = 512 * 1024 * 1024
 
 
-def identity(channel, environment=None, cargo=Path("Cargo.toml")):
+def identity(channel, environment=None, package_json=Path("app/frontend/package.json")):
     environment = os.environ if environment is None else environment
-    match = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', cargo.read_text(encoding="utf-8"), re.M)
-    if not match:
-        raise ValueError("无法读取 workspace 版本")
-    version = match.group(1)
+    version = json.loads(package_json.read_text(encoding="utf-8"))["version"]
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+        raise ValueError("无法读取Go/React项目版本")
     ref = environment.get("GITHUB_REF", "")
     label = environment.get("GITHUB_REF_NAME", "dev")
     if channel == "auto":
         channel = "stable" if ref.startswith("refs/tags/v") else "development"
-    if channel == "stable" and (ref != "refs/tags/v" + version or label != "v" + version):
-        raise ValueError("正式 tag 必须与 Cargo.toml 版本一致")
+    candidate = environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and ref == "refs/heads/dev"
+    if channel == "stable":
+        if candidate:
+            label = "v" + version
+        elif ref != "refs/tags/v" + version or label != "v" + version:
+            raise ValueError("发布 tag 必须与 app/frontend/package.json 版本一致")
     if channel == "alpha":
         label = "alpha"
     commit = environment.get("GITHUB_SHA", "")

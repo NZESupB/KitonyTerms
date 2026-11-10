@@ -1,0 +1,77 @@
+plugins {
+    id 'com.android.application'
+}
+
+def buildNumber = System.getenv('MOBILE_BUILD_NUMBER') ?: '1'
+if (!(buildNumber ==~ /[0-9]{1,10}/) || buildNumber.toLong() < 1 || buildNumber.toLong() > 2100000000L) {
+    throw new GradleException('MOBILE_BUILD_NUMBER 必须为 1..2100000000 的整数')
+}
+def keystoreFile = System.getenv('ANDROID_KEYSTORE_FILE')
+def signingValues = ['ANDROID_KEYSTORE_FILE', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
+def hasSigning = signingValues.every { System.getenv(it)?.trim() }
+// 检查实际任务图，覆盖 build/bundle 等间接触发 release 的入口。
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }
+            && (!hasSigning || !System.getenv('MOBILE_BUILD_NUMBER'))) {
+        throw new GradleException('release 必须提供正式签名的四个环境变量及 MOBILE_BUILD_NUMBER')
+    }
+}
+
+android {
+    namespace 'com.wails.app'
+    compileSdk 36
+    ndkVersion '28.2.13676358'
+    buildFeatures { buildConfig = true }
+    defaultConfig {
+        applicationId 'com.kitonyterms.app'
+        minSdk 24
+        targetSdk 36
+        versionCode buildNumber.toInteger()
+        versionName '0.1.18'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    signingConfigs {
+        release {
+            if (hasSigning) {
+                storeFile file(keystoreFile)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+        debug {
+            applicationIdSuffix '.wailsdev'
+            versionNameSuffix '-wailsdev'
+            debuggable true
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+            assets.srcDirs = ['src/main/assets']
+        }
+    }
+    packagingOptions {
+        jniLibs { useLegacyPackaging = false }
+        doNotStrip '*/arm64-v8a/libwails.so'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.webkit:webkit:1.9.0'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+}

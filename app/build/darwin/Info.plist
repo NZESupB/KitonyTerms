@@ -1,0 +1,29 @@
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>CFBundlePackageType</key>
+            <string>APPL</string>
+        <key>CFBundleName</key>
+            <string>KitonyTerms</string>
+        <key>CFBundleExecutable</key>
+            <string>kitonyterms</string>
+        <key>CFBundleIdentifier</key>
+            <string>com.kitonyterms.app</string>
+        <key>CFBundleVersion</key>
+            <string>0.1.18</string>
+        <key>CFBundleGetInfoString</key>
+            <string>KitonyTerms 0.1.18</string>
+        <key>CFBundleShortVersionString</key>
+            <string>0.1.18</string>
+        <key>CFBundleIconFile</key>
+            <string>icons</string>
+        <key>CFBundleIconName</key>
+            <string>appicon</string>
+        <key>LSMinimumSystemVersion</key>
+            <string>15.0.0</string>
+        <key>NSHighResolutionCapable</key>
+            <true/>
+        <key>NSHumanReadableCopyright</key>
+            <string>© 2026 KitonyTerms</string>
+    </dict>
+</plist>

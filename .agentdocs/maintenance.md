@@ -1,69 +1,51 @@
 # 维护与验证
 
-## 变更检查
+生产工程为app/的Go/Wails/React，不需要Rust/Cargo/Dioxus。固定Wails CLI/模块/runtime为3.0.0，GitHub使用Go1.27.3/Node24。
 
-按本会话项目指令执行：限定任务范围，保留正式回归测试；涉及跨模块变更时检查协议路由、状态收敛、持久化失败、安全边界及 UI/i18n。技术边界见[架构](architecture.md)。
-
-Rust 变更的现有门禁：
+## 完整门禁
 
 ```bash
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cd app
+bash scripts/check.sh
 ```
 
-涉及安全、网络、认证、外部命令或并发时，另执行适用的 `cargo clippy --workspace --all-targets --all-features -- -D warnings`。使用项目工具链；失败需区分代码问题与环境限制。
+包括Go格式/vet/internal+tools race、Wails绑定无漂移、前端format/typecheck/lint/测试/生产build。CI各桌面另执行原生Go领域测试和真实打包；Windows默认非race以避免额外CGO工具链。测试只使用临时目录/公开夹具/私有生成密钥，不写用户正式数据。
 
-发布流水线的额外门禁：`release.yml` 在打包前执行 `cargo audit` 且失败即阻断发布（`alpha.yml` 同样扫描但只告警）。豁免集中声明在仓库根目录 `.cargo/audit.toml`，当前仅豁免上游无修复版本的 `RUSTSEC-2023-0071`（rsa，经 russh/ssh-key 引入）；新增豁免需要说明依据，并在上游修复后移除。
+仓库根发布契约：
 
-## 定向验证入口
+```bash
+python3 -B .github/scripts/test-update-manifest.py
+bash -n .github/scripts/package-android-apk.sh
+bash -n .github/scripts/package-ios-ipa.sh
+```
 
-下列命令用于定位回归，不替代适用的完整门禁，也不表示已经执行通过。
+Python脚本用`python3 -B`，不留下pycache。发布通过[workflow](../.github/workflows/release.yml)，清单版本来自frontend/package.json，dev手动构建在所有job通过后才创建预发布tag；现有Release不覆盖。
 
-| 场景 | 命令与源码 |
+## 定向回归
+
+在app/执行：
+
+| 领域 | 命令 |
 |---|---|
-| 配置与旧 TOML 兼容 | `cargo test -p kt-config`；[配置测试](../crates/kt-config/src/lib.rs) |
-| 编辑器菜单 | `cargo test -p kt-ui editor_menu`；[编辑器测试](../crates/kt-ui/src/components/external_edit.rs) |
-| SFTP 覆盖提交 | `cargo test -p kt-core upload_commit`；[提交测试](../crates/kt-core/src/sftp.rs) |
-| shell 注入与输出过滤 | `cargo test -p kt-core shell_integration`；[shell 测试](../crates/kt-core/src/shell_integration.rs) |
-| SSH、运维取消与容器 PTY | `cargo test -p kt-core --test roundtrip`；[回环测试](../crates/kt-core/tests/roundtrip.rs) |
-| 终端选区桥生命周期与缓冲区复制 | `node --test crates/kt-ui/tests/terminal_selection_bridge.cjs`、`node --check crates/kt-ui/src/assets/terminal_selection.js`、`cargo test -p kt-core term::selection`、`cargo test -p kt-ui owner_survives_rerenders`；[桥接回归](../crates/kt-ui/tests/terminal_selection_bridge.cjs)覆盖 eval 返回关闭通道、拖拽/立即复制、实例替换与卸载后的回复 |
-| 终端输出合帧、同步超时与背压尾帧 | `cargo test -p kt-core --lib render`、`cargo test -p kt-core --test roundtrip terminal_render`；[调度回归](../crates/kt-core/src/term/render.rs)、[队列恢复](../crates/kt-core/src/session.rs)、[SSH 回环](../crates/kt-core/tests/roundtrip/terminal_render.rs)覆盖完整分块帧、缺结束标记/DSR、连续输出、关闭尾部、旧尺寸解析及重复尺寸选区保持 |
-| vault、信任与落盘 | `cargo test -p kt-ui store::tests`；[Store 测试](../crates/kt-ui/src/store.rs) |
-| 命令历史采集与提示符顺序 | `cargo test -p kt-core command_history`、`cargo test -p kt-core history_prompt_marker`、`cargo test -p kt-ui command_history`；[采集器](../crates/kt-core/src/command_history.rs) |
-| 保存密码查看的代次隔离与存在性 | `cargo test -p kt-ui password_field`、`cargo test -p kt-ui secret_presence`；[字段状态](../crates/kt-ui/src/components/password_field.rs)、[系统认证](../crates/kt-ui/src/os_auth.rs) |
-| 移动打包 | `cargo test -p kt-app --test mobile_packaging_contract`；[契约测试](../crates/kt-app/tests/mobile_packaging_contract.rs) |
-| 桌面后台更新与安装事务 | `cargo test -p kt-update`；[本地 HTTP](../crates/kt-update/src/tests.rs)、[归档](../crates/kt-update/src/archive.rs)、[安装](../crates/kt-update/src/install.rs) |
-| 更新辅助握手、身份探测与锁竞争 | `cargo test -p kt-app update_launcher`；[辅助程序](../crates/kt-app/src/update_launcher.rs) |
-| 更新直接重启与安全保护 | `cargo test -p kt-ui software_update`；[界面](../crates/kt-ui/src/components/software_update.rs) |
-| 桌面清单与发布契约 | `python3 -B .github/scripts/test-update-manifest.py`；`bash -n .github/scripts/publish-alpha.sh` |
-| 界面字体与缩放令牌 | `cargo test -p kt-ui components::fonts`（字体名、CSS 转义、平台回退）、`cargo test -p kt-ui style_contract`、`cargo test -p kt-config ui_font`；[字体处理](../crates/kt-ui/src/components/fonts.rs)、[样式不变量](../crates/kt-ui/src/style_contract.rs)、[配置字段](../crates/kt-config/src/lib.rs) |
-| 更新代理（含 HTTP/SOCKS5 隧道与失败分类） | `cargo test -p kt-update proxy`；[代理实现](../crates/kt-update/src/proxy.rs)、[本地代理与隧道](../crates/kt-update/src/tests.rs) |
+| TOML/vault/信任/落盘 | `go test -race ./internal/storage` |
+| SSH/PTY/agent/ProxyJump/SFTP/运维取消 | `go test -race -timeout=240s ./internal/session` |
+| 系统认证/秘密读取 | `go test -race ./internal/osauth ./internal/secretview` |
+| 目录快照/权限 | `go test -race ./internal/datasnapshot ./tools/data-snapshot` |
+| WebDAV/LAN/旧同步夹具 | `go test -race ./internal/syncconfig` |
+| 更新归档/安装/helper/恢复/跨进程锁 | `go test -race -timeout=240s ./internal/update` |
+| Windows资源/打包边界 | `go test ./tools/windows-package` |
+| macOS加载命令/签名包/DMG | `go test ./tools/macos-package`；真实包专项需设置原有显式测试开关和对应SDK |
+| 平台旧目录与隔离 | `go test ./internal/platform` |
 
-修改 shell 脚本时对改动文件执行 `bash -n`；文档变更检查本地链接和 `git diff --check`，包含暂存修改时检查 `git diff --cached --check`。
+正式回归测试与冻结公开夹具保留。旧Rust生成器/子进程测试已退役；不能把删除的跨语言工具描述为当前检查仍执行。`testdata/legacy-*`的来源说明与摘要见测试夹具文档；旧源码可从历史tag恢复。
 
-## 文档
+## 原生与发布验收
 
-依据本会话最新项目指令：内部文档存于 .agentdocs；复杂任务保留必要目标、决策与验证状态。完成才归档，超过五份时先提炼有效内容再删除旧文档，保留最新归档。未验收事项不得因清理而标记完成。
+- Windows：实际update-info、PE架构/图标/版本/manifest、ZIP/Inno；UAC取消/跨用户/占用/正式安装重启需另验。
+- macOS：实际minos15.0与SDK、ad-hoc签名、只读update-info零业务写、DMG实际只读挂载/回读/卸载；签名公证/最旧系统/GUI升级另验。
+- Linux：GTK4/WebKitGTK6原生CGO，ELF/身份和执行权限；无GUIserver不可作为桌面验收。
+- Android：固定证书v2签名、ARM64唯一ABI、APK/AAB库一致、16KiB ZIP/ELF对齐与版本；真机/系统provider/OEM后台另验。
+- iOS：完整设备SDK真实链接、arm64/platform2、无签名Payload及资源；无签名IPA不直接安装，真机另验。
+- Release：固定commit/tag/run/attempt与完整job集合，实际下载27资产回读大小/SHA、更新manifest和平台验证记录；不能仅看发布页。
 
-已跟踪范围由 [.gitignore](../.gitignore) 确定。索引仅维护入口；不重复保存无法对应代码、配置或验证证据的历史总结。
-
-## 桌面更新原生验收
-
-发布清单须包含 macOS ARM64、Windows AMD64、Linux x64/aarch64 四个 target；macOS 仅 DMG，Windows 同时包含便携 ZIP 与安装器。发布契约测试固定该范围及 Node.js 24 Action 版本。Alpha 使用 GitHub run ID/attempt，正式 tag 必须匹配 Cargo 版本。使用隔离应用副本和数据目录验收，不替换开发环境应用。
-
-- Windows：用户目录便携版不提权；Program Files 下便携版与安装版 UAC 接受/取消；标准账户使用另一管理员凭据仍访问原用户事务；跨 C/D 盘及空格/中文路径；32/33/1224 和错误 5 掩盖的占用不循环提权，只读文件/写保护/ACL 错误保留原因；安装路径不漂移，GUI 由原普通进程重开；替换后身份失败及运行中 EXE 中断恢复；恢复取消保留 journal/备份；单实例竞争。两种主题点击均无二次确认，准备失败恢复交互。
-- macOS：签名 `.app` 的整包交换/回滚、UI 启动确认后清理备份、DMG/App Translocation/不可写目录错误；测试包含真实 DMG 的只读挂载、签名包更新/回滚、损坏镜像及越界链接清理和遗留挂载回收。原生镜像测试按完整生命周期互斥执行，镜像创建也使用有超时与输出上限的 hdiutil 调用；不代替 GUI 验收。
-- Linux：实际二进制路径和执行权限、只读目录、旧进程等待、单实例竞争、恢复和重启。
-- 三端：编辑器/外部编辑/SFTP pending/同步阻止重启，后台下载期间终端正常工作，准备失败应用保持运行；断网、限流、Alpha 资产切换可重试。
-
-跨 target 的 API 类型检查仅证明类型契约；缺少 SDK、链接器或原生运行器时必须单独记录，不能等同完整构建/安装通过。
-
-### Windows 更新验证入口
-
-在 Windows 开发终端先运行 `cargo test --locked -p kt-update --target x86_64-pc-windows-msvc`、`cargo test --locked -p kt-app --bin kitonyterms update_launcher --target x86_64-pc-windows-msvc` 和 `cargo test --locked -p kt-ui software_update`。两条发布 workflow 在注入发布身份前执行前两组测试，避免现有 development 身份测试被正式/Alpha 元数据改变。
-
-端到端使用两个具有有效发布身份的隔离构建，开发默认构建禁用更新。一次手动安装修复版可绕过已发布旧更新器自身的刷盘错误，再验收连续自动更新。不在开发机真实安装目录进行故障注入。
-
-核对 updates 下的 `error.json`、`journal.json`、`elevated-result.json`、`update-install.log`：错误应包含失败阶段/路径和系统原因；安装器未启动时可能没有 Inno 日志，以 error 中的 Shell 启动错误为准。取消且原目标未改动时旧版可重开，成功 GUI 确认后事务/备份清理。新增路径回归覆盖普通 GUI 目录与规范 helper 目录、盘符/UNC/中文/空格及无法等价简化的路径；隔离构建连续更新后再次检查，确认不遗留 journal 阻断下一次准备。需要定位时用 Process Monitor 按应用/辅助进程及目标路径筛选 CreateFile、FlushBuffersFile、重命名结果，用任务管理器检查重开 GUI 的权限；仅把实际执行的原生场景记为通过。超时的管理员进程仍运行时，协调进程会保留锁等待其退出，应检查该进程而非手动删除记录。
+文档链接和`git diff --check`/`git diff --cached --check`须通过。检查未执行、失败或跳过都分别记录；不由构建推导实体输入、认证、正式升级或性能通过。内部文档仅记录已确认架构与长期约束，不改变无关历史任务。

@@ -2,12 +2,19 @@
 
 ## 长期文档
 
-- [architecture.md](architecture.md)：crate 边界、协议、安全与 UI 约束；修改跨模块逻辑前读取。
+- [architecture.md](architecture.md)：Go模块边界、协议、安全与UI约束；修改跨模块逻辑前读取。
 - [maintenance.md](maintenance.md)：现有验证命令及文档归档方式。
-- [governance/rust.md](governance/rust.md)：Rust 开发与安全基线。
+- [governance/rust.md](governance/rust.md)：历史Rust基线说明，当前工程不需要Rust。
 - [README 中文版](../README.zh-CN.md)：运行、存储和发布入口。
+- [Wails 最终迁移方案](../docs/dioxus-to-wails-v3.md)：共享 app/ 的契约、实现路径、P0–P6 功能/平台验收矩阵；修改迁移工程前读取。
+- [Wails 运行与检查](../app/README.md)：生产/开发路径、固定v3.0.0、原生构建与`scripts/check.sh`。
 
 ## 当前任务
+- [Rust退出与GitHub打包](workflow/261110-remove-rust-github-package.md)：当前生产入口已切换app/，项目Cargo/Dioxus/旧interop退出；v0.1.18独立预发布打包与实际资产核验进行中，保留v0.1.17稳定版和main。
+- [全平台 Wails 迁移](workflow/261030-wails-full-migration.md)：共享Go/React与原桌面布局。历史更新互通8顶层/31子项及Windows611/macOS612候选保留；当前冻结夹具代替Rust调用，正式升级/数据接管、实体交互和性能仍开放。
+  当前策略（2026-11-10）：Android仅ARM64，移除x86目标与模拟器适配；macOS最低15.0，停止12–14支持；iOS仅维护无开发者账号/非App Store的无签名设备IPA配置，真实构建仍需完整Xcode/iPhoneOS SDK，侧载安装另需签名。该策略优先于旧阶段门槛。
+  本机结果：macOS ARM64整应用/614候选.app与DMG及当前WKWebView基本IPC/配置/字体/连接表单/确认退出通过；Intel macOS minos15.0交叉编译通过，无Rosetta而跳过运行。ARM64 Android APK/AAB、包校验及API35模拟器13项基本检查通过。Windows ARM64原生/amd64仿真各2字体/6存储/4私有agent顶层及11子项通过，ARM64窗口/WebView2启动确认，但GUI调试端点超时，页面功能未计为通过。
+  统一Go格式/vet/internal+tools race、绑定无漂移、前端格式/类型/lint/47测试/build通过；iOS另26项结构检查通过，真实task因缺SDK在创建输出前拒绝，未生成实际应用IPA。Linux无CGO/GUI/Docker而跳过，Docker模板只做脚本语法检查。实体输入/认证/真机/正式升级/性能仍开放；当前进程/转发/测试密钥已清理，Windows VM恢复挂起，旧候选和用户材料另行摘要核对。
 
 - [发布 v0.1.17 并合并 main](workflow/261025-release-v0117.md)：无新增功能的补丁版本重打包、全平台产物验收及 main 同步。
 - [手机 UI](workflow/260820-mobile-phone-ui.md)：实现入口与尚未闭环的移动输入验收。

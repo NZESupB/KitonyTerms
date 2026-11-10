@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=KitonyTerms
+Comment=A kitonyterms application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/kitonyterms %u
+Terminal=false
+Type=Application
+Icon=kitonyterms
+Categories=Utility;
+StartupWMClass=kitonyterms
+
+ 

@@ -1,0 +1,35 @@
+version: '3'
+
+info:
+  companyName: "Kitony"
+  productName: "KitonyTerms"
+  productIdentifier: "com.kitonyterms.app"
+  description: "跨平台 SSH 与服务器管理工作台"
+  copyright: "© 2026 KitonyTerms"
+  comments: "Go/Wails/React"
+  version: "0.1.18"
+
+ios:
+  bundleID: "com.kitonyterms.app"
+  displayName: "KitonyTerms"
+  version: "0.1.18"
+  company: "Kitony"
+  comments: "跨平台 SSH 工作台"
+
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir: [.git, node_modules, frontend, bin]
+    file: [.DS_Store, .gitignore, .gitkeep, "*_test.go"]
+    watched_extension: ["*.go", "*.js", "*.ts"]
+    git_ignore: true
+  executes:
+    - cmd: wails3 build DEV=true
+      type: blocking
+    - cmd: wails3 task common:dev:frontend
+      type: background
+    - cmd: wails3 task run
+      type: primary
+      exit_policy: shutdown

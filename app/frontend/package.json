@@ -1,0 +1,42 @@
+{
+  "name": "kitonyterms-frontend",
+  "private": true,
+  "version": "0.1.18",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:dev": "tsc && vite build --minify false --mode development",
+    "build": "tsc && vite build --mode production",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "format": "prettier --write src index.html eslint.config.js package.json",
+    "format:check": "prettier --check src index.html eslint.config.js package.json",
+    "test": "tsx --test src/lib/*.test.ts",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@radix-ui/react-context-menu": "2.2.16",
+    "@radix-ui/react-dialog": "1.1.15",
+    "@wailsio/runtime": "3.0.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
+    "lucide-react": "0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "5.0.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "24.10.1",
+    "@types/react": "18.3.27",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "6.0.0",
+    "eslint": "9.39.1",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "prettier": "3.6.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.4",
+    "vite": "8.2.4"
+  }
+}

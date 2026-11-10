@@ -1,0 +1,39 @@
+{
+  "stage": "prepared",
+  "staged_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "staging": "@ROOT@/updates/.kt-update-stage-fixture",
+  "storage": "user_directory",
+  "task": {
+    "current": {
+      "attempt": 1,
+      "build": 100,
+      "channel": "stable",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.17"
+    },
+    "elevate": false,
+    "installation": {
+      "bundle": false,
+      "executable": "@ROOT@/install/kitonyterms",
+      "installed": false,
+      "target": "@ROOT@/install/kitonyterms"
+    },
+    "next": {
+      "attempt": 1,
+      "build": 101,
+      "channel": "stable",
+      "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.18"
+    },
+    "package": {
+      "kind": "dmg",
+      "name": "kitonyterms-v0.1.18-macos-aarch64.dmg",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "size": 100
+    },
+    "parent_pid": 1,
+    "source_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

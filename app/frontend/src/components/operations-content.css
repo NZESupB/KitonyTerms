@@ -1,0 +1,43 @@
+.operations-container-terminal {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.operations-container-terminal > header {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 8px;
+}
+
+.operations-container-terminal > header strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operations-container-terminal > header button {
+  flex-shrink: 0;
+}
+
+.operations-container-terminal-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #101318;
+}
+
+.operations-container-terminal-body .terminal-instance {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
