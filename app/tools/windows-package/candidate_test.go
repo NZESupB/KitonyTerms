@@ -127,7 +127,7 @@ func TestResourceDirectoryBounds(t *testing.T) {
 
 func TestCandidatePreflightAndFailedBuildKeepMaterials(t *testing.T) {
 	project := resourceProject(t)
-	for name, value := range map[string]string{"go.mod": "module kitonyterms\n\ngo 1.26.0\n", "go.sum": "", "main.go": "package main\nfunc main(){ unresolved }\n", "internal/fixture.go": "package fixture\n", "frontend/dist/index.html": "public fixture"} {
+	for name, value := range map[string]string{"go.mod": "module kitonyterms\r\n\r\ngo 1.26.0\r\n", "go.sum": "", "main.go": "package main\nfunc main(){ unresolved }\n", "internal/fixture.go": "package fixture\n", "frontend/dist/index.html": "public fixture"} {
 		path := filepath.Join(project, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)

@@ -33,3 +33,7 @@ Rust退出表示新源码/构建/发布不需要Rust，不等同所有实体输�
 流水线42800902806/attempt1绑定d97ef4e。统一Go/React验证、移动号、Linux两架构、macOS ARM64、正式证书Android ARM64 APK/AAB、真实iPhoneOS SDK链接的无签名IPA均已成功；Intel macOS仍在执行。Windows两架构领域测试发现夹具本机盘符被误作SFTP相对路径，以及Inno嵌入模板CRLF导致契约字符串失败；原始job日志分别保存，不声称Windows打包通过。
 
 修正使用统一`remoteTestPath`与实际初始权限比较，保留原测试覆盖；`.iss`固定LF，Intel无效目标测试使用当前目标。`ci-fixture-fix-local`格式/vet与session、两打包工具race退出0（50.150/4.965/4.025秒）；后续以新提交重新执行整套GitHub发布。
+
+第二轮42804437969/attempt1绑定28d6945：Windows两架构全部领域测试和Inno契约已通过，真实PE打包前的工程识别因go.mod CRLF被LF字节前缀误拒绝。统一验证、Linux两架构、macOS ARM64、Android与iOS继续成功；Intel尚在运行时保存状态。已保留两份第二轮Windows日志。
+
+工具改为按首行模块声明校验，现有失败材料测试使用CRLF并实际进入编译；`crlf-module-fix-local`格式/vet/两工具race退出0（4.168/5.142秒），27项发布契约通过。CI的Python固定UTF-8，后续以新提交重新执行，未创建或覆盖任何Release。

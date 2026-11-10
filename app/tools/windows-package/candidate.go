@@ -233,7 +233,7 @@ func buildCandidate(ctx context.Context, project, identityPath, output string) (
 		return record, err
 	}
 	mod, err := readBounded(filepath.Join(project, "go.mod"), 64<<10)
-	if err != nil || !bytes.HasPrefix(mod, []byte("module kitonyterms\n")) {
+	if err != nil || strings.TrimSpace(strings.SplitN(string(mod), "\n", 2)[0]) != "module kitonyterms" {
 		return record, errors.Join(errors.New("必须显式指定KitonyTerms app工程目录"), err)
 	}
 	if _, err = readBounded(filepath.Join(project, "frontend/dist/index.html"), 1<<20); err != nil {

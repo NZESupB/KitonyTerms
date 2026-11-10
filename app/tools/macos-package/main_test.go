@@ -239,7 +239,7 @@ func TestBuildCancellationAndFailureMaterials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string][]byte{"go.mod": []byte("module kitonyterms\n\ngo 1.26.0\n"), "go.sum": {}, "main.go": []byte("invalid Go source"), "internal/fixture/fixture.go": []byte("package fixture\n"), "frontend/dist/index.html": []byte("public"), resources[0]: icon} {
+	for name, value := range map[string][]byte{"go.mod": []byte("module kitonyterms\r\n\r\ngo 1.26.0\r\n"), "go.sum": {}, "main.go": []byte("invalid Go source"), "internal/fixture/fixture.go": []byte("package fixture\n"), "frontend/dist/index.html": []byte("public"), resources[0]: icon} {
 		path := filepath.Join(project, name)
 		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)
