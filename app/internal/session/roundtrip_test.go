@@ -29,6 +29,15 @@ type loopback struct {
 	root        string
 }
 
+// Windows SFTP服务端使用带斜杠前缀的盘符路径；本机文件操作仍使用原路径。
+func remoteTestPath(local string) string {
+	value := filepath.ToSlash(local)
+	if filepath.VolumeName(local) != "" {
+		return "/" + value
+	}
+	return value
+}
+
 func startLoopback(t *testing.T) loopback {
 	return startLoopbackSFTP(t, nil)
 }
@@ -323,37 +332,42 @@ func TestSSHAuthenticationTerminalAndSFTPRoundtrip(t *testing.T) {
 	if err = os.WriteFile(remote, []byte("before\n"), 0640); err != nil {
 		t.Fatal(err)
 	}
-	directory, err := m.ReadDirectory(context.Background(), session.ID, session.Generation, server.root)
+	initialInfo, err := os.Stat(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePath := remoteTestPath(remote)
+	directory, err := m.ReadDirectory(context.Background(), session.ID, session.Generation, remoteTestPath(server.root))
 	if err != nil || len(directory.Entries) != 1 {
 		t.Fatal("SFTP 目录读取失败", err)
 	}
-	text, err := m.ReadText(context.Background(), session.ID, session.Generation, remote)
+	text, err := m.ReadText(context.Background(), session.ID, session.Generation, remotePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := m.WriteText(context.Background(), session.ID, session.Generation, remote, "after 中文\n", text.Revision)
+	updated, err := m.WriteText(context.Background(), session.ID, session.Generation, remotePath, "after 中文\n", text.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = m.WriteText(context.Background(), session.ID, session.Generation, remote, "bad", text.Revision); err == nil {
+	if _, err = m.WriteText(context.Background(), session.ID, session.Generation, remotePath, "bad", text.Revision); err == nil {
 		t.Fatal("过期编辑覆盖远端")
 	}
 	info, err := os.Stat(remote)
-	if err != nil || info.Mode().Perm() != 0640 {
+	if err != nil || info.Mode().Perm() != initialInfo.Mode().Perm() {
 		t.Fatal("编辑丢失权限", err)
 	}
 	local := filepath.Join(t.TempDir(), "download.txt")
-	if err = m.Download(context.Background(), session.ID, session.Generation, remote, local); err != nil {
+	if err = m.Download(context.Background(), session.ID, session.Generation, remotePath, local); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(local)
 	if err != nil || string(data) != updated.Content {
 		t.Fatal("下载内容错误", err)
 	}
-	if err = m.Upload(context.Background(), session.ID, session.Generation, server.root, local); err != nil {
+	if err = m.Upload(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), local); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Upload(context.Background(), session.ID, session.Generation, server.root, local); err == nil {
+	if err = m.Upload(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), local); err == nil {
 		t.Fatal("上传静默覆盖")
 	}
 	operation, err := m.RunOperation(context.Background(), session.ID, session.Generation, "status", "")

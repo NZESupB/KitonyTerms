@@ -1,0 +1,2 @@
+# Inno模板嵌入Go后必须在所有宿主产生相同的安装契约。
+*.iss text eol=lf

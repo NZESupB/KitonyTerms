@@ -116,7 +116,7 @@ func TestSFTPFullyStoppedPeerCancellation(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, err := manager.ReadDirectory(ctx, snapshot.ID, snapshot.Generation, server.root)
+				_, err := manager.ReadDirectory(ctx, snapshot.ID, snapshot.Generation, remoteTestPath(server.root))
 				done <- err
 			}()
 			waitP2(t, entered, "未进入完全停滞的 SFTP 阶段")

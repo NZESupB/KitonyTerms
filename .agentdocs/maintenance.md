@@ -39,6 +39,8 @@ Python脚本用`python3 -B`，不留下pycache。发布通过[workflow](../.gith
 
 正式回归测试与冻结公开夹具保留。旧Rust生成器/子进程测试已退役；不能把删除的跨语言工具描述为当前检查仍执行。`testdata/legacy-*`的来源说明与摘要见测试夹具文档；旧源码可从历史tag恢复。
 
+回环SFTP夹具区分本机路径和协议路径：统一`remoteTestPath`将Windows盘符编码为`/C:/...`，本机断言仍使用原路径；权限保持比较实际初始`FileMode`，不把Unix位值当成Windows权限。Inno嵌入模板由`.gitattributes`固定LF，避免Windows checkout改变安装契约字符串。
+
 ## 原生与发布验收
 
 - Windows：实际update-info、PE架构/图标/版本/manifest、ZIP/Inno；UAC取消/跨用户/占用/正式安装重启需另验。

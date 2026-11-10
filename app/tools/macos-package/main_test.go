@@ -95,7 +95,7 @@ func TestIdentityAndPlistFidelity(t *testing.T) {
 	if !booleans["NSHighResolutionCapable"] || bytes.Contains(plist, []byte("My Company")) || bytes.Contains(plist, []byte("{{")) {
 		t.Fatal("plist布尔或占位内容不符")
 	}
-	for _, invalid := range []string{string(encoded) + "{}", strings.Replace(string(encoded), "aarch64-apple-darwin", "x86_64-pc-windows-msvc", 1), strings.Replace(string(encoded), "0.1.18", "01.1.18", 1), strings.Replace(string(encoded), "stable", "development", 1)} {
+	for _, invalid := range []string{string(encoded) + "{}", strings.Replace(string(encoded), info.Target, "x86_64-pc-windows-msvc", 1), strings.Replace(string(encoded), "0.1.18", "01.1.18", 1), strings.Replace(string(encoded), "stable", "development", 1)} {
 		if _, err = parseIdentity([]byte(invalid)); err == nil {
 			t.Fatal("无效或错误目标身份应拒绝")
 		}

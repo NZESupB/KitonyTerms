@@ -120,7 +120,7 @@ func TestMonitorSSHSharedOwnershipFailureRetentionAndLease(t *testing.T) {
 	if failed.Sequence != "2" || failed.Stats == nil || *failed.Stats.CPUPercent != 25 || failed.Error == "" {
 		t.Fatal("失败丢失成功快照")
 	}
-	if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, server.root); err != nil {
+	if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("监控关闭污染SFTP", err)
 	}
 	host, _ := m.Get(s.ID, s.Generation)
@@ -234,7 +234,7 @@ func TestMonitorFramingBoundsAndCancellation(t *testing.T) {
 	host.mu.Unlock()
 	_ = m.StopMonitor(s.ID, s.Generation, watch)
 	waitMonitorDone(t, run)
-	if _, err := m.ReadDirectory(context.Background(), s.ID, s.Generation, server.root); err != nil {
+	if _, err := m.ReadDirectory(context.Background(), s.ID, s.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("取消采样关闭宿主", err)
 	}
 	m.Shutdown()
@@ -282,7 +282,7 @@ func TestMonitorSSHOutputLimitsAndExecNegotiationCancellation(t *testing.T) {
 			}
 			_ = m.StopMonitor(s.ID, s.Generation, watch)
 			waitMonitorDone(t, run)
-			if _, err := m.ReadDirectory(context.Background(), s.ID, s.Generation, server.root); err != nil {
+			if _, err := m.ReadDirectory(context.Background(), s.ID, s.Generation, remoteTestPath(server.root)); err != nil {
 				t.Fatal("监控回收污染SFTP", err)
 			}
 			m.Shutdown()

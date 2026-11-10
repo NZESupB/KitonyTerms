@@ -17,10 +17,10 @@ func TestSFTPDirectoryActionsAndBatchDownload(t *testing.T) {
 	session := waitConnected(t, manager, opened, true)
 	ctx := context.Background()
 	remote := filepath.Join(server.root, "目录")
-	if err = manager.CreateDirectory(ctx, session.ID, session.Generation, remote); err != nil {
+	if err = manager.CreateDirectory(ctx, session.ID, session.Generation, remoteTestPath(remote)); err != nil {
 		t.Fatal(err)
 	}
-	if err = manager.CreateDirectory(ctx, session.ID, session.Generation, filepath.Join(remote, "空目录")); err != nil {
+	if err = manager.CreateDirectory(ctx, session.ID, session.Generation, remoteTestPath(filepath.Join(remote, "空目录"))); err != nil {
 		t.Fatal(err)
 	}
 	before := filepath.Join(remote, "原名.txt")
@@ -28,17 +28,17 @@ func TestSFTPDirectoryActionsAndBatchDownload(t *testing.T) {
 	if err = os.WriteFile(before, []byte("中文 batch\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = manager.RenamePath(ctx, session.ID, session.Generation, before, after); err != nil {
+	if err = manager.RenamePath(ctx, session.ID, session.Generation, remoteTestPath(before), remoteTestPath(after)); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(before, []byte("保留"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = manager.RenamePath(ctx, session.ID, session.Generation, before, after); err == nil {
+	if err = manager.RenamePath(ctx, session.ID, session.Generation, remoteTestPath(before), remoteTestPath(after)); err == nil {
 		t.Fatal("同名目标被覆盖")
 	}
 	destination := t.TempDir()
-	summary, err := manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remote}, destination)
+	summary, err := manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remoteTestPath(remote)}, destination)
 	if err != nil || summary.Files != 2 || summary.Bytes != "19" {
 		t.Fatalf("批量下载失败: %+v %v", summary, err)
 	}
@@ -49,10 +49,10 @@ func TestSFTPDirectoryActionsAndBatchDownload(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(destination, "目录", "空目录")); err != nil || !info.IsDir() {
 		t.Fatal("空目录未保留")
 	}
-	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remote}, destination); err == nil {
+	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remoteTestPath(remote)}, destination); err == nil {
 		t.Fatal("已有本地目录被合并或覆盖")
 	}
-	if err = manager.RemovePaths(ctx, session.ID, session.Generation, []string{remote}); err != nil {
+	if err = manager.RemovePaths(ctx, session.ID, session.Generation, []string{remoteTestPath(remote)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(remote); !os.IsNotExist(err) {
@@ -91,7 +91,7 @@ func TestSFTPBatchPreflightAndCancellation(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(second, "A"), []byte("three"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{filepath.Join(remote, "A"), filepath.Join(second, "A")}, destination); err == nil {
+	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remoteTestPath(filepath.Join(remote, "A")), remoteTestPath(filepath.Join(second, "A"))}, destination); err == nil {
 		t.Fatal("同名批次被接受")
 	}
 	entries, err := os.ReadDir(destination)
@@ -101,7 +101,7 @@ func TestSFTPBatchPreflightAndCancellation(t *testing.T) {
 	if err = os.Symlink(filepath.Join(remote, "A"), filepath.Join(remote, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remote}, destination); err == nil {
+	if _, err = manager.DownloadBatch(ctx, session.ID, session.Generation, []string{remoteTestPath(remote)}, destination); err == nil {
 		t.Fatal("链接未拒绝")
 	}
 	entries, _ = os.ReadDir(destination)
@@ -110,7 +110,7 @@ func TestSFTPBatchPreflightAndCancellation(t *testing.T) {
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err = manager.DownloadBatch(cancelled, session.ID, session.Generation, []string{filepath.Join(remote, "A")}, destination); err == nil {
+	if _, err = manager.DownloadBatch(cancelled, session.ID, session.Generation, []string{remoteTestPath(filepath.Join(remote, "A"))}, destination); err == nil {
 		t.Fatal("取消未生效")
 	}
 	entries, _ = os.ReadDir(destination)

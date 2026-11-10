@@ -8,7 +8,7 @@
 
 ## 现状与决策
 
-- 当前dev提交1f2072e，远端NZESupB/KitonyTerms，具有push权限；正式v0.1.17及滚动alpha仍为Rust产物。
+- 基线dev为1f2072e，迁移提交d97ef4e已推送NZESupB/KitonyTerms；正式v0.1.17及滚动alpha仍为旧Rust产物且保持。
 - app/约410个未跟踪源文件，运行层没有Rust/Dioxus调用。Rust依赖仅旧workflow、打包脚本和验证用app/tools/interop；保留旧TOML/vault二进制夹具，不再要求Rust编译器生成。
 - 正式桌面数据目录需沿用旧directories::ProjectDirs映射；开发构建继续隔离。实际验证均指定临时目录，禁止在当前用户正式数据上试写。
 - 新GitHub打包使用固定Wails3.0.0、Go1.27.3、Node24，Linux使用原生GTK4/WebKitGTK6；Android使用SDK36/NDK28.2/JDK21，iOS用完整Xcode runner。
@@ -27,3 +27,9 @@
 ## 验收边界
 
 Rust退出表示新源码/构建/发布不需要Rust，不等同所有实体输入、系统认证、真实升级、长期连接和性能测试均通过。未执行项目必须明确列出。旧Rust数据和更新记录的格式兼容必须继续保留。当前本机缺完整iOS/Linux环境，使用GitHub原生runner补构建证据；iOS实际可用IPA须以真实SDK链接成功为准。
+
+## 首轮GitHub与修正
+
+流水线42800902806/attempt1绑定d97ef4e。统一Go/React验证、移动号、Linux两架构、macOS ARM64、正式证书Android ARM64 APK/AAB、真实iPhoneOS SDK链接的无签名IPA均已成功；Intel macOS仍在执行。Windows两架构领域测试发现夹具本机盘符被误作SFTP相对路径，以及Inno嵌入模板CRLF导致契约字符串失败；原始job日志分别保存，不声称Windows打包通过。
+
+修正使用统一`remoteTestPath`与实际初始权限比较，保留原测试覆盖；`.iss`固定LF，Intel无效目标测试使用当前目标。`ci-fixture-fix-local`格式/vet与session、两打包工具race退出0（50.150/4.965/4.025秒）；后续以新提交重新执行整套GitHub发布。

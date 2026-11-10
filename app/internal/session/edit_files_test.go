@@ -19,6 +19,11 @@ func TestExternalEditBinaryConflictPermissionsAndSessionOwnership(t *testing.T) 
 	if err := os.WriteFile(target, initial, 0640); err != nil {
 		t.Fatal(err)
 	}
+	initialInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := remoteTestPath(target)
 	m, _ := newLoopbackManager(t, server, "tester")
 	opened, err := m.Connect("loopback")
 	if err != nil {
@@ -27,22 +32,22 @@ func TestExternalEditBinaryConflictPermissionsAndSessionOwnership(t *testing.T) 
 	s := waitConnected(t, m, opened, true)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	data, revision, err := m.ReadEditFile(ctx, s.ID, s.Generation, target)
+	data, revision, err := m.ReadEditFile(ctx, s.ID, s.Generation, remote)
 	if err != nil || !bytes.Equal(data, initial) {
 		t.Fatal("二进制读取失败", err)
 	}
-	if _, _, err = m.ReadEditFile(ctx, s.ID, "old", target); err == nil {
+	if _, _, err = m.ReadEditFile(ctx, s.ID, "old", remote); err == nil {
 		t.Fatal("旧代次读取被接受")
 	}
 	modified := append(bytes.Clone(data), 0, 254, 3)
-	if _, err = m.WriteEditFile(ctx, s.ID, s.Generation, target, modified, revision); err != nil {
+	if _, err = m.WriteEditFile(ctx, s.ID, s.Generation, remote, modified, revision); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(target)
-	if err != nil || info.Mode().Perm() != 0640 {
+	if err != nil || info.Mode().Perm() != initialInfo.Mode().Perm() {
 		t.Fatal("权限未保留", err)
 	}
-	if _, err = m.WriteEditFile(ctx, s.ID, s.Generation, target, []byte("stale"), revision); err == nil || !strings.Contains(err.Error(), "已更改") {
+	if _, err = m.WriteEditFile(ctx, s.ID, s.Generation, remote, []byte("stale"), revision); err == nil || !strings.Contains(err.Error(), "已更改") {
 		t.Fatal("旧版本覆盖了远端", err)
 	}
 	entries, err := os.ReadDir(server.root)
@@ -73,7 +78,7 @@ func TestExternalEditBinaryConflictPermissionsAndSessionOwnership(t *testing.T) 
 		}
 		t.Fatal("未开始监听", edits.List())
 	}
-	edit, err := edits.Start(s.ID, s.Generation, target, "")
+	edit, err := edits.Start(s.ID, s.Generation, remote, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +106,7 @@ func TestExternalEditBinaryConflictPermissionsAndSessionOwnership(t *testing.T) 
 	if err != nil || string(actual) != "local saved 中文" {
 		t.Fatal("实际SSH未回传", err)
 	}
-	edit, err = edits.Start(s.ID, s.Generation, target, "")
+	edit, err = edits.Start(s.ID, s.Generation, remote, "")
 	if err != nil {
 		t.Fatal(err)
 	}

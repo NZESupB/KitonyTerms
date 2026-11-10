@@ -56,7 +56,7 @@ func TestSFTPCancellationReopensOnlyFileChannel(t *testing.T) {
 		t.Fatal("复用了已取消的文件通道")
 	}
 	release()
-	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, server.root); err != nil {
+	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal(err)
 	}
 	cancelled, cancelOperation := context.WithCancel(context.Background())
@@ -85,7 +85,7 @@ func TestTemporaryCleanupAfterCancelledChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	temporary := filepath.Join(server.root, ".kitony-upload-"+randomID())
-	file, err := client.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	file, err := client.OpenFile(remoteTestPath(temporary), os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 	if err != nil {
 		release()
 		t.Fatal(err)
@@ -96,13 +96,13 @@ func TestTemporaryCleanupAfterCancelledChannel(t *testing.T) {
 	}
 	cancel()
 	release()
-	if err = session.cleanupTemporary(ctx, client, temporary); err != nil {
+	if err = session.cleanupTemporary(ctx, client, remoteTestPath(temporary)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(temporary); !os.IsNotExist(err) {
 		t.Fatal("取消后的临时文件未回收", err)
 	}
-	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, server.root); err != nil {
+	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("临时清理关闭了宿主 SSH", err)
 	}
 }

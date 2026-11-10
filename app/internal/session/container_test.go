@@ -216,7 +216,7 @@ func TestContainerTerminalIsolationReplayAndLifecycle(t *testing.T) {
 	if err := m.CloseContainerTerminal(s.ID, s.Generation, other.ExecID); err != nil {
 		t.Fatal("重复关闭未保持幂等", err)
 	}
-	if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, server.root); err != nil {
+	if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("容器关闭破坏 SFTP", err)
 	}
 	if err = m.Input(model.InputRequest{SessionID: s.ID, Generation: s.Generation, Sequence: "1", Data: base64.StdEncoding.EncodeToString([]byte("host-only\n"))}); err != nil {
@@ -290,7 +290,7 @@ func TestContainerTerminalCancelNegotiationBackpressureAndDisconnect(t *testing.
 			t.Fatal("关闭未收敛")
 		}
 		waitContainer(t, m, s, r.ExecID, "closed")
-		if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, server.root); err != nil {
+		if _, err = m.ReadDirectory(context.Background(), s.ID, s.Generation, remoteTestPath(server.root)); err != nil {
 			t.Fatal("取消影响宿主", err)
 		}
 	}

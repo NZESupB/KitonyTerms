@@ -44,7 +44,7 @@ func TestUploadDirectoryOverwriteAndProgress(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("hello 中文"), 0640); err != nil {
 		t.Fatal(err)
 	}
-	started, err := manager.StartUpload(session.ID, session.Generation, server.root, []string{dir}, false)
+	started, err := manager.StartUpload(session.ID, session.Generation, remoteTestPath(server.root), []string{dir}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,22 +62,26 @@ func TestUploadDirectoryOverwriteAndProgress(t *testing.T) {
 	if err = os.Chmod(remote, 0600); err != nil {
 		t.Fatal(err)
 	}
+	originalInfo, err := os.Stat(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("changed"), 0640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, server.root, []string{dir}, false); err == nil {
+	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), []string{dir}, false); err == nil {
 		t.Fatal("默认覆盖了已有目标")
 	}
-	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, server.root, []string{dir}, true); err != nil {
+	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), []string{dir}, true); err != nil {
 		t.Fatal(err)
 	}
 	if content, err := os.ReadFile(remote); err != nil || string(content) != "changed" {
 		t.Fatal(string(content), err)
 	}
-	if info, err := os.Stat(remote); err != nil || info.Mode().Perm() != 0600 {
+	if info, err := os.Stat(remote); err != nil || info.Mode().Perm() != originalInfo.Mode().Perm() {
 		t.Fatal("覆盖未保留权限", err)
 	}
-	downloaded, err := manager.StartDownload(session.ID, session.Generation, []string{filepath.Dir(remote)}, t.TempDir())
+	downloaded, err := manager.StartDownload(session.ID, session.Generation, []string{remoteTestPath(filepath.Dir(remote))}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,14 +107,14 @@ func TestUploadPreflightRejectsSymlinkAndBatchConflicts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, server.root, []string{first, second}, false); err == nil {
+	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), []string{first, second}, false); err == nil {
 		t.Fatal("未拒绝批次名称冲突")
 	}
 	link := filepath.Join(t.TempDir(), "link")
 	if err = os.Symlink(first, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, server.root, []string{first, link}, true); err == nil {
+	if _, err = manager.UploadBatch(context.Background(), session.ID, session.Generation, remoteTestPath(server.root), []string{first, link}, true); err == nil {
 		t.Fatal("未拒绝链接")
 	}
 	entries, err := os.ReadDir(server.root)
@@ -134,12 +138,12 @@ func TestTransferCancellationWhileWaitingAndRecovery(t *testing.T) {
 	if err = os.WriteFile(local, []byte(strings.Repeat("x", 1024)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	started, err := manager.StartUpload(session.ID, session.Generation, server.root, []string{local}, false)
+	started, err := manager.StartUpload(session.ID, session.Generation, remoteTestPath(server.root), []string{local}, false)
 	if err != nil {
 		s.fileMu.Unlock()
 		t.Fatal(err)
 	}
-	_, busyErr := manager.StartUpload(session.ID, session.Generation, server.root, []string{local}, false)
+	_, busyErr := manager.StartUpload(session.ID, session.Generation, remoteTestPath(server.root), []string{local}, false)
 	cancelErr := manager.CancelTransfer(session.ID, session.Generation, started.ID)
 	s.fileMu.Unlock()
 	if busyErr == nil || cancelErr != nil {
@@ -151,7 +155,7 @@ func TestTransferCancellationWhileWaitingAndRecovery(t *testing.T) {
 	if _, err = os.Stat(filepath.Join(server.root, "queued.txt")); !os.IsNotExist(err) {
 		t.Fatal("已取消任务仍提交", err)
 	}
-	started, err = manager.StartUpload(session.ID, session.Generation, server.root, []string{local}, false)
+	started, err = manager.StartUpload(session.ID, session.Generation, remoteTestPath(server.root), []string{local}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

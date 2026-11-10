@@ -106,7 +106,7 @@ func TestOperationsTypedSSHAndSudoIsolation(t *testing.T) {
 	if all, _ := manager.OperationChallenges(snapshot.ID, snapshot.Generation); len(all) != 0 {
 		t.Fatal("sudo 挑战未清理")
 	}
-	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, server.root); err != nil {
+	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("运维污染了 SFTP", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestOperationsCancellationLimitsAndRecovery(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("sudo 取消未结束")
 	}
-	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, server.root); err != nil {
+	if _, err = manager.ReadDirectory(context.Background(), snapshot.ID, snapshot.Generation, remoteTestPath(server.root)); err != nil {
 		t.Fatal("取消关闭宿主 SSH", err)
 	}
 	s, _ := manager.Get(snapshot.ID, snapshot.Generation)
