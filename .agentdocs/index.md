@@ -10,7 +10,6 @@
 - [Wails 运行与检查](../app/README.md)：生产/开发路径、固定v3.0.0、原生构建与`scripts/check.sh`。
 
 ## 当前任务
-- [Rust退出与GitHub打包](workflow/261110-remove-rust-github-package.md)：当前生产入口已切换app/，项目Cargo/Dioxus/旧interop退出；v0.1.18独立预发布打包与实际资产核验进行中，保留v0.1.17稳定版和main。
 - [全平台 Wails 迁移](workflow/261030-wails-full-migration.md)：共享Go/React与原桌面布局。历史更新互通8顶层/31子项及Windows611/macOS612候选保留；当前冻结夹具代替Rust调用，正式升级/数据接管、实体交互和性能仍开放。
   当前策略（2026-11-10）：Android仅ARM64，移除x86目标与模拟器适配；macOS最低15.0，停止12–14支持；iOS仅维护无开发者账号/非App Store的无签名设备IPA配置，真实构建仍需完整Xcode/iPhoneOS SDK，侧载安装另需签名。该策略优先于旧阶段门槛。
   本机结果：macOS ARM64整应用/614候选.app与DMG及当前WKWebView基本IPC/配置/字体/连接表单/确认退出通过；Intel macOS minos15.0交叉编译通过，无Rosetta而跳过运行。ARM64 Android APK/AAB、包校验及API35模拟器13项基本检查通过。Windows ARM64原生/amd64仿真各2字体/6存储/4私有agent顶层及11子项通过，ARM64窗口/WebView2启动确认，但GUI调试端点超时，页面功能未计为通过。
@@ -22,6 +21,7 @@
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
 
 ## 最近归档
+- [Rust退出与GitHub打包](workflow/done/261110-remove-rust-github-package.md)：提交`d3e8f68`推送dev；Wails预发布`v0.1.18`（run 42807234257）11项任务成功，27项/117,274,203字节实际下载核验通过。保留v0.1.17稳定版、main及旧引用；正式升级、系统认证、真机与性能验收仍开放。
 
 - [发布 v0.1.16 并合并 main](workflow/done/261024-release-v0116.md)：发布提交 23f4e31；修复 v0.1.15 审计依赖阻断后，流水线 40092527348 的 10 项任务全部成功，12 个附件设为 Latest，43 项实际下载校验与 5 项 macOS 包检查通过；main 快进纳入 dev 并同步远端。Rust 615 通过/1 忽略，Node 8 项、Windows 原生 61/6 项通过；原生 Vim/Docker/WebView 等实机验收仍待对应环境。
 - [动态终端刷新](workflow/done/261024-terminal-render-batching.md)：8ms/16ms 输出合帧、同步更新超时、背压重试/关闭尾帧及 16ms UI 快照同步完成；Rust 串行 615 项通过/1 忽略、Node 8 项、浏览器动态 70 项/选区 267 项通过。默认并发仍触发既有单实例锁失败，独立测试通过；未改字体/TERM、未替换本机应用，原生 Vim/Docker/WebView 待实机验收。

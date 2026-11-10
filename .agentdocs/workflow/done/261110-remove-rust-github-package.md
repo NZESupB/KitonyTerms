@@ -21,8 +21,8 @@
 - [x] 实现Go生产/开发路径与冻结兼容夹具，六桌面目标及27项发布资产契约。
 - [x] 项目Cargo/Dioxus/crates/target/旧interop已移至私有scratch；README/当前代理文档改为Go生产入口，历史证据保留。
 - [x] 当前完整check-current-first退出0：Go格式/vet/internal+tools race、绑定无漂移、前端格式/类型/lint/47测试/build。当前文档100链接有效；3份用户保留材料摘要保持。
-- [ ] 仅提交本任务变更并推送dev，跟踪GitHub全平台打包；修复确定的CI问题。
-- [ ] 下载核对实际Release资产、记录未验证平台行为、回收本轮资源并归档本任务。
+- [x] 仅提交本任务变更并推送dev，修复两轮原生CI失败后第三轮全平台打包成功。
+- [x] 下载核对实际Release资产、稳定版/旧引用与用户材料；记录验收边界并归档本任务。
 
 ## 验收边界
 
@@ -37,3 +37,13 @@ Rust退出表示新源码/构建/发布不需要Rust，不等同所有实体输�
 第二轮42804437969/attempt1绑定28d6945：Windows两架构全部领域测试和Inno契约已通过，真实PE打包前的工程识别因go.mod CRLF被LF字节前缀误拒绝。统一验证、Linux两架构、macOS ARM64、Android与iOS继续成功；Intel尚在运行时保存状态。已保留两份第二轮Windows日志。
 
 工具改为按首行模块声明校验，现有失败材料测试使用CRLF并实际进入编译；`crlf-module-fix-local`格式/vet/两工具race退出0（4.168/5.142秒），27项发布契约通过。CI的Python固定UTF-8，后续以新提交重新执行，未创建或覆盖任何Release。
+
+## 最终 GitHub 发布与实际下载核验
+
+第三轮工作流 `42807234257` / attempt 1 绑定提交 `d3e8f686814c55cb97ff95e005f2c6dacdebe31f`，11项任务全部成功。GitHub Release `v0.1.18`（Release ID `440301750`）已公开为 prerelease，非 Latest；实际下载27项、共117,274,203字节，与发布资产大小、GitHub摘要、`SHA256SUMS`及更新清单逐项一致。六个原生桌面目标均有对应成功CI任务和构建身份记录。
+
+下载复核另验证Linux两架构ELF与归档布局、Windows ARM64/amd64 PE与便携包、两份macOS DMG的镜像完整性/只读挂载/strict签名/包内身份/15.0最低系统和SDK/资源摘要，并确认挂载已卸载。macOS ARM64下载包隔离`--update-info`身份回读通过且未创建数据目录；Intel目标由原生CI验证。Android构建号 `1794310861`；APK v2与AAB签名均经独立检查且证书摘要一致（`363f85d3ad32603e75e7c61b9aaabf0d542de476254f36211be13d1c203c541a`），仅ARM64并满足16 KiB ZIP/ELF对齐。无签名iOS设备IPA经真实SDK链接及下载架构/版本/平台检查。
+
+发布前后比对确认稳定 `v0.1.17`（Release ID `423169368`）的12项资产ID、大小、GitHub摘要和发布元数据未变，Latest仍为`v0.1.17`；`main`、`v0.1.17`、`alpha`远端引用与基线一致。项目已跟踪源码无Rust文件/Cargo工程清单；仅保留防止Rust构建链回归的负向测试和历史说明。本任务没有卸载系统Rust。
+
+自动化原生打包不等同于产品验收关闭：正式旧包升级/恢复和生产数据接管、系统认证/Hello/UAC、实体输入、移动真机安装与行为、最低macOS 15系统运行、性能及长稳仍需对应环境单独验证。`v0.1.17`稳定发布和上述用户未提交材料保持不变。

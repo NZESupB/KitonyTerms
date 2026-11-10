@@ -2,7 +2,7 @@
 
 ## 目标与授权
 
-用户明确选择全应用Go/Wails/React迁移。2026-11-10追加授权继续直到项目Rust退出并上传GitHub打包，允许本任务提交/推送dev和独立v0.1.18预发布；保留v0.1.17稳定版、main、旧tag、用户发布文档及未上传副本。下方各带日期阶段的旧权限/入口说明为历史状态，当前以[退出发布任务](261110-remove-rust-github-package.md)为准。
+用户明确选择全应用Go/Wails/React迁移。2026-11-10追加授权继续直到项目Rust退出并上传GitHub打包，允许本任务提交/推送dev和独立v0.1.18预发布；保留v0.1.17稳定版、main、旧tag、用户发布文档及未上传副本。下方各带日期阶段的旧权限/入口说明为历史状态，当前以[退出发布任务](done/261110-remove-rust-github-package.md)为准。
 
 最终方案与功能/平台矩阵：[docs/dioxus-to-wails-v3.md](../../docs/dioxus-to-wails-v3.md)。运行、构建与复核入口：[app/README.md](../../app/README.md)。
 
@@ -78,7 +78,7 @@ Linux server使用已有Wails显式编译标签作为无GUI占位，不能关闭
 - [x] P4 已实现：WebDAV ETag、LAN v2 与真实双向 Rust/Go 互通、纯 Go QR；Android 日志脱敏；原58px底栏五组监控与独立SSH心跳。
 - [ ] P4 剩余：系统认证原生GUI、桌面更新正式签名/旧版升级及Windows授权/占用验收。认证与安装发现/准备/提交/取消/恢复已实现，本机领域和隔离产品事务验证通过，不能以合成响应和编译替代系统验收。
 - [ ] P5：全部平台原生打包、性能、正式签名、旧版覆盖升级/数据接管与回滚、移动真机验收。
-- [ ] P6：源码/生产入口与Rust依赖退出已实现；当前完整回归、GitHub实际打包/下载核验由退出发布任务跟踪。功能矩阵、真实升级/数据接管、认证和性能的开放项继续保持。
+- [x] P6：源码/生产入口与Rust依赖退出完成；完整回归、GitHub原生多平台打包及v0.1.18实际27项下载核验见[退出发布任务](done/261110-remove-rust-github-package.md)。正式升级/数据接管、系统认证、实体交互、真机和性能继续开放。
 
 ## 当前验证证据（更新至2026-11-02）
 
@@ -459,7 +459,7 @@ M0资源初查：本机Darwin/arm64，Go1.27.3/Node24.22.1及scratch私有Wails3
 
 冻结为scratch `macos-candidate-frozen-source.json` / `macos-candidate-final-evidence.json`：349份输入、8份编译产物及实际DMG、28项定向测试/15项独立检查；相对335基线仅Darwin plist/Taskfile/Windows复制包装变化，另14份新增资源和源码。82份历史证据、旧Windows/Inno产物及两份0600未上传副本/发布文档逐项保持，preferences仍不存在，原app根无syso；旧19256/19257仍无监听，未停止或重启。交接为scratch `continue-after-macos-candidate.md`。
 
-整体未完成：Linux需要真实CGO/sysroot或原生主机/Docker，iOS活动SDK仍缺失且文件适配未完成；Windows原生GUI/agent/认证/ISCC/UAC/ACL/升级、macOS实体输入/认证/最低系统/正式包升级、Android真机/更多provider/后台/低内存/x86/实体扫码、签名/数据接管/恢复/性能及P5/P6继续开放。Rust生产入口保留，迁移任务文档继续在当前索引，不归档；本轮未执行Git写操作。
+整体迁移在本历史检查点未完成：Linux需要真实CGO/sysroot或原生主机/Docker，iOS活动SDK仍缺失且文件适配未完成；Windows原生GUI/agent/认证/ISCC/UAC/ACL/升级、macOS实体输入/认证/最低系统/正式包升级、Android真机/更多provider/后台/低内存/x86/实体扫码、签名/数据接管/恢复/性能及P5/P6继续开放。该段记录的是2026-11-09前的历史状态；当前项目Rust入口已退出，GitHub发布收尾见261110任务。
 
 ## Windows 11 ARM64 隔离执行验收（2026-11-09）
 

@@ -2,7 +2,7 @@
 
 基准日期：2026-10-30。范围包括 Windows、macOS、Linux、Android、iOS 的整个应用。共享工程为 `app/`，Wails CLI、Go 模块和前端 runtime 固定为 v3.0.0；移动构建入口已具备，但五平台最终验收尚未全部完成。
 
-2026-11-10用户授权项目Rust退出并上传GitHub打包。当前唯一生产工程为`app/`的Go/Wails/React，项目Cargo/Dioxus/crates及旧Rust互通工具已退役，系统Rust不卸载。完整命令见[app/README.md](../app/README.md)；v0.1.18独立预发布构建与实际资产核验进行中，v0.1.17稳定版保留。
+2026-11-10用户授权项目Rust退出并上传GitHub打包。当前唯一生产工程为`app/`的Go/Wails/React，项目Cargo/Dioxus/crates及旧Rust互通工具已退役，系统Rust不卸载。完整命令见[app/README.md](../app/README.md)；v0.1.18已由GitHub原生CI打包并发布为独立预发布，27项实际下载核验完成；v0.1.17稳定版保持。
 
 当前平台范围（2026-11-10，优先于下方历史检查点）：Android仅保留ARM64，x86/x86_64构建、打包和运行验收撤销；NDK宿主工具架构独立处理。macOS最低15.0，停止12–14兼容；compile、Darwin任务、plist、候选Mach-O校验与Docker模板同步声明15.0，旧候选不重写。iOS本轮仅维护非App Store的无签名设备IPA配置，不以开发者账号、正式签名分发或iOS文件功能作为门槛；完整Xcode/iPhoneOS SDK仍是实际设备链接前提，设备安装另需侧载签名。
 
@@ -206,7 +206,9 @@ Rust/Go更新恢复历史互通（2026-11-09）：旧工具`app/tools/interop/sr
 | iOS设备IPA配置 | 新`ios:package:ipa`/`scripts/ios_ipa.py`独立构建号、真机arm64/平台/plist/资源/无签名Payload及回读入口；26项合成结构/拒绝检查通过；实际task在创建输出前明确拒绝缺失SDK | 当前仅CommandLineTools，无iPhoneOS SDK，真实链接/实际应用IPA未生成；合成IPA不可运行。后续需完整Xcode执行构建和侧载签名，App Store/开发者账号及iOS文件不作为本轮门槛 |
 | Rust/Go更新记录与恢复 | 历史macOS ARM64真实kt-update/Go引擎6顶层26子项及原Rust helper取消方向2顶层5子项保留 | 成功安装与完整双向helper接力、正式旧包升级、Windows/Linux跨语言执行仍未关闭 |
 
-本轮统一`check.sh`退出0：Go格式/vet、全部internal/tools race（update199.860秒、session50.640秒）、614候选实际测试、绑定无漂移、前端格式/类型/lint/47测试/build。最后iOS资源/带空格SDK路径修正另经Python语法、26项结构检查和实际SDK拒绝复验；Docker五段shell仅语法通过，未执行容器构建。原桌面布局、前端/绑定/依赖与生产Rust入口保持。
+2026-11-10 GitHub发布实证：工作流 `42807234257` / attempt 1 对应提交 `d3e8f686814c55cb97ff95e005f2c6dacdebe31f`，11项任务全部成功；`v0.1.18` Release ID `440301750` 为 prerelease，Latest仍是`v0.1.17`。从Release实际下载的27项（117,274,203字节）与GitHub资产摘要、大小、`SHA256SUMS`、更新清单和本次构建身份逐项匹配。Linux/Windows/macOS六个桌面目标均在原生runner打包与测试；两份macOS DMG只读挂载检查、签名、15.0最低系统和包资源验证通过并卸载。Android ARM64 APK/AAB签名及同证书、16 KiB对齐通过；无签名iOS arm64设备IPA在真实Xcode runner链接并通过包身份检查。稳定`v0.1.17`的12项资产及发布元数据未变，`main`/旧标签引用保持。原生CI和包检查不证明正式旧版升级/生产数据接管、系统认证、实体输入、真机运行、最低macOS 15系统运行或性能长稳；这些验收仍开放。
+
+本轮统一`check.sh`退出0：Go格式/vet、全部internal/tools race（update199.860秒、session50.640秒）、614候选实际测试、绑定无漂移、前端格式/类型/lint/47测试/build。最后iOS资源/带空格SDK路径修正另经Python语法、26项结构检查和实际SDK拒绝复验；Docker五段shell仅语法通过，未执行容器构建。原桌面布局、前端/绑定/依赖与当前Go/Wails生产入口保持。
 
 问题记录：Windows首轮GUI PE退出码读取、未引用PowerShell测试参数及缺少Rust测试夹具属于驱动问题，修正后身份/领域测试通过；Android首轮固定300ms visibility断言改为系统前台状态核对后通过。macOS空AX树不能证明白屏；原生WKWebView探针实际确认页面正常，早期premain环境修改及重复导入runtime曾干扰驱动，改为不修改环境和现有IPC后页面/确认退出通过。各首轮失败及纠正后结果独立保留于scratch `platform-policy-20261110/`；没有据此改写历史证据或声称全部平台通过。
 
@@ -239,7 +241,7 @@ Android 固定 SDK36 / NDK28.2.13676358 / Gradle8.13 / JDK21；发布构建要�
 1. 当前生产源码/检查/CI为Go/Wails v3.0.0/React，六桌面目标、Android ARM64及无签名设备IPA；项目无Rust FFI/WASM/sidecar。
 2. Cargo/Dioxus/crates/旧Rust验证工具移出当前工程；历史tag和本地冻结保持，公开格式夹具由Go回归。
 3. 发行版沿用旧ProjectDirs与锁，开发和显式临时根隔离；真实生产数据接管、旧包覆盖升级与回滚仍待实机演练。
-4. v0.1.18版本与构建身份、27项资产集合、大小/SHA和最低系统由发布链验证；实际GitHub运行和下载核验完成后另记录结果，保留既有稳定版。
+4. v0.1.18版本与构建身份、27项资产集合、大小/SHA和最低系统已由发布链及实际下载核验；结果见本节2026-11-10发布实证，保留既有稳定版。
 5. P5实体输入、系统认证、真机、最低系统、长期连接与性能继续开放，不因移除Rust而关闭。
 
 ## 4. 运行与复核入口
