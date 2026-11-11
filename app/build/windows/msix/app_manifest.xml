@@ -10,7 +10,7 @@
   <Identity 
     Name="com.kitonyterms.app"
     Publisher="CN=My Company"
-    Version="0.1.18.0"
+    Version="0.1.19.0"
     ProcessorArchitecture="arm64" />
   
   <Properties>

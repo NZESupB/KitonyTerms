@@ -17,7 +17,7 @@
         PackageDisplayName="KitonyTerms"
         PublisherName="CN=My Company"
         PublisherDisplayName="My Company"
-        Version="0.1.18.0"
+        Version="0.1.19.0"
         PackageDescription="A kitonyterms application">
         <Capabilities>
             <Capability Name="runFullTrust" />
