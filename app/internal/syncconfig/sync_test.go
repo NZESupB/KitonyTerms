@@ -108,6 +108,52 @@ func TestLANCommitBeforeAckAndAuthenticationRecovery(t *testing.T) {
 		t.Fatal("ACK 后分享未关闭")
 	}
 }
+
+func TestLANAckWaitsForDeliveryCompletion(t *testing.T) {
+	share, err := StartShare(context.Background(), model.DefaultConfig(), "127.0.0.1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer share.Stop()
+	auth, _, err := keys(share.Info().PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.Replace(share.Info().URL, configPath, ackPath, 1), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = addAuthentication(req, auth, share.id); err != nil {
+		t.Fatal(err)
+	}
+	share.mu.Lock()
+	share.state = "delivering"
+	share.delivery = make(chan struct{})
+	share.mu.Unlock()
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		share.ServeHTTP(response, req)
+	}()
+	select {
+	case <-done:
+		t.Fatal("ACK 未等待交付完成")
+	case <-time.After(20 * time.Millisecond):
+	}
+	share.mu.Lock()
+	share.state = "awaiting"
+	close(share.delivery)
+	share.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("交付完成后 ACK 未继续")
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatal("交付完成后 ACK 状态异常", response.Code)
+	}
+}
 func TestLANRejectsNonceReplay(t *testing.T) {
 	share, err := StartShare(context.Background(), model.DefaultConfig(), "127.0.0.1", time.Minute)
 	if err != nil {

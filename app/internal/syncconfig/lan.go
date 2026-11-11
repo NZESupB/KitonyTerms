@@ -45,6 +45,7 @@ type Share struct {
 	ciphertext []byte
 	nonces     map[string]bool
 	order      []string
+	delivery   chan struct{}
 }
 
 func normalizeCode(code string) string {
@@ -172,6 +173,16 @@ func (s *Share) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	if isAck && s.state == "delivering" {
+		delivery := s.delivery
+		s.mu.Unlock()
+		select {
+		case <-delivery:
+		case <-req.Context().Done():
+			return
+		}
+		s.mu.Lock()
+	}
 	if !s.claim(req) {
 		s.mu.Unlock()
 		http.Error(w, "request replayed", 409)
@@ -195,6 +206,7 @@ func (s *Share) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	previous := s.state
 	if isGet {
 		s.state = "delivering"
+		s.delivery = make(chan struct{})
 	} else {
 		s.state = "acking"
 	}
@@ -214,6 +226,7 @@ func (s *Share) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			s.state = previous
 		}
+		close(s.delivery)
 		s.mu.Unlock()
 		return
 	}
@@ -307,7 +320,8 @@ func StartShare(ctx context.Context, config model.Config, bindIP string, ttl tim
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, ttl)
-	s := &Share{cancel: cancel, done: make(chan struct{}), state: "available", auth: auth, id: id, nonce: nonce, ciphertext: ciphertext, nonces: map[string]bool{}}
+	s := &Share{cancel: cancel, done: make(chan struct{}), delivery: make(chan struct{}), state: "available", auth: auth, id: id, nonce: nonce, ciphertext: ciphertext, nonces: map[string]bool{}}
+	close(s.delivery)
 	s.info = ShareInfo{URL: "http://" + listener.Addr().String() + configPath, PairingCode: code, ExpiresAtUnix: time.Now().Add(ttl).Unix()}
 	s.server = &http.Server{Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: time.Second, MaxHeaderBytes: 16 << 10}
 	go func() { defer close(s.done); s.server.Serve(netutil.LimitListener(listener, 16)) }()
