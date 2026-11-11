@@ -22,6 +22,7 @@
 - Windows agent固定go-winio v0.6.4/x/sys v0.49.0，10秒上限与context；Manager构造时私有连接器，产品仍使用OpenSSH命名管道。测试仅随机当前用户管道/临时socket/生成密钥，不访问用户agent，不提供运行时覆写入口。
 - Config/KnownHosts先落盘再更新内存；主机首次信任必须保存成功。vault为Argon2id+XChaCha20Poly1305 KTVT格式，每安装独立key；旧固定key自动迁移，不能打开的旧主密码vault先备份再重建。
 - [platform路径](../app/internal/platform/paths_desktop.go)按已验证的构建身份选择生产/开发。生产严格沿用旧ProjectDirs：macOS配置/数据同为Application Support/com.kitony.KitonyTerms；Windows两者均Roaming/kitony/KitonyTerms下config/data；Linux小写kitonyterms遵循XDG。无身份开发隔离；显式DATA_DIR使用根下config/data；回归不触碰真实生产数据。
+- 主机信任继续固定host/port和完整SHA256指纹。服务器提供多种主机密钥时，首选变化可逐类重新协商以寻找原指纹；只对明确的已知密钥不匹配重试，RSA签名/证书别名一起排除，尝试共享120秒context且逐轮收敛。后续候选仅使用ssh.SupportedAlgorithms的现代算法；真实换钥在认证前拒绝，不重写信任，认证或其它网络失败不重试。ProxyJump每轮目标拨号重建独占跳板，继续先断宿主传输再关通道；嵌套拨号失败不触发外层目标重试。
 - 机密查看经[secretview](../app/internal/secretview/reader.go)串行认证，读取前后复核context、完整目标身份和退出；系统认证不缓存成功。macOS新LAContext，Windows绑定HWND的Hello/明确不支持时账户密码+LogonUser/SID校验；取消/认证失败不自动降级。同步系统对话框实际返回前不释放门禁。Linux/server/移动端明确拒绝。
 - 前端凭据查看只留局部内存，与编辑/保存分离，30秒或身份/可见性/退出变化即清除。配置同步不携带vault、key、known_hosts、更新偏好、运行时状态或编辑副本。
 

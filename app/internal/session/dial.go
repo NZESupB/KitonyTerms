@@ -61,12 +61,13 @@ func (m *Manager) dial(s *Session) (*ssh.Client, []io.Closer, error) {
 		if jump.Host == "" || jump.Port < 1 || jump.Port > 65535 {
 			return nil, nil, fmt.Errorf("ProxyJump 地址无效")
 		}
-		client, cs, err := m.handshake(s, jump, dial)
-		if err != nil {
-			return nil, nil, err
-		}
-		closers = append(closers, cs...)
+		proxyDial := dial
 		dial = func(ctx context.Context, address string) (net.Conn, error) {
+			client, cs, err := m.handshakeContext(ctx, s, jump, proxyDial)
+			if err != nil {
+				return nil, err
+			}
+			closers = append(closers, cs...)
 			return dialJump(ctx, client, address)
 		}
 	}
@@ -154,15 +155,13 @@ func expandKeyPath(keyPath string) (string, error) {
 	}
 	return keyPath, nil
 }
-func (m *Manager) handshake(s *Session, p model.Profile, dial func(context.Context, string) (net.Conn, error)) (*ssh.Client, []io.Closer, error) {
-	ctx, cancel := context.WithTimeout(s.ctx, 120*time.Second)
-	defer cancel()
+func (m *Manager) handshakeAttempt(ctx context.Context, s *Session, p model.Profile, dial func(context.Context, string) (net.Conn, error), algorithms []string) (*ssh.Client, []io.Closer, error) {
 	if p.User == "" {
 		return nil, nil, fmt.Errorf("SSH 用户名未设置")
 	}
 	conn, err := dial(ctx, p.Address())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &handshakeDialError{cause: err}
 	}
 	closers := []io.Closer{conn}
 	success := false
@@ -250,14 +249,14 @@ func (m *Manager) handshake(s *Session, p model.Profile, dial func(context.Conte
 			methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(agentConn).Signers))
 		}
 	}
-	config := &ssh.ClientConfig{User: p.User, Auth: methods, Timeout: 30 * time.Second, HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+	config := &ssh.ClientConfig{User: p.User, Auth: methods, Timeout: 30 * time.Second, HostKeyAlgorithms: algorithms, HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		fingerprint := ssh.FingerprintSHA256(key)
 		expected, trusted := m.repo.CheckHost(p.Host, p.Port, fingerprint)
 		if trusted {
 			return nil
 		}
 		if expected != "" {
-			return fmt.Errorf("主机密钥变更: 原 %s，现 %s", expected, fingerprint)
+			return &hostKeyChangedError{expected: expected, actual: fingerprint, algorithm: key.Type()}
 		}
 		a, e := m.ask(s, model.Challenge{Kind: "host_key", Host: p.Host, Port: p.Port, Fingerprint: fingerprint, Prompts: []model.Prompt{}, Message: "首次连接，请核对主机密钥"})
 		if e != nil {
