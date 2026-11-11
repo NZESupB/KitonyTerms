@@ -181,7 +181,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: verify and publish Wails prerelease
+    name: verify and publish Wails stable release
     needs: [validate, build, mobile_android, mobile_ios]
     runs-on: ubuntu-24.04
     permissions:
@@ -202,7 +202,7 @@ jobs:
           name: verified-release
           path: dist/*
           if-no-files-found: error
-      - name: Publish independent prerelease
+      - name: Publish stable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -212,5 +212,5 @@ jobs:
             echo '拒绝覆盖已有Release' >&2
             exit 1
           fi
-          gh release create "$tag" --target "$GITHUB_SHA" --title "KitonyTerms $tag · Wails preview" --prerelease --latest=false --draft --notes-file .github/release-notes.md dist/*
-          gh release edit "$tag" --draft=false --prerelease --latest=false
+          gh release create "$tag" --target "$GITHUB_SHA" --title "KitonyTerms $tag" --latest --draft --notes-file .github/release-notes.md dist/*
+          gh release edit "$tag" --draft=false --latest

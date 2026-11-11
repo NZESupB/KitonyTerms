@@ -96,7 +96,9 @@ class ReleaseTests(unittest.TestCase):
         for command in ("cargo ", "rustc ", "dx ", "rust-toolchain", "rust-cache"):
             self.assertNotIn(command, workflow)
         self.assertIn("needs: [validate, build, mobile_android, mobile_ios]", workflow)
-        self.assertIn("--prerelease --latest=false", workflow)
+        self.assertIn("--latest --draft", workflow)
+        self.assertIn("--draft=false --latest", workflow)
+        self.assertNotIn("--prerelease --latest=false", workflow)
         for name in ("Cargo.toml", "Cargo.lock", "Dioxus.toml", "rust-toolchain.toml", "crates", "app/tools/interop"):
             self.assertFalse((ROOT / name).exists(), name)
         version = json.loads((ROOT / "app/frontend/package.json").read_text(encoding="utf-8"))["version"]

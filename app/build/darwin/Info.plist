@@ -10,11 +10,11 @@
         <key>CFBundleIdentifier</key>
             <string>com.kitonyterms.app</string>
         <key>CFBundleVersion</key>
-            <string>0.1.19</string>
+            <string>0.2.0</string>
         <key>CFBundleGetInfoString</key>
-            <string>KitonyTerms 0.1.19</string>
+            <string>KitonyTerms 0.2.0</string>
         <key>CFBundleShortVersionString</key>
-            <string>0.1.19</string>
+            <string>0.2.0</string>
         <key>CFBundleIconFile</key>
             <string>icons</string>
         <key>CFBundleIconName</key>
