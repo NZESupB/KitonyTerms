@@ -1,6 +1,6 @@
 # KitonyTerms：Dioxus/Rust → Wails v3 / Go / React 最终迁移方案
 
-基准日期：2026-10-30。范围包括 Windows、macOS、Linux、Android、iOS 的整个应用。共享工程为 `app/`，Wails CLI、Go 模块和前端 runtime 固定为 v3.0.0；移动构建入口已具备，但五平台最终验收尚未全部完成。
+基准日期：2026-10-30，当前依赖更新于2026-11-11。范围包括 Windows、macOS、Linux、Android、iOS 的整个应用。共享工程为 `app/`，Wails CLI、Go 模块和前端 runtime 固定为 v3.1.0；移动构建入口已具备，但五平台最终验收尚未全部完成。下方带日期的旧版本构建记录保持原样。
 
 2026-11-10用户授权项目Rust退出并上传GitHub打包。当前唯一生产工程为`app/`的Go/Wails/React，项目Cargo/Dioxus/crates及旧Rust互通工具已退役，系统Rust不卸载。完整命令见[app/README.md](../app/README.md)；v0.1.18已由GitHub原生CI打包并发布为独立预发布，27项实际下载核验完成；v0.1.17稳定版保持。
 
@@ -238,7 +238,7 @@ Android 固定 SDK36 / NDK28.2.13676358 / Gradle8.13 / JDK21；发布构建要�
 
 2026-11-10用户新增授权后，项目构建入口切换和Rust退出独立推进；不把尚缺的实机验收描述为通过。
 
-1. 当前生产源码/检查/CI为Go/Wails v3.0.0/React，六桌面目标、Android ARM64及无签名设备IPA；项目无Rust FFI/WASM/sidecar。
+1. 当前生产源码/检查/CI为Go/Wails v3.1.0/React，六桌面目标、Android ARM64及无签名设备IPA；项目无Rust FFI/WASM/sidecar。
 2. Cargo/Dioxus/crates/旧Rust验证工具移出当前工程；历史tag和本地冻结保持，公开格式夹具由Go回归。
 3. 发行版沿用旧ProjectDirs与锁，开发和显式临时根隔离；真实生产数据接管、旧包覆盖升级与回滚仍待实机演练。
 4. v0.1.18版本与构建身份、27项资产集合、大小/SHA和最低系统已由发布链及实际下载核验；结果见本节2026-11-10发布实证，保留既有稳定版。

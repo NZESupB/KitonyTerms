@@ -1,5 +1,6 @@
 import type { IBuffer, IMarker, Terminal } from "@xterm/xterm";
 import type { Settings } from "./backend";
+import { terminalFontFamily } from "./appearance";
 
 const asciiLower = (value: string) =>
   value.replace(/[A-Z]/g, (char) => char.toLowerCase());
@@ -180,7 +181,7 @@ export function attachTerminalAnnotations(
       term.rows;
     const showGutter = options.show_line_numbers || options.show_timestamps;
     gutter.hidden = !showGutter;
-    gutter.style.fontFamily = options.font_family;
+    gutter.style.fontFamily = terminalFontFamily(options.font_family);
     gutter.style.fontSize = `${options.font_size}px`;
     for (const target of [gutter, highlights]) {
       while (target.children.length > rows.length)

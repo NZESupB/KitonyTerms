@@ -12,6 +12,7 @@ import {
 } from "../lib/backend";
 import { base64ToBytes, bytesToBase64, OrderedInput } from "../lib/protocol";
 import { readClipboard, writeClipboard } from "../lib/clipboard";
+import { terminalFontFamily } from "../lib/appearance";
 
 import {
   attachTerminalAnnotations,
@@ -37,7 +38,7 @@ export function TerminalView({
   const gutter = useRef<HTMLDivElement>(null);
   const highlights = useRef<HTMLDivElement>(null);
   const annotations = useRef<ReturnType<typeof attachTerminalAnnotations>>();
-  const resizeTerminal = useRef<() => void>();
+  const resizeTerminal = useRef<(focus?: boolean) => void>();
   const container = useRef<HTMLDivElement>(null);
   const [hasSelection, setHasSelection] = useState(false);
   const terminal = useRef<Terminal>();
@@ -70,14 +71,13 @@ export function TerminalView({
     const options = initialSettings.current;
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: options.font_family,
+      fontFamily: terminalFontFamily(options.font_family),
       fontSize: options.font_size,
       scrollback: options.scrollback_lines,
       allowProposedApi: false,
     });
     const addon = new FitAddon();
     term.loadAddon(addon);
-    term.open(container.current);
     const applyTheme = () => {
       const style = getComputedStyle(document.documentElement);
       term.options.theme = {
@@ -100,19 +100,79 @@ export function TerminalView({
       () => initialSettings.current,
     );
     annotations.current = display;
-    const resize = () => {
-      if (!container.current?.clientWidth) return;
+    let frame = 0;
+    let layoutVersion = 0;
+    let focusRequested = false;
+    let lastSize = "";
+    let fontLoad: { key: string; promise: Promise<FontFace[]> } | undefined;
+    const sendSize = () => {
+      if (!term.element || currentStatus.current !== "connected") {
+        lastSize = "";
+        return;
+      }
+      const key = `${term.cols}:${term.rows}`;
+      if (lastSize === key) return;
+      lastSize = key;
+      void (
+        execId
+          ? Backend.ResizeContainerTerminal(
+              session.id,
+              session.generation,
+              execId,
+              term.cols,
+              term.rows,
+            )
+          : Backend.Resize(session.id, session.generation, term.cols, term.rows)
+      ).catch((error: unknown) => {
+        if (lastSize === key) lastSize = "";
+        report(error);
+      });
+    };
+    const measurable = () =>
+      !!container.current?.clientWidth && !!container.current?.clientHeight;
+    const applyLayout = async (version: number) => {
+      if (stopped || !measurable()) return;
+      const current = initialSettings.current;
+      const family = terminalFontFamily(current.font_family);
+      const key = `${current.font_size}px ${family}`;
+      if (fontLoad?.key !== key)
+        fontLoad = { key, promise: document.fonts.load(key) };
+      await fontLoad.promise;
+      if (stopped || version !== layoutVersion || !measurable()) return;
+      term.options.fontFamily = family;
+      term.options.fontSize = current.font_size;
+      // 隐藏容器的 DOM 字宽为零，必须等布局恢复后再打开渲染器。
+      if (!term.element) term.open(container.current!);
       const size = addon.proposeDimensions();
       if (size)
         term.resize(
           terminalColumns(
             size.cols,
-            initialSettings.current.terminal_wrap,
+            current.terminal_wrap,
             matchMedia("(max-width: 599px), (max-height: 599px)").matches,
           ),
           size.rows,
         );
       display.refresh();
+      sendSize();
+      if (
+        focusRequested &&
+        currentActive.current &&
+        !document.querySelector('[role="dialog"]') &&
+        (!document.activeElement?.matches("input, textarea, select") ||
+          term.element?.contains(document.activeElement))
+      )
+        term.focus();
+      focusRequested = false;
+    };
+    const resize = (focus = false) => {
+      focusRequested ||= focus;
+      layoutVersion++;
+      if (!frame)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          void applyLayout(layoutVersion).catch(report);
+        });
     };
     resizeTerminal.current = resize;
     const input = new OrderedInput(
@@ -144,26 +204,8 @@ export function TerminalView({
           .enqueue(Uint8Array.from(data, (char) => char.charCodeAt(0)))
           .catch(report);
     });
-    const onResize = term.onResize((size) => {
-      if (currentStatus.current === "connected")
-        void (
-          execId
-            ? Backend.ResizeContainerTerminal(
-                session.id,
-                session.generation,
-                execId,
-                size.cols,
-                size.rows,
-              )
-            : Backend.Resize(
-                session.id,
-                session.generation,
-                size.cols,
-                size.rows,
-              )
-        ).catch(report);
-    });
-    const observer = new ResizeObserver(resize);
+    const onResize = term.onResize(sendSize);
+    const observer = new ResizeObserver(() => resize());
     observer.observe(container.current);
     if (surface.current) observer.observe(surface.current);
     const poll = async () => {
@@ -210,6 +252,8 @@ export function TerminalView({
     void poll();
     return () => {
       stopped = true;
+      layoutVersion++;
+      cancelAnimationFrame(frame);
       clearTimeout(timer);
       if (pollRequest) void pollRequest.cancel();
       observer.disconnect();
@@ -227,8 +271,6 @@ export function TerminalView({
   useEffect(() => {
     const term = terminal.current;
     if (!term) return;
-    term.options.fontFamily = settings.font_family;
-    term.options.fontSize = settings.font_size;
     term.options.scrollback = settings.scrollback_lines;
     term.options.cursorStyle =
       settings.cursor_style === "bar"
@@ -236,28 +278,8 @@ export function TerminalView({
         : settings.cursor_style === "underline"
           ? "underline"
           : "block";
-    if (active) {
-      resizeTerminal.current?.();
-      if (
-        !document.querySelector('[role="dialog"]') &&
-        (!document.activeElement?.matches("input, textarea, select") ||
-          term.element?.contains(document.activeElement))
-      )
-        term.focus();
-    }
+    resizeTerminal.current?.(active);
     annotations.current?.refresh();
-    if (session.status === "connected")
-      void (
-        execId
-          ? Backend.ResizeContainerTerminal(
-              session.id,
-              session.generation,
-              execId,
-              term.cols,
-              term.rows,
-            )
-          : Backend.Resize(session.id, session.generation, term.cols, term.rows)
-      ).catch(useApp.getState().report);
   }, [
     active,
     settings.font_family,

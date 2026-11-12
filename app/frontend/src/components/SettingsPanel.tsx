@@ -25,6 +25,7 @@ import {
 } from "../lib/useProtectedState";
 import { fontOptions } from "../lib/font-options";
 import { useFonts } from "../lib/useFonts";
+import { terminalFontFamily } from "../lib/appearance";
 
 type Category = "general" | "terminal" | "editor" | "sync" | "update";
 const categories: { id: Category; label: TextKey }[] = [
@@ -299,7 +300,7 @@ export function SettingsPanel({
                   className="settings-font-preview"
                   aria-label={t("字体预览")}
                   style={{
-                    fontFamily: draft.font_family,
+                    fontFamily: terminalFontFamily(draft.font_family),
                     fontSize: draft.font_size,
                   }}
                 >

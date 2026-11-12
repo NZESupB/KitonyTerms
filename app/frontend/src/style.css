@@ -15,6 +15,9 @@
   --accent: #78b5ff;
   --danger: #ffaaaa;
   --ui-scale: 1;
+  --motion-feedback: 120ms;
+  --motion-press: 160ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   background: var(--bg);
   color: var(--text);
   font-size: calc(13px * var(--ui-scale));
@@ -76,6 +79,26 @@ button:disabled {
 button:active:not(:disabled) {
   background: var(--line);
 }
+button:not(:where(.window-controls button, .session-tabs button)) {
+  transition:
+    background-color var(--motion-feedback) ease,
+    border-color var(--motion-feedback) ease,
+    color var(--motion-feedback) ease,
+    transform var(--motion-press) var(--ease-out);
+}
+@media (prefers-reduced-motion: no-preference) {
+  button:active:not(:disabled):not(:focus-visible):not(
+      :where(
+        .window-controls button,
+        .session-tabs button,
+        .settings-nav button,
+        .operations-rail button,
+        .mobile-nav button
+      )
+    ) {
+    transform: scale(0.97);
+  }
+}
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
@@ -92,6 +115,18 @@ textarea {
   min-height: 32px;
   padding: 6px 9px;
   width: 100%;
+}
+:is(input, select, textarea):not(
+  :where(.xterm *, [type="checkbox"], [type="color"], [type="range"])
+) {
+  transition:
+    border-color var(--motion-feedback) ease,
+    background-color var(--motion-feedback) ease;
+}
+:is(input, select, textarea):focus:not(:disabled):not(
+    :where(.xterm *, [type="checkbox"], [type="color"], [type="range"])
+  ) {
+  border-color: var(--accent);
 }
 input[type="checkbox"] {
   width: 16px;
@@ -429,6 +464,9 @@ small {
   cursor: default;
   outline: none;
   font-size: calc(12px * var(--ui-scale));
+  transition:
+    background-color var(--motion-feedback) ease,
+    color var(--motion-feedback) ease;
 }
 .context-menu [data-highlighted] {
   background: var(--field);
@@ -472,6 +510,7 @@ small {
   padding: 5px 8px;
   border-bottom: 1px solid var(--line);
   gap: 2px;
+  transition: background-color var(--motion-feedback) ease;
 }
 .profile > button {
   border: 0;
@@ -933,6 +972,10 @@ small {
     border-color: var(--accent);
   }
   .profile:hover {
+    background: var(--field);
+  }
+  :is(.settings-nav, .operations-rail, .mobile-nav)
+    button:hover:not(:disabled) {
     background: var(--field);
   }
 }

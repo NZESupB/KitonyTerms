@@ -33,6 +33,13 @@ export function uiFontFamily(value: string | undefined): string | undefined {
   return `${family}, var(--ui-font-default)`;
 }
 
+export function terminalFontFamily(value: string): string {
+  const family = value.trim();
+  return !family || /(?:^|,)\s*(?:ui-)?monospace\s*$/i.test(family)
+    ? family || "monospace"
+    : `${family}, monospace`;
+}
+
 export function accentForeground(color: string): string {
   if (!/^#[0-9a-f]{6}$/i.test(color))
     throw new Error("强调色必须为六位十六进制颜色");

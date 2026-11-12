@@ -3,9 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 command -v wails3 >/dev/null
-[ "$(wails3 version 2>&1)" = 'v3.0.0' ]
-[ "$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" = 'v3.0.0' ]
-node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("frontend/package.json","utf8")); if(p.dependencies["@wailsio/runtime"]!=="3.0.0") throw Error("Wails runtime 版本漂移");'
+[ "$(wails3 version 2>&1)" = 'v3.1.0' ]
+[ "$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" = 'v3.1.0' ]
+node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("frontend/package.json","utf8")); if(p.dependencies["@wailsio/runtime"]!=="3.1.0") throw Error("Wails runtime 版本漂移");'
 bash -n scripts/compile.sh
 python3 -c 'from pathlib import Path; p=Path("scripts/ios_ipa.py"); compile(p.read_text(),str(p),"exec")'
 if [ -n "$(gofmt -l main.go native_desktop.go native_mobile.go internal tools)" ]; then

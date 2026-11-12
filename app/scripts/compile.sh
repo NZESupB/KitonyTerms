@@ -8,7 +8,7 @@ usage() {
 默认编译宿主桌面，输出到 bin/compile/<系统>-<架构>-<模式>/kitonyterms[.exe]。
 支持 darwin/windows/linux 的 amd64/arm64；移动端沿用 android/ios task。
 server 必须显式选择，只编译无 GUI 的 HTTP 服务，不代表原生桌面验收。
-需要已有 Go/npm 依赖和 Wails CLI 3.0.0，不自动安装依赖或工具。
+需要已有 Go/npm 依赖和 Wails CLI 3.1.0，不自动安装依赖或工具。
 HELP
 }
 
@@ -65,12 +65,12 @@ fi
 for tool in node npm wails3; do
   command -v "$tool" >/dev/null || { printf '缺少构建工具：%s\n' "$tool" >&2; exit 1; }
 done
-if [ "$(wails3 version 2>&1)" != 'v3.0.0' ]; then
-  echo 'Wails CLI 必须固定为 v3.0.0' >&2
+if [ "$(wails3 version 2>&1)" != 'v3.1.0' ]; then
+  echo 'Wails CLI 必须固定为 v3.1.0' >&2
   exit 1
 fi
-if [ "$(go list -mod=readonly -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" != 'v3.0.0' ]; then
-  echo 'Wails Go 模块必须固定为 v3.0.0' >&2
+if [ "$(go list -mod=readonly -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" != 'v3.1.0' ]; then
+  echo 'Wails Go 模块必须固定为 v3.1.0' >&2
   exit 1
 fi
 if [ ! -d frontend/node_modules ]; then
@@ -81,8 +81,8 @@ node --input-type=module <<'JS'
 import fs from 'node:fs';
 const frontend = JSON.parse(fs.readFileSync('frontend/package.json', 'utf8'));
 const installed = JSON.parse(fs.readFileSync('frontend/node_modules/@wailsio/runtime/package.json', 'utf8'));
-if (frontend.dependencies['@wailsio/runtime'] !== '3.0.0' || installed.version !== '3.0.0') {
-  throw Error('前端 Wails runtime 必须固定为 3.0.0');
+if (frontend.dependencies['@wailsio/runtime'] !== '3.1.0' || installed.version !== '3.1.0') {
+  throw Error('前端 Wails runtime 必须固定为 3.1.0');
 }
 JS
 

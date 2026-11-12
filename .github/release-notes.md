@@ -1,8 +1,8 @@
-# KitonyTerms 0.2.0 · 正式版
+# KitonyTerms 0.2.1 · 正式版
 
-KitonyTerms 0.2.0 是 Go / Wails v3.0.0 / React 架构的首个正式稳定版本，并设为 GitHub Latest。与 v0.1.18、v0.1.19 预发布版相比，本次主要变更是将发布通道恢复为稳定版；源码沿用已验证的 Wails 生产入口及 SSH 多主机密钥协商兼容修复。v0.1.17、v0.1.18 与 v0.1.19 的 Release 和资产保持原样。
+KitonyTerms 0.2.1 是 Go / Wails v3.1.0 / React 架构的正式补丁版本，并设为 GitHub Latest。本版将 Wails CLI、Go 模块与前端 runtime 同步固定为 3.1.0；针对 WKWebView 的本地字体测量差异，让 xterm 构建统一使用自带 DOM 字宽度量，终端在容器可测量且字体加载完成后才打开或更新渲染器，并拒绝隐藏状态与过期字体请求的迟到布局结果；新增不改动布局尺寸的控件交互反馈，且保留减少动态效果支持。对外应用、窗口及 Windows / Apple 版本资源的显示名统一为 `KitonyTerms`。v0.2.0 及更早 Release 和资产保持原样。
 
-**稳定版自动更新提示**：v0.1.17 稳定客户端读取 `/releases/latest` 后会发现本版，用户已明确接受这一自动更新风险。全平台的正式旧包升级、生产数据接管、系统授权和回滚尚未完成实机验收；升级前务必完整备份，必要时优先从发布页手动安装。
+**稳定版自动更新提示**：稳定客户端读取 `/releases/latest` 后会发现本版。这是用户选择发布正式稳定版的结果；全平台的旧正式包升级、生产数据接管、系统授权和回滚尚未完成实机验收。升级前务必完整备份，必要时优先从发布页手动安装。
 
 - Linux x64/ARM64：原生 GTK4 与 WebKitGTK 6.0 桌面程序，TAR.GZ。
 - macOS ARM64/Intel：最低 macOS 15.0，DMG；ad-hoc 签名，未做 Apple Developer ID 签名或公证。

@@ -13,7 +13,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.2.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
@@ -53,7 +53,7 @@
     
     
     <key>CFBundleGetInfoString</key>
-    <string>跨平台 SSH 工作台</string>
+    <string>KitonyTerms 0.2.1</string>
     
     <key>NSCameraUsageDescription</key>
     <string>扫描另一台设备展示的 KitonyTerms 局域网配置分享二维码。</string>

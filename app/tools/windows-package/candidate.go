@@ -26,6 +26,7 @@ import (
 
 const maxResourceBytes = 8 << 20
 const candidateObject = "kitonyterms_candidate_windows_amd64.syso"
+const productDisplayName = "KitonyTerms"
 
 // ResourceReport证明PE静态资源一致，不认证程序来源或证明Windows实际运行身份。
 type ResourceReport struct {
@@ -102,9 +103,9 @@ func candidateResources(project string, info update.BuildInfo) (*winres.Resource
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	for locale, description := range map[uint16]string{0x0409: "SSH and server management workspace", 0x0804: "跨平台 SSH 与服务器管理工作台"} {
+	for _, locale := range []uint16{0x0409, 0x0804} {
 		for key, value := range map[string]string{
-			version.ProductName: "KitonyTerms", version.CompanyName: "Kitony", version.FileDescription: description,
+			version.ProductName: productDisplayName, version.CompanyName: "Kitony", version.FileDescription: productDisplayName,
 			version.FileVersion: textVersion, version.ProductVersion: textVersion, version.InternalName: "kitonyterms",
 			version.OriginalFilename: "kitonyterms.exe", version.LegalCopyright: "© 2026 KitonyTerms",
 			version.Comments: string(encodedIdentity),
@@ -160,11 +161,11 @@ func verifyResources(project, binary, identityPath string) (report ResourceRepor
 	pinned := false
 	for _, dependency := range build.Deps {
 		if dependency.Path == "github.com/wailsapp/wails/v3" {
-			pinned = dependency.Version == "v3.0.0" && dependency.Replace == nil
+			pinned = dependency.Version == "v3.1.0" && dependency.Replace == nil
 		}
 	}
 	if !pinned {
-		return report, errors.New("候选程序的Wails模块版本必须为v3.0.0且无替换")
+		return report, errors.New("候选程序的Wails模块版本必须为v3.1.0且无替换")
 	}
 	expected, _, _, err := candidateResources(project, info)
 	if err != nil {

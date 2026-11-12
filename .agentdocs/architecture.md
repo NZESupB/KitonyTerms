@@ -2,7 +2,8 @@
 
 ## 生产边界
 
-唯一工程为[app/go.mod](../app/go.mod)，Go/Wails v3.0.0与React18/xterm.js/Zustand。入口[main.go](../app/main.go)区分桌面/移动，桌面[native_desktop.go](../app/native_desktop.go)在GUI前处理更新内部命令、取得数据锁和恢复守卫。旧Rust/Cargo/Dioxus工作区已退出；历史源码以旧tag为准，当前构建/验证不需要Rust。
+唯一工程为[app/go.mod](../app/go.mod)，Go/Wails v3.1.0与React18/xterm.js/Zustand。入口[main.go](../app/main.go)区分桌面/移动，桌面[native_desktop.go](../app/native_desktop.go)在GUI前处理更新内部命令、取得数据锁和恢复守卫。旧Rust/Cargo/Dioxus工作区已退出；历史源码以旧tag为准，当前构建/验证不需要Rust。
+- 对外应用、窗口和版本资源显示名固定为`KitonyTerms`；版本只放在版本字段或`KitonyTerms <版本>`信息串，不使用中文产品描述或迁移版后缀。
 
 | 模块 | 职责 |
 |---|---|
@@ -20,7 +21,7 @@
 - 所有事件以连接generation和request/operation/exec ID归属，迟到结果不能覆盖新请求。通道有界、终端输出有界重放；宿主PTY、容器PTY、SFTP与操作exec分别拥有生命周期。
 - 单跳ProxyJump按会话独占外层传输；取消等待真实OpenChannel结束，关闭先断外层再关转发通道，避免写背压互等。正常SFTP取消保留宿主SSH，完全停滞时允许回收连接。
 - Windows agent固定go-winio v0.6.4/x/sys v0.49.0，10秒上限与context；Manager构造时私有连接器，产品仍使用OpenSSH命名管道。测试仅随机当前用户管道/临时socket/生成密钥，不访问用户agent，不提供运行时覆写入口。
-- Config/KnownHosts先落盘再更新内存；主机首次信任必须保存成功。vault为Argon2id+XChaCha20Poly1305 KTVT格式，每安装独立key；旧固定key自动迁移，不能打开的旧主密码vault先备份再重建。
+- Config/KnownHosts先落盘再更新内存；主机首次信任必须保存成功。vault为Argon2id+XChaCha20Poly1305 KTVT格式，每安装独立key；旧固定key先保留`.legacy-v1.backup`再自动迁移。当前Go实现对无法解密的自定义主密码/错配密钥/损坏库返回错误并保留原件，不自动备份后重建空库；不要沿用旧Rust这一路径的行为说明。
 - [platform路径](../app/internal/platform/paths_desktop.go)按已验证的构建身份选择生产/开发。生产严格沿用旧ProjectDirs：macOS配置/数据同为Application Support/com.kitony.KitonyTerms；Windows两者均Roaming/kitony/KitonyTerms下config/data；Linux小写kitonyterms遵循XDG。无身份开发隔离；显式DATA_DIR使用根下config/data；回归不触碰真实生产数据。
 - 主机信任继续固定host/port和完整SHA256指纹。服务器提供多种主机密钥时，首选变化可逐类重新协商以寻找原指纹；只对明确的已知密钥不匹配重试，RSA签名/证书别名一起排除，尝试共享120秒context且逐轮收敛。后续候选仅使用ssh.SupportedAlgorithms的现代算法；真实换钥在认证前拒绝，不重写信任，认证或其它网络失败不重试。ProxyJump每轮目标拨号重建独占跳板，继续先断宿主传输再关通道；嵌套拨号失败不触发外层目标重试。
 - 机密查看经[secretview](../app/internal/secretview/reader.go)串行认证，读取前后复核context、完整目标身份和退出；系统认证不缓存成功。macOS新LAContext，Windows绑定HWND的Hello/明确不支持时账户密码+LogonUser/SID校验；取消/认证失败不自动降级。同步系统对话框实际返回前不释放门禁。Linux/server/移动端明确拒绝。
@@ -39,20 +40,21 @@
 - 保持36px标题、默认220px侧栏、48px操作栏、58px页脚、200px历史；设置760px/168px分类。手机16px输入/44px控件、列表详情导航，safe-area与软键盘独立处理。
 - `frontend/bindings/`只由Wails生成；IPC DTO在model，设置/编辑/同步/更新代理草稿留局部，保存使用revision并在失败时保留草稿。主题/字体/界面缩放和终端字号各自拥有单一入口。
 - [fonts](../app/internal/fonts/catalog.go)返回本机名单和来源/原因：CoreText、同步GDI独占回调、固定argv有界fc-list；设置局部按实例加载/取消，未知字体原样保留。UI单字体安全CSS引用与终端字体栈分别序列化。
+- xterm 5.5.0在[构建适配](../app/frontend/xterm-font-metrics.ts)中固定使用自带DOM字宽测量，避免WKWebView离屏Canvas无法识别本地字体；开发预打包和生产构建均接入。适配必须唯一命中，否则构建失败。终端、辅助栏与预览共用等宽回退栈，容器可测量且字体加载完成后才打开/更新渲染器，隐藏与过期字体请求不能提交尺寸。
 - Android Application持有once-only Go初始化，Activity只绑定/解绑WebView；后台不关闭Go服务，BACK先历史后moveTaskToBack。旧实例和队列按身份拒绝；解绑释放传感器/原生请求，恢复重读Info/Config/Sessions。进程死亡后内存分享、草稿与保护任务不恢复，配置revision重建。
 - 相机仅应用来源视频请求；隐藏/关闭/迟到权限必须结束轨道，定位明确unavailable。iOS文件交换仍ErrUnavailable。
 
 ## 更新、快照与发布
 
-- BuildInfo仅构建时注入，固定官方仓库，开发禁用更新；stable按SemVer，alpha按run/attempt。版本来源frontend/package.json；六桌面target明确，移动端无桌面更新入口。
+- BuildInfo仅构建时注入，固定官方仓库，开发禁用更新；stable读取`/releases/latest`并拒绝prerelease、按SemVer比较，alpha读取固定alpha标签并按run/attempt比较。当前正式稳定版由Latest指向，历史预发布不会被稳定更新器选用；修改新客户端不能改变已安装旧客户端的检测规则。版本来源frontend/package.json；六桌面target明确，移动端无桌面更新入口。
 - ZIP/TAR/DMG同句柄复验摘要，原始反斜杠/路径穿越、重复/Unicode碰撞、链接/特殊文件和展开体积有界。DMG只读挂载，包内相对链接延后验证，codesign/bundle ID/精确update-info一致，成功失败都回收挂载。
 - task/journal/relaunch严格兼容旧字段/缺省storage，坏记录不覆盖。prepared/backed_up/committed在锁内刷盘推进，保留旧备份，匹配路径/构建的页面Info/Config/Sessions渲染确认后才清理；开发不可接管正式journal。
 - helper绑定自身路径/构建/摘要、任务、原目标和包，PID/摘要ready仅就绪；必须原进程退出且commit才替换，abort优先。恢复与替换同一持锁协调器负责，失败保留材料。Prepare/Commit/Abort绑定ID，取消等待真实任务回收，提交响应不明不重试或猜测取消。
 - Windows固定目录/输入句柄拒绝reparse/hardlink，Shell/Inno边界安全简化路径，内部仍规范路径比对。32/33/1224占用按预算重试、不提权；明确只读不提权；仅首次创建权限失败允许一次runas。管理员只replace/restore，不执行新载荷或启动GUI，普通owner等待实际退出后重开。
 - [Drain](../app/internal/session/drain.go)真实worker计数，超时恢复准入，成功release仅本轮有效。准备时所有文件/保存/选择器/认证操作先加入同一准入门禁，原生调用未返不提前释放。
 - 快照仅显式绝对源、新目标，取得已有应用/helper/安装锁但不补源锁；完整普通字节/空目录/未知/vault/key/编辑/更新材料，运行锁不复制。8GiB/50000项/64层，源前后/目标摘要核对刷盘。Unix0700/0600，Windows写前当前用户受保护DACL回读；不认证来源，不执行旧journal绝对路径，不覆盖恢复。
-- [发布workflow](../.github/workflows/release.yml)固定Go1.27.3/Node24/Wails3.0.0，不安装Rust。六桌面原生runner、Android仅ARM64 SDK36/NDK28.2/JDK21、macOS最低15，iOS完整SDK链接无签名IPA。CLI、模块和runtime不得单独升级。
+- [发布workflow](../.github/workflows/release.yml)固定Go1.27.3/Node24/Wails3.1.0，不安装Rust。六桌面原生runner、Android仅ARM64 SDK36/NDK28.2/JDK21、macOS最低15，iOS完整SDK链接无签名IPA。CLI、模块和runtime不得单独升级。
 - Windows资源和macOS包工具在新私有输入副本构建，buildinputs固定Root/边界/前后摘要，资源回读不等于运行；发布另确认实际update-info。macOS ad-hoc/signature/DMG挂载回读，不宣称正式签名公证；Windows ISCC实际执行，不宣称Authenticode。
-- 六份构建记录、八桌面包、三移动包、八verification记录、manifest和SHA256SUMS共27项严格集合；一致commit/run/attempt与包大小/SHA后才创建独立预发布，禁止覆盖稳定Release、旧tag或无关用户材料。构建结果与GUI/设备/升级/性能验收分开。
+- 六份构建记录、八桌面包、三移动包、八verification记录、manifest和SHA256SUMS共27项严格集合；一致commit/run/attempt与包大小/SHA后才创建正式Release并设为Latest，禁止覆盖已有Release、旧tag或无关用户材料。构建结果与GUI/设备/升级/性能验收分开。
 
 旧跨语言8顶层/31子项等历史证据保留；当前固定夹具记录格式和Go恢复/helper/锁回归不能被描述为每次仍执行Rust。实体输入/系统认证/真实升级/最旧系统/性能与长期稳定性开放项见[迁移矩阵](../docs/dioxus-to-wails-v3.md)。

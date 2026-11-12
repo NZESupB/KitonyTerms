@@ -5,9 +5,9 @@
 - [architecture.md](architecture.md)：Go模块边界、协议、安全与UI约束；修改跨模块逻辑前读取。
 - [maintenance.md](maintenance.md)：现有验证命令及文档归档方式。
 - [governance/rust.md](governance/rust.md)：历史Rust基线说明，当前工程不需要Rust。
-- [README 中文版](../README.zh-CN.md)：运行、存储和发布入口。
+- [项目 README](../README.md)：Wails安装、使用、数据兼容、v0.1.17手动升级与预发布检测边界；README.zh-CN.md为导航入口。
 - [Wails 最终迁移方案](../docs/dioxus-to-wails-v3.md)：共享 app/ 的契约、实现路径、P0–P6 功能/平台验收矩阵；修改迁移工程前读取。
-- [Wails 运行与检查](../app/README.md)：生产/开发路径、固定v3.0.0、原生构建与`scripts/check.sh`。
+- [Wails 运行与检查](../app/README.md)：生产/开发路径、固定v3.1.0、原生构建与`scripts/check.sh`。
 
 ## 当前任务
 - [全平台 Wails 迁移](workflow/261030-wails-full-migration.md)：共享Go/React与原桌面布局。历史更新互通8顶层/31子项及Windows611/macOS612候选保留；当前冻结夹具代替Rust调用，正式升级/数据接管、实体交互和性能仍开放。
@@ -21,6 +21,7 @@
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
 
 ## 最近归档
+- [Wails 3.1.0、终端字体与交互反馈](workflow/done/261111-wails-font-motion.md)：CLI/Go/runtime及检查同步；WKWebView离屏Canvas本地字体度量错误改用xterm自带DOM策略，字体与布局更新拒绝迟到结果；控件120–160ms反馈完成。统一门禁/47前端测试、原生组件180项、桌面及手机仿真各180项+23动效检查通过；macOS ARM64实际启动/6项IPC设置检查通过，Windows双架构仅编译。真实SSH/设备及其它平台边界见归档。
 - [Rust退出与GitHub打包](workflow/done/261110-remove-rust-github-package.md)：提交`d3e8f68`推送dev；Wails预发布`v0.1.18`（run 42807234257）11项任务成功，27项/117,274,203字节实际下载核验通过。保留v0.1.17稳定版、main及旧引用；正式升级、系统认证、真机与性能验收仍开放。
 
 - [发布 v0.1.16 并合并 main](workflow/done/261024-release-v0116.md)：发布提交 23f4e31；修复 v0.1.15 审计依赖阻断后，流水线 40092527348 的 10 项任务全部成功，12 个附件设为 Latest，43 项实际下载校验与 5 项 macOS 包检查通过；main 快进纳入 dev 并同步远端。Rust 615 通过/1 忽略，Node 8 项、Windows 原生 61/6 项通过；原生 Vim/Docker/WebView 等实机验收仍待对应环境。

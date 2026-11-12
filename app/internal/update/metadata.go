@@ -77,7 +77,7 @@ func desktopTarget() string {
 }
 func CurrentBuild() (BuildInfo, error) {
 	if embeddedIdentity == "" {
-		return BuildInfo{Channel: "development", Version: "0.2.0", Target: desktopTarget()}, nil
+		return BuildInfo{Channel: "development", Version: "0.2.1", Target: desktopTarget()}, nil
 	}
 	data, err := base64.RawURLEncoding.DecodeString(embeddedIdentity)
 	if err != nil || len(data) > 4096 {

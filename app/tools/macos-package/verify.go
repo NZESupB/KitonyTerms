@@ -91,11 +91,11 @@ func checkBinary(path string) (sdk string, err error) {
 	pinned := false
 	for _, dependency := range build.Deps {
 		if dependency.Path == "github.com/wailsapp/wails/v3" {
-			pinned = dependency.Version == "v3.0.0" && dependency.Replace == nil
+			pinned = dependency.Version == "v3.1.0" && dependency.Replace == nil
 		}
 	}
 	if !production || !pinned {
-		return "", errors.New("候选必须为production及无替换的Wails v3.0.0")
+		return "", errors.New("候选必须为production及无替换的Wails v3.1.0")
 	}
 	return sdk, nil
 }

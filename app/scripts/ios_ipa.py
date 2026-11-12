@@ -54,14 +54,14 @@ def preflight(number):
             "缺少iPhoneOS SDK；请先配置完整Xcode。无签名IPA不要求开发者账号，但仍需SDK链接")
     for tool in ("clang", "actool", "ibtool"):
         run(["xcrun", "--sdk", "iphoneos", "--find", tool], capture=True)
-    require(run(["wails3", "version"], capture=True) == "v3.0.0", "Wails CLI必须固定v3.0.0")
+    require(run(["wails3", "version"], capture=True) == "v3.1.0", "Wails CLI必须固定v3.1.0")
     require(run(["go", "list", "-mod=readonly", "-m", "-f", "{{.Version}}",
-                 "github.com/wailsapp/wails/v3"], capture=True) == "v3.0.0",
-            "Wails Go模块必须固定v3.0.0")
+                 "github.com/wailsapp/wails/v3"], capture=True) == "v3.1.0",
+            "Wails Go模块必须固定v3.1.0")
     declared = json.loads((ROOT / "frontend/package.json").read_text())
     installed = json.loads((ROOT / "frontend/node_modules/@wailsio/runtime/package.json").read_text())
-    require(declared["dependencies"]["@wailsio/runtime"] == installed["version"] == "3.0.0",
-            "前端Wails runtime必须固定3.0.0，且已安装依赖")
+    require(declared["dependencies"]["@wailsio/runtime"] == installed["version"] == "3.1.0",
+            "前端Wails runtime必须固定3.1.0，且已安装依赖")
     return sdk_result.stdout.strip()
 
 

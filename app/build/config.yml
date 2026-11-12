@@ -4,17 +4,17 @@ info:
   companyName: "Kitony"
   productName: "KitonyTerms"
   productIdentifier: "com.kitonyterms.app"
-  description: "跨平台 SSH 与服务器管理工作台"
+  description: "KitonyTerms"
   copyright: "© 2026 KitonyTerms"
   comments: "Go/Wails/React"
-  version: "0.2.0"
+  version: "0.2.1"
 
 ios:
   bundleID: "com.kitonyterms.app"
   displayName: "KitonyTerms"
-  version: "0.2.0"
+  version: "0.2.1"
   company: "Kitony"
-  comments: "跨平台 SSH 工作台"
+  comments: "KitonyTerms"
 
 dev_mode:
   root_path: .

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -57,8 +58,15 @@ func TestCandidateVersionAndBilingualResources(t *testing.T) {
 				t.Fatal("数字版本/Alpha标记不符")
 			}
 			table := vi.Table()[locale]
-			if table == nil || (*table)[version.ProductName] != "KitonyTerms" || (*table)[version.CompanyName] != "Kitony" || (*table)[version.OriginalFilename] != "kitonyterms.exe" {
-				t.Fatal("双语产品字段缺失")
+			if table == nil || (*table)[version.ProductName] != productDisplayName || (*table)[version.FileDescription] != productDisplayName || (*table)[version.CompanyName] != "Kitony" || (*table)[version.OriginalFilename] != "kitonyterms.exe" {
+				t.Fatal("双语产品字段缺失或显示名不一致")
+			}
+			_, textVersion, err := numericVersion(info)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (*table)[version.FileVersion] != textVersion || (*table)[version.ProductVersion] != textVersion {
+				t.Fatal("字符串版本字段未跟随构建身份")
 			}
 			data, _ := json.Marshal(info)
 			if (*table)[version.Comments] != string(data) {
@@ -71,6 +79,68 @@ func TestCandidateVersionAndBilingualResources(t *testing.T) {
 		if _, _, err := numericVersion(info); err == nil {
 			t.Fatal("Windows16位数字版本应拒绝超限")
 		}
+	}
+}
+
+func releaseVersion(t *testing.T) string {
+	t.Helper()
+	manifest, err := os.ReadFile("../../frontend/package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var project struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(manifest, &project); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(project.Version) {
+		t.Fatalf("发布版本必须是三段数字：%q", project.Version)
+	}
+	return project.Version
+}
+
+func TestDisplayNameContract(t *testing.T) {
+	files := []string{
+		"../../build/config.yml",
+		"../../build/windows/info.json",
+		"../../build/ios/Info.plist",
+		"../../main.go",
+	}
+	forbidden := []string{"跨平台 SSH 与服务器管理工作台", "跨平台 SSH 工作台", "SSH and server management workspace", "Wails 迁移版"}
+	for _, name := range files {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range forbidden {
+			if bytes.Contains(data, []byte(value)) {
+				t.Fatalf("%s仍包含旧显示名%q", name, value)
+			}
+		}
+	}
+	main, err := os.ReadFile("../../main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{`const appDisplayName = "KitonyTerms"`, "Name: appDisplayName", "Description: appDisplayName", "Title: appDisplayName"} {
+		if !bytes.Contains(main, []byte(fragment)) {
+			t.Fatalf("main.go缺少统一显示名引用：%s", fragment)
+		}
+	}
+	info, err := os.ReadFile("../../build/windows/info.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(info, []byte(`"FileDescription": "`+productDisplayName+`"`)) != 2 {
+		t.Fatal("两种语言的Windows资源描述必须统一为KitonyTerms")
+	}
+	plist, err := os.ReadFile("../../build/ios/Info.plist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(plist, []byte("<string>"+productDisplayName+" "+releaseVersion(t)+"</string>")) {
+		t.Fatal("iOS信息串必须使用KitonyTerms加版本号")
 	}
 }
 

@@ -1,6 +1,6 @@
 # 维护与验证
 
-生产工程为app/的Go/Wails/React，不需要Rust/Cargo/Dioxus。固定Wails CLI/模块/runtime为3.0.0，GitHub使用Go1.27.3/Node24。
+生产工程为app/的Go/Wails/React，不需要Rust/Cargo/Dioxus。固定Wails CLI/模块/runtime为3.1.0，GitHub使用Go1.27.3/Node24。
 
 ## 完整门禁
 

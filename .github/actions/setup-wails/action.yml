@@ -1,5 +1,5 @@
 name: 固定Wails构建环境
-description: Go 1.27.3、Node 24、Wails 3.0.0与锁定的前端依赖
+description: Go 1.27.3、Node 24、Wails 3.1.0与锁定的前端依赖
 runs:
   using: composite
   steps:
@@ -16,8 +16,8 @@ runs:
       working-directory: app
       run: |
         go mod download
-        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
-        test "$(wails3 version 2>&1)" = v3.0.0
+        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+        test "$(wails3 version 2>&1)" = v3.1.0
         npm --prefix frontend ci
         npm --prefix frontend run build
         wails3 generate bindings -ts -i

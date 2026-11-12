@@ -1,20 +1,20 @@
 # KitonyTerms Go / Wails / React 工程
 
-当前生产入口位于本目录。CLI、Go模块与前端runtime固定Wails v3.0.0；Go1.27.3、Node24，依赖使用go.sum和npm lockfile。项目源码、构建、检查和发布不再需要Rust/Cargo/Dioxus。旧跨语言工具已退役，固定公开TOML/vault/同步/更新记录夹具继续由Go回归。
+当前生产入口位于本目录。CLI、Go模块与前端runtime固定Wails v3.1.0；Go1.27.3、Node24，依赖使用go.sum和npm lockfile。项目源码、构建、检查和发布不再需要Rust/Cargo/Dioxus。旧跨语言工具已退役，固定公开TOML/vault/同步/更新记录夹具继续由Go回归。
 
 ## 开发与编译
 
 ```bash
 go mod download
 npm --prefix frontend ci
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 wails3 dev -config ./build/config.yml
 bash scripts/compile.sh
 ```
 
 编译入口支持darwin/windows/linux的amd64与arm64；macOS需要SDK，Linux桌面需要对应架构CGO和GTK4/WebKitGTK6。macOS最低15.0。无发布身份的程序使用系统配置目录下`KitonyTerms-Wails-Development/{config,data}`。
 
-`KITONYTERMS_DATA_DIR=/absolute/isolated-root`显式指定独立数据根。正式身份的桌面构建沿用旧数据目录和`kitonyterms.lock`，具体映射见[项目说明](../README.zh-CN.md)。回归与故障注入必须使用临时副本，不能指向当前正式数据。
+`KITONYTERMS_DATA_DIR=/absolute/isolated-root`显式指定独立数据根。正式身份的桌面构建沿用旧数据目录和`kitonyterms.lock`，具体映射、兼容限制与旧版升级步骤见[项目说明](../README.md)。回归与故障注入必须使用临时副本，不能指向当前正式数据。
 
 无GUI服务须显式选择：
 
@@ -59,7 +59,7 @@ go run ./tools/data-snapshot restore --snapshot /absolute/private/snapshot-new -
 - iOS无签名设备IPA：`wails3 task ios:package:ipa MOBILE_BUILD_NUMBER=1 OUTPUT=/absolute/new-output`，需要完整Xcode/iPhoneOS SDK；无开发者账号/App Store要求，侧载另需重签。生成器验证设备arm64/最低15.0、图标/启动屏幕、无签名/描述文件、Payload字节和执行权限。iOS文件交换仍未实现。
 - 桌面发布通过[GitHub脚本](../.github/scripts/build-desktop.py)，六目标分别在原生runner构建并执行只读`--update-info`。Windows复用[资源与Inno工具](tools/windows-package/main.go)，macOS复用[签名与DMG回读工具](tools/macos-package/main.go)，Linux保留桌面入口和产品图标。
 
-发布公开身份来自构建时注入；运行环境不能开启更新或改变来源。`app/frontend/package.json`为发布版本来源；schema1记录绑定版本/完整commit/run/attempt/target，更新清单绑定包大小/SHA和资产身份。GitHub打包成功后创建独立prerelease，不覆盖稳定版或旧tag。
+发布公开身份来自构建时注入；运行环境不能开启更新或改变来源。`app/frontend/package.json`为发布版本来源；schema1记录绑定版本/完整commit/run/attempt/target，更新清单绑定包大小/SHA和资产身份。GitHub打包成功后创建正式稳定Release并设为Latest，不覆盖已有Release或旧tag；旧预发布说明仅描述其历史通道。稳定客户端读取`/releases/latest`并拒绝预发布，安装或升级须按[安装与升级指南](../README.md)完整备份，不能以包校验代替正式升级验收。
 
 ## 验证边界
 
