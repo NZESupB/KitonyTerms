@@ -32,6 +32,7 @@ type State = {
   protectedOwners: Record<string, boolean>;
   apply: (snapshot: ConfigSnapshot) => void;
   select: (id: string | null) => void;
+  openSession: (session: SessionSnapshot) => void;
   report: (error: unknown) => void;
   setProtected: (owner: string, active: boolean) => void;
 };
@@ -52,6 +53,15 @@ export const useApp = create<State>((set) => ({
       newerRevision(state.config?.revision, config.revision) ? { config } : {},
     ),
   select: (active) => set({ active }),
+  openSession: (session) =>
+    set((state) => ({
+      // 列表刷新可能已带回更新的认证/连接状态，不用 Connect 的快照覆盖它。
+      // 始终产生新引用，让在途列表请求识别出这次本地写入。
+      sessions: state.sessions.some((value) => value.id === session.id)
+        ? [...state.sessions]
+        : [...state.sessions, session],
+      active: session.id,
+    })),
   report: (error) =>
     set((state) =>
       state.quitting || state.installing ? {} : { error: errorText(error) },
@@ -81,6 +91,7 @@ export function hasLocalInstallProtection(): boolean {
 export function connectBackend(onReady?: () => void): () => void {
   let disposed = false;
   let refreshing = false;
+  let refreshAgain = false;
   const pending = new Set<{ cancel: () => Promise<unknown> }>();
   const loaded = { info: false, config: false, sessions: false };
   let announced = false;
@@ -102,19 +113,25 @@ export function connectBackend(onReady?: () => void): () => void {
     if (!disposed) useApp.getState().report(error);
   };
   const refreshSessions = async () => {
-    if (
-      disposed ||
-      refreshing ||
-      useApp.getState().quitting ||
-      useApp.getState().installing
-    )
+    if (disposed || useApp.getState().quitting || useApp.getState().installing)
       return;
+    if (refreshing) {
+      refreshAgain = true;
+      return;
+    }
     refreshing = true;
+    refreshAgain = false;
+    const sessionsAtStart = useApp.getState().sessions;
     const request = Backend.GetSessions();
     pending.add(request);
     try {
       const sessions = (await request) ?? [];
       if (!disposed) {
+        // Connect 返回后已插入新会话；旧列表不能移除它并回退选中项。
+        if (useApp.getState().sessions !== sessionsAtStart) {
+          refreshAgain = true;
+          return;
+        }
         useApp.setState((state) => ({
           sessions,
           active: sessions.some((s) => s.id === state.active)
@@ -129,6 +146,8 @@ export function connectBackend(onReady?: () => void): () => void {
     } finally {
       refreshing = false;
       pending.delete(request);
+      // 请求期间的 sessions:changed（包括认证挑战）必须在结束后补刷。
+      if (refreshAgain && !disposed) void refreshSessions();
     }
   };
   const offConfig = Events.On("config:changed", (event) => {

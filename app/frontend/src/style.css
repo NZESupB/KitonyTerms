@@ -610,12 +610,101 @@ small {
   position: absolute;
   bottom: 10px;
   left: 12px;
-  color: #e6bd86;
-  max-width: 95%;
-  overflow-wrap: anywhere;
-  background: #101318dd;
-  padding: 5px 8px;
   z-index: 1;
+  display: grid;
+  gap: 8px;
+  width: max-content;
+  max-width: min(440px, calc(100% - 24px));
+  max-height: calc(100% - 20px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px #00000014;
+}
+.connection-status-row,
+.connection-status-title,
+.connection-status-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.connection-status-row,
+.connection-status-copy {
+  flex-wrap: wrap;
+}
+.connection-status-row {
+  justify-content: space-between;
+}
+.connection-status-title {
+  min-width: 0;
+}
+.connection-status-title svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.connection-status button {
+  max-width: 100%;
+}
+.connection-status button:hover:not(:disabled) {
+  background: var(--field);
+  border-color: var(--muted);
+}
+.connection-status-hint,
+.connection-status-copy span {
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale));
+  line-height: 1.5;
+}
+.connection-status-failure {
+  color: var(--danger);
+  font-size: calc(12px * var(--ui-scale));
+}
+.connection-status-details {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.connection-status-details summary {
+  width: fit-content;
+  min-height: 30px;
+  padding: 5px 0;
+  color: var(--muted);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.connection-status-details summary:hover {
+  color: var(--text);
+}
+.connection-status-details summary:focus-visible,
+.connection-status-details pre:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.connection-status-details pre {
+  max-height: min(180px, 30vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 4px 0 8px;
+  padding: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: calc(12px * var(--ui-scale));
+  line-height: 1.5;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.is-phone .connection-status button,
+.is-phone .connection-status summary {
+  min-height: 44px;
 }
 .empty {
   display: flex;

@@ -23,6 +23,7 @@ import {
 import {
   Backend,
   connectBackend,
+  errorText,
   useApp,
   type Profile,
   type SessionSnapshot,
@@ -34,6 +35,7 @@ import {
   blankProfile,
 } from "./components/Dialogs";
 import { TerminalView } from "./components/TerminalView";
+import { ConnectionStatus } from "./components/ConnectionStatus";
 import { FileBrowser } from "./components/FileBrowser";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Splitter } from "./components/Splitter";
@@ -57,12 +59,6 @@ import "./style.css";
 
 type Page = "connections" | "terminal" | "files" | "settings" | "operations";
 const phoneQuery = "(max-width: 599px), (max-height: 599px)";
-const statusLabel: Record<string, TextKey> = {
-  connecting: "连接中",
-  connected: "已连接",
-  closing: "关闭中",
-  closed: "已断开",
-};
 const pages = [
   { id: "connections", label: "连接", icon: Server },
   { id: "terminal", label: "终端", icon: SquareTerminal },
@@ -96,6 +92,19 @@ export default function App() {
   const [editing, setEditing] = useProtectedState<Profile | null>(null);
   const [deleting, setDeleting] = useProtectedState<Profile | null>(null);
   const [busy, setBusy] = useProtectedState(false);
+  const connectingNow = useRef(false);
+  const connectRequest = useRef<ReturnType<typeof Backend.Connect>>();
+  const connectionLive = useRef(true);
+  const [reconnectErrors, setReconnectErrors] = useState<
+    Record<string, string>
+  >({});
+  useEffect(() => {
+    connectionLive.current = true;
+    return () => {
+      connectionLive.current = false;
+      if (connectRequest.current) void connectRequest.current.cancel();
+    };
+  }, []);
   const [collapsed, setCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const [sftpHeight, setSftpHeight] = useState(320);
@@ -227,18 +236,54 @@ export default function App() {
     Math.min(420, Math.floor((workspaceSize.height - (phone ? 39 : 0)) * 0.45)),
   );
   const actualHistory = Math.min(historyHeight, maxHistory);
-  async function connect(profile: Profile) {
-    if (busy) return;
+  async function connect(profile: Profile, previous?: SessionSnapshot) {
+    const state = useApp.getState();
+    if (connectingNow.current || busy || state.quitting || state.installing)
+      return;
+    if (previous) {
+      const current = state.sessions.find(
+        (session) =>
+          session.id === previous.id &&
+          session.generation === previous.generation,
+      );
+      const savedProfile = state.config?.config.sessions?.find(
+        (value) => value.name === previous.title,
+      );
+      if (current?.status !== "closed" || !savedProfile) return;
+      profile = savedProfile;
+    }
+    const previousKey = previous && `${previous.id}:${previous.generation}`;
+    connectingNow.current = true;
     setBusy(true);
     try {
-      const session = await Backend.Connect(profile.name);
-      useApp.getState().select(session.id);
+      connectRequest.current = Backend.Connect(profile.name);
+      const session = await connectRequest.current;
+      if (!connectionLive.current) return;
+      useApp.getState().openSession(session);
       setPage("terminal");
+      if (previousKey)
+        setReconnectErrors((errors) => {
+          const next = { ...errors };
+          delete next[previousKey];
+          return next;
+        });
     } catch (error) {
-      useApp.getState().report(error);
+      if (!connectionLive.current) return;
+      if (previousKey)
+        setReconnectErrors((errors) => ({
+          ...errors,
+          [previousKey]: errorText(error),
+        }));
+      else useApp.getState().report(error);
     } finally {
+      connectRequest.current = undefined;
+      connectingNow.current = false;
       setBusy(false);
     }
+  }
+  function openConnections() {
+    setCollapsed(false);
+    setPage("connections");
   }
   async function remove() {
     if (!deleting || !config) return;
@@ -276,6 +321,9 @@ export default function App() {
   const selected = sessions.find((session) => session.id === active);
   const challenging = sessions.find((session) => session.challenge);
   const profiles = config?.config.sessions ?? [];
+  const reconnectProfile = profiles.find(
+    (profile) => profile.name === selected?.title,
+  );
   const groups = [
     ...new Set([
       ...(config?.config.groups ?? []),
@@ -562,12 +610,21 @@ export default function App() {
                 </div>
               )}
               {selected && selected.status !== "connected" && (
-                <p className="connection-status" role="status">
-                  {statusLabel[selected.status]
-                    ? t(statusLabel[selected.status])
-                    : selected.status}{" "}
-                  {selected.error}
-                </p>
+                <ConnectionStatus
+                  key={`${selected.id}:${selected.generation}`}
+                  session={selected}
+                  profileAvailable={!!reconnectProfile}
+                  busy={busy}
+                  reconnectError={
+                    reconnectErrors[`${selected.id}:${selected.generation}`] ??
+                    ""
+                  }
+                  onReconnect={() => {
+                    if (reconnectProfile)
+                      void connect(reconnectProfile, selected);
+                  }}
+                  onOpenConnections={openConnections}
+                />
               )}
             </div>
             {historyOpen && selected && (!phone || page === "terminal") && (

@@ -19,6 +19,7 @@
 ## 会话、取消和数据
 
 - 所有事件以连接generation和request/operation/exec ID归属，迟到结果不能覆盖新请求。通道有界、终端输出有界重放；宿主PTY、容器PTY、SFTP与操作exec分别拥有生命周期。
+- 断连重连复用 `Connect(profile.name)` 创建新标签，旧会话及编辑草稿保留；`openSession` 原子加入返回快照并选中，已有更新快照不回退。在途会话列表若早于这次本地写入则丢弃并补刷，请求期间的 `sessions:changed` 也需补刷，避免新会话或认证挑战被旧结果覆盖。
 - 单跳ProxyJump按会话独占外层传输；取消等待真实OpenChannel结束，关闭先断外层再关转发通道，避免写背压互等。正常SFTP取消保留宿主SSH，完全停滞时允许回收连接。
 - Windows agent固定go-winio v0.6.4/x/sys v0.49.0，10秒上限与context；Manager构造时私有连接器，产品仍使用OpenSSH命名管道。测试仅随机当前用户管道/临时socket/生成密钥，不访问用户agent，不提供运行时覆写入口。
 - Config/KnownHosts先落盘再更新内存；主机首次信任必须保存成功。vault为Argon2id+XChaCha20Poly1305 KTVT格式，每安装独立key；旧固定key先保留`.legacy-v1.backup`再自动迁移。当前Go实现对无法解密的自定义主密码/错配密钥/损坏库返回错误并保留原件，不自动备份后重建空库；不要沿用旧Rust这一路径的行为说明。

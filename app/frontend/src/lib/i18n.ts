@@ -117,6 +117,25 @@ export const english = {
   已连接: "Connected",
   关闭中: "Closing",
   已断开: "Disconnected",
+  连接已断开: "Connection disconnected",
+  重新连接: "Reconnect",
+  打开连接管理: "Open connections",
+  "将在新标签页重新连接。": "Reconnect in a new tab.",
+  "将在新标签页重新连接，旧会话及未保存内容将保留。":
+    "Reconnect in a new tab. The old session and unsaved content will be kept.",
+  "将建立新的 SSH 会话，不会恢复原来的 Shell 或进程。":
+    "This creates a new SSH session; the original shell and processes will not be restored.",
+  "此会话的连接配置已删除或改名，请在连接管理中选择或新建连接。":
+    "This session's connection profile was deleted or renamed. Open connections to select or create a profile.",
+  断开原因: "Disconnect reason",
+  重新连接失败: "Reconnection failed",
+  "重新连接失败，请重试。": "Reconnection failed. Please try again.",
+  查看详情: "View details",
+  连接错误详情: "Connection error details",
+  复制详情: "Copy details",
+  已复制详情: "Details copied",
+  "复制失败，请选择详情手动复制。":
+    "Copy failed. Select the details and copy them manually.",
   命令历史: "Command history",
   终端会话: "Terminal sessions",
   新建连接: "New connection",
