@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   Backend,
+  errorText,
   useApp,
   type SessionSnapshot,
   type Settings,
@@ -13,25 +14,44 @@ import {
 import { base64ToBytes, bytesToBase64, OrderedInput } from "../lib/protocol";
 import { readClipboard, writeClipboard } from "../lib/clipboard";
 import { terminalFontFamily } from "../lib/appearance";
-
 import {
   attachTerminalAnnotations,
   terminalColumns,
 } from "../lib/terminal-display";
 import { useText } from "../lib/useText";
-import { translate } from "../lib/i18n";
+import { translate, type TextKey } from "../lib/i18n";
+
+// 返回普通缓冲区并解除远端遗留的交互模式，不清除滚动历史。
+const disconnectModes =
+  "\x1b[!p\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?25h\x1b[0m";
+function terminalText(value: string): string {
+  return Array.from(value.slice(0, 8192).replace(/\r\n?/g, "\n"))
+    .filter((char) => {
+      const code = char.codePointAt(0)!;
+      return char === "\n" || (code >= 32 && (code < 127 || code > 159));
+    })
+    .join("")
+    .replace(/\n/g, "\r\n");
+}
+
 export function TerminalView({
   session,
   active,
   settings,
   execId,
   onToggleHistory,
+  onReconnect,
+  reconnectDisabled = false,
+  profileAvailable = true,
 }: {
   session: SessionSnapshot;
   active: boolean;
   settings: Settings;
   execId?: string;
   onToggleHistory?: () => void;
+  onReconnect?: () => Promise<void>;
+  reconnectDisabled?: boolean;
+  profileAvailable?: boolean;
 }) {
   const t = useText();
   const surface = useRef<HTMLDivElement>(null);
@@ -39,13 +59,25 @@ export function TerminalView({
   const highlights = useRef<HTMLDivElement>(null);
   const annotations = useRef<ReturnType<typeof attachTerminalAnnotations>>();
   const resizeTerminal = useRef<(focus?: boolean) => void>();
+  const sendTerminalSize = useRef<() => void>();
+  const refreshStatus = useRef<() => void>();
   const container = useRef<HTMLDivElement>(null);
   const [hasSelection, setHasSelection] = useState(false);
   const terminal = useRef<Terminal>();
-  const currentStatus = useRef(session.status);
-  currentStatus.current = session.status;
+  const currentSession = useRef(session);
+  currentSession.current = session;
   const currentActive = useRef(active);
   currentActive.current = active;
+  const reconnectOptions = useRef({
+    onReconnect,
+    reconnectDisabled,
+    profileAvailable,
+  });
+  reconnectOptions.current = {
+    onReconnect,
+    reconnectDisabled,
+    profileAvailable,
+  };
   const pasteVersion = useRef(0);
   useEffect(() => {
     const invalidate = () => {
@@ -62,9 +94,6 @@ export function TerminalView({
   useEffect(() => {
     if (!container.current || !gutter.current || !highlights.current) return;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let after = "0";
-    let pollRequest: ReturnType<typeof Backend.PollTerminal> | undefined;
     const report = (error: unknown) => {
       if (!stopped) useApp.getState().report(error);
     };
@@ -103,31 +132,7 @@ export function TerminalView({
     let frame = 0;
     let layoutVersion = 0;
     let focusRequested = false;
-    let lastSize = "";
     let fontLoad: { key: string; promise: Promise<FontFace[]> } | undefined;
-    const sendSize = () => {
-      if (!term.element || currentStatus.current !== "connected") {
-        lastSize = "";
-        return;
-      }
-      const key = `${term.cols}:${term.rows}`;
-      if (lastSize === key) return;
-      lastSize = key;
-      void (
-        execId
-          ? Backend.ResizeContainerTerminal(
-              session.id,
-              session.generation,
-              execId,
-              term.cols,
-              term.rows,
-            )
-          : Backend.Resize(session.id, session.generation, term.cols, term.rows)
-      ).catch((error: unknown) => {
-        if (lastSize === key) lastSize = "";
-        report(error);
-      });
-    };
     const measurable = () =>
       !!container.current?.clientWidth && !!container.current?.clientHeight;
     const applyLayout = async (version: number) => {
@@ -154,7 +159,7 @@ export function TerminalView({
           size.rows,
         );
       display.refresh();
-      sendSize();
+      sendTerminalSize.current?.();
       if (
         focusRequested &&
         currentActive.current &&
@@ -175,91 +180,16 @@ export function TerminalView({
         });
     };
     resizeTerminal.current = resize;
-    const input = new OrderedInput(
-      async (sequence, data) => {
-        const request = {
-          sessionId: session.id,
-          generation: session.generation,
-          sequence,
-          data: bytesToBase64(data),
-        };
-        await (execId
-          ? Backend.SendContainerInput({ ...request, execId })
-          : Backend.SendInput(request));
-      },
-      (execId
-        ? Backend.GetContainerTerminal(session.id, session.generation, execId)
-        : Backend.GetTerminalState(session.id, session.generation)
-      ).then((state) => state.inputSequence),
-    );
-    const onData = term.onData((data) => {
-      term.scrollToBottom();
-      if (currentStatus.current === "connected")
-        void input.enqueue(new TextEncoder().encode(data)).catch(report);
-    });
-    const onBinary = term.onBinary((data) => {
-      term.scrollToBottom();
-      if (currentStatus.current === "connected")
-        void input
-          .enqueue(Uint8Array.from(data, (char) => char.charCodeAt(0)))
-          .catch(report);
-    });
-    const onResize = term.onResize(sendSize);
     const observer = new ResizeObserver(() => resize());
     observer.observe(container.current);
     if (surface.current) observer.observe(surface.current);
-    const poll = async () => {
-      try {
-        pollRequest = execId
-          ? Backend.PollContainerTerminal(
-              session.id,
-              session.generation,
-              execId,
-              after,
-            )
-          : Backend.PollTerminal(session.id, session.generation, after);
-        const batch = await pollRequest;
-        if (stopped) return;
-        if (batch.reset) {
-          term.reset();
-          display.reset();
-          term.writeln(
-            translate(
-              useApp.getState().config?.config.settings.language ?? "chinese",
-              "[已恢复最近的终端历史，更早输出已超出缓冲区]",
-            ),
-          );
-        }
-        const chunks = batch.chunks ?? [];
-        for (const chunk of chunks) {
-          if (stopped) return;
-          await new Promise<void>((resolve) =>
-            term.write(base64ToBytes(chunk.data), resolve),
-          );
-          after = chunk.sequence;
-        }
-        // 再发一次 after 让后端确认尾块；关闭后的已消费数据不会丢失。
-        if (batch.closed && chunks.length === 0) return;
-      } catch (error) {
-        if (!stopped) report(error);
-        return;
-      }
-      if (!stopped)
-        timer = setTimeout(() => {
-          void poll();
-        }, 16);
-    };
-    void poll();
+    const onResize = term.onResize(() => sendTerminalSize.current?.());
     return () => {
       stopped = true;
       layoutVersion++;
       cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      if (pollRequest) void pollRequest.cancel();
       observer.disconnect();
       appearance.disconnect();
-      onData.dispose();
-      onBinary.dispose();
       onResize.dispose();
       display.dispose();
       annotations.current = undefined;
@@ -267,7 +197,261 @@ export function TerminalView({
       term.dispose();
       terminal.current = undefined;
     };
+  }, [session.id, execId]);
+
+  useEffect(() => {
+    const term = terminal.current;
+    if (!term) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let after = "0";
+    let drained = false;
+    let disconnected = false;
+    let connecting = false;
+    let reconnecting = false;
+    let failure = "";
+    let available: boolean | undefined;
+    const pending = new Set<{ cancel: () => Promise<unknown> }>();
+    const isCurrent = () =>
+      !stopped &&
+      currentSession.current.id === session.id &&
+      currentSession.current.generation === session.generation;
+    const text = (key: TextKey) =>
+      translate(initialSettings.current.language, key);
+    const report = (error: unknown) => {
+      if (isCurrent() && currentSession.current.status === "connected")
+        useApp.getState().report(error);
+    };
+    const track = async <T,>(
+      request: Promise<T> & { cancel: () => Promise<unknown> },
+    ): Promise<T> => {
+      pending.add(request);
+      try {
+        return await request;
+      } finally {
+        pending.delete(request);
+      }
+    };
+    const hint = () =>
+      text(
+        reconnectOptions.current.profileAvailable
+          ? "按 Enter 重新连接。"
+          : "此会话的连接配置已删除或改名，请在连接管理中选择或新建连接。",
+      );
+    const showStatus = () => {
+      if (!isCurrent() || execId || !reconnectOptions.current.onReconnect)
+        return;
+      const current = currentSession.current;
+      if (current.status === "connecting" && !connecting) {
+        connecting = true;
+        term.writeln(`\r\n[${text("连接中")}]`);
+      }
+      if (current.status !== "closed" || !drained) return;
+      if (!disconnected) {
+        disconnected = true;
+        const reason = current.error || failure;
+        if (term.buffer.active.type === "alternate") term.write("\x1b[?1049l");
+        term.write(disconnectModes);
+        term.writeln(`\r\n${text("[连接已断开]")}`);
+        if (reason)
+          term.writeln(`${text("断开原因")}：${terminalText(reason)}`);
+        term.writeln(hint());
+        term.scrollToBottom();
+        available = reconnectOptions.current.profileAvailable;
+      } else if (available !== reconnectOptions.current.profileAvailable) {
+        available = reconnectOptions.current.profileAvailable;
+        term.writeln(`\r\n${hint()}`);
+        term.scrollToBottom();
+      }
+    };
+    refreshStatus.current = showStatus;
+    let lastSize = "";
+    const sendSize = () => {
+      if (
+        !isCurrent() ||
+        !term.element ||
+        currentSession.current.status !== "connected"
+      ) {
+        lastSize = "";
+        return;
+      }
+      const key = `${term.cols}:${term.rows}`;
+      if (lastSize === key) return;
+      lastSize = key;
+      void track(
+        execId
+          ? Backend.ResizeContainerTerminal(
+              session.id,
+              session.generation,
+              execId,
+              term.cols,
+              term.rows,
+            )
+          : Backend.Resize(
+              session.id,
+              session.generation,
+              term.cols,
+              term.rows,
+            ),
+      ).catch((error: unknown) => {
+        if (lastSize === key) lastSize = "";
+        report(error);
+      });
+    };
+    sendTerminalSize.current = sendSize;
+    const input = new OrderedInput(
+      async (sequence, data) => {
+        if (!isCurrent() || currentSession.current.status !== "connected")
+          throw new Error("终端输入所属连接已失效");
+        const request = {
+          sessionId: session.id,
+          generation: session.generation,
+          sequence,
+          data: bytesToBase64(data),
+        };
+        await track(
+          execId
+            ? Backend.SendContainerInput({ ...request, execId })
+            : Backend.SendInput(request),
+        );
+      },
+      track(
+        execId
+          ? Backend.GetContainerTerminal(session.id, session.generation, execId)
+          : Backend.GetTerminalState(session.id, session.generation),
+      ).then((state) => state.inputSequence),
+    );
+    const onData = term.onData((data) => {
+      if (!isCurrent() || currentSession.current.status !== "connected") return;
+      term.scrollToBottom();
+      void input.enqueue(new TextEncoder().encode(data)).catch(report);
+    });
+    const onBinary = term.onBinary((data) => {
+      if (!isCurrent() || currentSession.current.status !== "connected") return;
+      term.scrollToBottom();
+      void input
+        .enqueue(Uint8Array.from(data, (char) => char.charCodeAt(0)))
+        .catch(report);
+    });
+    term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.key !== "Enter" ||
+        execId ||
+        !reconnectOptions.current.onReconnect ||
+        currentSession.current.status === "connected"
+      )
+        return true;
+      if (
+        event.type !== "keydown" ||
+        event.repeat ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        event.shiftKey
+      )
+        return false;
+      const options = reconnectOptions.current;
+      const state = useApp.getState();
+      if (
+        !isCurrent() ||
+        !currentActive.current ||
+        !term.element?.contains(document.activeElement) ||
+        document.visibilityState !== "visible" ||
+        document.querySelector('[role="dialog"]') ||
+        state.quitting ||
+        state.installing ||
+        options.reconnectDisabled ||
+        !options.profileAvailable ||
+        !drained ||
+        !disconnected ||
+        reconnecting ||
+        currentSession.current.status !== "closed"
+      )
+        return false;
+      reconnecting = true;
+      term.writeln(`\r\n${text("[正在重新连接……]")}`);
+      term.scrollToBottom();
+      void options.onReconnect!().catch((error: unknown) => {
+        if (!isCurrent()) return;
+        reconnecting = false;
+        if (useApp.getState().quitting || useApp.getState().installing) return;
+        term.writeln(
+          `${text("[重新连接失败]")} ${terminalText(errorText(error))}`,
+        );
+        term.writeln(hint());
+        term.scrollToBottom();
+      });
+      return false;
+    });
+    const poll = async () => {
+      try {
+        const batch = await track(
+          execId
+            ? Backend.PollContainerTerminal(
+                session.id,
+                session.generation,
+                execId,
+                after,
+              )
+            : Backend.PollTerminal(session.id, session.generation, after),
+        );
+        if (!isCurrent()) return;
+        if (batch.reset) {
+          term.reset();
+          annotations.current?.reset();
+          term.writeln(text("[已恢复最近的终端历史，更早输出已超出缓冲区]"));
+        }
+        const chunks = batch.chunks ?? [];
+        for (const chunk of chunks) {
+          if (!isCurrent()) return;
+          await new Promise<void>((resolve) =>
+            term.write(base64ToBytes(chunk.data), resolve),
+          );
+          after = chunk.sequence;
+        }
+        // 再发一次 after 确认尾块，再追加本地断线提示。
+        if (batch.closed && chunks.length === 0) {
+          drained = true;
+          failure = batch.error;
+          showStatus();
+          return;
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        drained = true;
+        failure = errorText(error);
+        if (execId) report(error);
+        else {
+          showStatus();
+          if (!disconnected)
+            term.writeln(
+              `\r\n${text("连接错误详情")}：${terminalText(failure)}`,
+            );
+        }
+        return;
+      }
+      if (isCurrent()) timer = setTimeout(() => void poll(), 16);
+    };
+    showStatus();
+    sendSize();
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      for (const request of pending) void request.cancel().catch(() => {});
+      onData.dispose();
+      onBinary.dispose();
+      term.attachCustomKeyEventHandler(() => true);
+      refreshStatus.current = undefined;
+      sendTerminalSize.current = undefined;
+    };
   }, [session.id, session.generation, execId]);
+
+  useEffect(() => {
+    refreshStatus.current?.();
+  }, [session.status, session.error, profileAvailable]);
   useEffect(() => {
     const term = terminal.current;
     if (!term) return;
@@ -295,6 +479,7 @@ export function TerminalView({
     settings.show_timestamps,
     settings.trigger_highlights,
   ]);
+
   async function paste() {
     const target = terminal.current;
     const version = ++pasteVersion.current;
@@ -303,7 +488,7 @@ export function TerminalView({
       target === terminal.current &&
       version === pasteVersion.current &&
       currentActive.current &&
-      currentStatus.current === "connected" &&
+      currentSession.current.status === "connected" &&
       document.visibilityState === "visible" &&
       !useApp.getState().quitting;
     if (!isCurrent()) return;

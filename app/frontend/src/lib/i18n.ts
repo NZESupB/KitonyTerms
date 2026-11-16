@@ -120,9 +120,10 @@ export const english = {
   连接已断开: "Connection disconnected",
   重新连接: "Reconnect",
   打开连接管理: "Open connections",
-  "将在新标签页重新连接。": "Reconnect in a new tab.",
-  "将在新标签页重新连接，旧会话及未保存内容将保留。":
-    "Reconnect in a new tab. The old session and unsaved content will be kept.",
+  "[连接已断开]": "[Connection disconnected]",
+  "按 Enter 重新连接。": "Press Enter to reconnect.",
+  "[正在重新连接……]": "[Reconnecting…]",
+  "[重新连接失败]": "[Reconnection failed]",
   "将建立新的 SSH 会话，不会恢复原来的 Shell 或进程。":
     "This creates a new SSH session; the original shell and processes will not be restored.",
   "此会话的连接配置已删除或改名，请在连接管理中选择或新建连接。":

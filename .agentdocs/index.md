@@ -21,6 +21,7 @@
 - [界面字体与更新代理](workflow/261016-ui-font-and-update-proxy.md)：界面字体族/界面字号缩放与更新代理已实现并通过门禁；真实代理链路与非 100% 缩放的逐屏核对待人工验收。
 
 ## 最近归档
+- [当前终端 Enter 重连](workflow/done/261116-terminal-reconnect.md)：同会话 ID 新 generation、终端内 Enter 重连、历史及草稿保护完成；Go/绑定全门禁、最后全前端 47 项测试与浏览器 26 项断言通过。原生 WebView 与真实远端联合验收另行执行。
 - [Wails 3.1.0、终端字体与交互反馈](workflow/done/261111-wails-font-motion.md)：CLI/Go/runtime及检查同步；WKWebView离屏Canvas本地字体度量错误改用xterm自带DOM策略，字体与布局更新拒绝迟到结果；控件120–160ms反馈完成。统一门禁/47前端测试、原生组件180项、桌面及手机仿真各180项+23动效检查通过；macOS ARM64实际启动/6项IPC设置检查通过，Windows双架构仅编译。真实SSH/设备及其它平台边界见归档。
 - [Rust退出与GitHub打包](workflow/done/261110-remove-rust-github-package.md)：提交`d3e8f68`推送dev；Wails预发布`v0.1.18`（run 42807234257）11项任务成功，27项/117,274,203字节实际下载核验通过。保留v0.1.17稳定版、main及旧引用；正式升级、系统认证、真机与性能验收仍开放。
 

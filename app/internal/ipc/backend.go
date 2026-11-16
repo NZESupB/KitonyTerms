@@ -252,6 +252,19 @@ func (b *Backend) Connect(profileName string) (model.SessionSnapshot, error) {
 	defer done()
 	return b.manager.Connect(profileName)
 }
+func (b *Backend) Reconnect(id, generation string) (model.SessionSnapshot, error) {
+	done, err := b.beginProtectedOperation()
+	if err != nil {
+		return model.SessionSnapshot{}, err
+	}
+	defer done()
+	snapshot, err := b.manager.Reconnect(id, generation)
+	if err != nil {
+		return model.SessionSnapshot{}, err
+	}
+	b.edits.StopSession(id, generation)
+	return snapshot, nil
+}
 func (b *Backend) GetSessions() ([]model.SessionSnapshot, error) {
 	if err := b.check(); err != nil {
 		return nil, err

@@ -229,6 +229,10 @@ export function ReadText(id: string, generation: string, path: string): $Cancell
     return $Call.ByID(3416339716, id, generation, path);
 }
 
+export function Reconnect(id: string, generation: string): $CancellablePromise<model$0.SessionSnapshot> {
+    return $Call.ByID(2314198724, id, generation);
+}
+
 export function RemovePaths(id: string, generation: string, targets: string[] | null): $CancellablePromise<void> {
     return $Call.ByID(249214261, id, generation, targets);
 }

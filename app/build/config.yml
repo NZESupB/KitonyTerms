@@ -7,12 +7,12 @@ info:
   description: "KitonyTerms"
   copyright: "© 2026 KitonyTerms"
   comments: "Go/Wails/React"
-  version: "0.2.2"
+  version: "0.2.3"
 
 ios:
   bundleID: "com.kitonyterms.app"
   displayName: "KitonyTerms"
-  version: "0.2.2"
+  version: "0.2.3"
   company: "Kitony"
   comments: "KitonyTerms"
 

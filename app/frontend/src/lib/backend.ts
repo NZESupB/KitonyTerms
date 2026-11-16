@@ -33,6 +33,7 @@ type State = {
   apply: (snapshot: ConfigSnapshot) => void;
   select: (id: string | null) => void;
   openSession: (session: SessionSnapshot) => void;
+  replaceSession: (previous: SessionSnapshot, session: SessionSnapshot) => void;
   report: (error: unknown) => void;
   setProtected: (owner: string, active: boolean) => void;
 };
@@ -61,6 +62,15 @@ export const useApp = create<State>((set) => ({
         ? [...state.sessions]
         : [...state.sessions, session],
       active: session.id,
+    })),
+  replaceSession: (previous, session) =>
+    set((state) => ({
+      // 已刷新到新代次时保留更晚的状态；关闭后不重新插入标签页。
+      sessions: state.sessions.map((value) =>
+        value.id === previous.id && value.generation === previous.generation
+          ? session
+          : value,
+      ),
     })),
   report: (error) =>
     set((state) =>

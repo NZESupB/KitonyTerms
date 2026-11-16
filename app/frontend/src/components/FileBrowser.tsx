@@ -168,24 +168,38 @@ export function FileBrowser({
   }, []);
   useEffect(() => {
     const requests = pending.current;
+    loaded.current = false;
+    followedRevision.current = undefined;
+    completed.current.clear();
+    setBusy(false);
+    setUploading(false);
+    setTransfers([]);
+    setDirectory(null);
+    setSelected([]);
+    setAction(null);
     return () => {
       invalidate();
       for (const request of requests) void request.cancel().catch(() => {});
+    };
+  }, [owner, invalidate, setBusy, setUploading, setTransfers, setAction]);
+  useEffect(
+    () => () => {
       useApp.setState((state) => {
         const dirtyEditors = { ...state.dirtyEditors };
-        delete dirtyEditors[owner];
+        delete dirtyEditors[session.id];
         return { dirtyEditors };
       });
-    };
-  }, [owner, invalidate]);
+    },
+    [session.id],
+  );
   useEffect(() => {
     useApp.setState((state) => ({
       dirtyEditors: {
         ...state.dirtyEditors,
-        [owner]: editing !== null && draft !== editing.content,
+        [session.id]: editing !== null && draft !== editing.content,
       },
     }));
-  }, [owner, editing, draft]);
+  }, [session.id, editing, draft]);
 
   const syncDirectory = useCallback(
     async (target: string, automatic: boolean) => {

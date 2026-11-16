@@ -120,22 +120,26 @@ func (m *Manager) Connect(name string) (model.SessionSnapshot, error) {
 	if err != nil {
 		return model.SessionSnapshot{}, err
 	}
-	ctx, cancel := context.WithCancel(m.ctx)
-	s := &Session{id: randomID(), generation: randomID(), profile: p, status: "connecting", ctx: ctx, cancel: cancel, done: make(chan struct{}), output: newOutput(), shell: shellintegration.NewObserver()}
+	s := m.newSession(randomID(), p)
 	m.mu.Lock()
 	if m.closed || m.draining != "" || m.ctx.Err() != nil {
 		m.mu.Unlock()
-		cancel()
+		s.cancel()
 		return model.SessionSnapshot{}, fmt.Errorf("应用正在关闭")
 	}
 	if len(m.sessions) >= 32 {
 		m.mu.Unlock()
-		cancel()
+		s.cancel()
 		return model.SessionSnapshot{}, fmt.Errorf("最多保留 32 个会话，请关闭不用的连接")
 	}
 	m.sessions[s.id] = s
 	m.addWorkerLocked()
 	m.mu.Unlock()
+	m.startSession(s)
+	return s.snapshot(), nil
+}
+
+func (m *Manager) startSession(s *Session) {
 	go func() {
 		defer m.workerDone()
 		defer close(s.done)
@@ -153,19 +157,23 @@ func (m *Manager) Connect(name string) (model.SessionSnapshot, error) {
 		m.notify()
 	}()
 	m.notify()
-	return s.snapshot(), nil
 }
 func (m *Manager) CloseSession(id, generation string) error {
-	s, err := m.Get(id, generation)
-	if err != nil {
-		return err
-	}
 	m.mu.Lock()
+	if m.closed || m.draining != "" {
+		m.mu.Unlock()
+		return fmt.Errorf("连接管理器正在收尾")
+	}
+	s := m.sessions[id]
+	if s == nil || s.generation != generation {
+		m.mu.Unlock()
+		return fmt.Errorf("会话或连接代次已失效")
+	}
 	delete(m.sessions, id)
-	m.mu.Unlock()
 	s.mu.Lock()
 	s.status = "closing"
 	s.mu.Unlock()
+	m.mu.Unlock()
 	s.cancel()
 	m.notify()
 	return nil
