@@ -1631,6 +1631,36 @@ small {
   min-width: 0;
   overflow: hidden;
 }
+.terminal-connection-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-scale));
+  line-height: 20px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.terminal-connection-spinner {
+  flex: 0 0 auto;
+  color: var(--accent);
+  animation: terminal-connection-spin 800ms linear infinite;
+}
+@keyframes terminal-connection-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-connection-spinner {
+    animation: none;
+  }
+}
 .terminal-gutter {
   flex: 0 0 auto;
   white-space: pre;

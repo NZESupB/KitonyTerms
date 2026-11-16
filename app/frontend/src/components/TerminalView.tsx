@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Copy, ClipboardPaste, History, MousePointer2 } from "lucide-react";
+import {
+  Copy,
+  ClipboardPaste,
+  History,
+  LoaderCircle,
+  MousePointer2,
+} from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -63,6 +69,14 @@ export function TerminalView({
   const refreshStatus = useRef<() => void>();
   const container = useRef<HTMLDivElement>(null);
   const [hasSelection, setHasSelection] = useState(false);
+  const [pendingReconnect, setPendingReconnect] = useState<string | null>(null);
+  const connectionOwner = `${session.id}:${session.generation}`;
+  const showConnecting =
+    active &&
+    !execId &&
+    !!onReconnect &&
+    (session.status === "connecting" ||
+      (session.status === "closed" && pendingReconnect === connectionOwner));
   const terminal = useRef<Terminal>();
   const currentSession = useRef(session);
   currentSession.current = session;
@@ -207,7 +221,6 @@ export function TerminalView({
     let after = "0";
     let drained = false;
     let disconnected = false;
-    let connecting = false;
     let reconnecting = false;
     let failure = "";
     let available: boolean | undefined;
@@ -242,10 +255,6 @@ export function TerminalView({
       if (!isCurrent() || execId || !reconnectOptions.current.onReconnect)
         return;
       const current = currentSession.current;
-      if (current.status === "connecting" && !connecting) {
-        connecting = true;
-        term.writeln(`\r\n[${text("连接中")}]`);
-      }
       if (current.status !== "closed" || !drained) return;
       if (!disconnected) {
         disconnected = true;
@@ -371,11 +380,11 @@ export function TerminalView({
       )
         return false;
       reconnecting = true;
-      term.writeln(`\r\n${text("[正在重新连接……]")}`);
-      term.scrollToBottom();
+      setPendingReconnect(`${session.id}:${session.generation}`);
       void options.onReconnect!().catch((error: unknown) => {
         if (!isCurrent()) return;
         reconnecting = false;
+        setPendingReconnect(null);
         if (useApp.getState().quitting || useApp.getState().installing) return;
         term.writeln(
           `${text("[重新连接失败]")} ${terminalText(errorText(error))}`,
@@ -517,6 +526,20 @@ export function TerminalView({
           className={`terminal-instance ${active ? "is-active" : ""} ${settings.terminal_wrap ? "" : "no-wrap"}`}
           aria-label={t("{name} 终端", { name: session.title })}
         >
+          {showConnecting && (
+            <div
+              className="terminal-connection-status"
+              role="status"
+              aria-live="polite"
+            >
+              <LoaderCircle
+                className="terminal-connection-spinner"
+                size={14}
+                aria-hidden="true"
+              />
+              <span>{t("连接中")}</span>
+            </div>
+          )}
           <div
             ref={gutter}
             className="terminal-gutter"

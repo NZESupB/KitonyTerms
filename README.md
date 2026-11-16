@@ -6,9 +6,9 @@ KitonyTerms 是基于 **Go / Wails v3.1.0 / React** 的跨平台 SSH 与服务�
 
 ## 版本与下载
 
-当前正式稳定版为 **v0.2.3**，由 GitHub Release 的 `/releases/latest` 提供；历史 `v0.2.2`、`v0.2.1`、`v0.2.0`、`v0.1.19`、`v0.1.18` 等发布页和资产保留，可按版本选择下载。
+当前正式稳定版为 **v0.2.4**，由 GitHub Release 的 `/releases/latest` 提供；历史 `v0.2.3`、`v0.2.2`、`v0.2.1`、`v0.2.0`、`v0.1.19`、`v0.1.18` 等发布页和资产保留，可按版本选择下载。
 
-- [v0.2.3 正式版](https://github.com/NZESupB/KitonyTerms/releases/tag/v0.2.3)提供多平台安装包；本版使用 Go / Wails v3.1.0 / React。
+- [v0.2.4 正式版](https://github.com/NZESupB/KitonyTerms/releases/tag/v0.2.4)提供多平台安装包；本版使用 Go / Wails v3.1.0 / React。
 - [v0.1.18 Wails 预发布版](https://github.com/NZESupB/KitonyTerms/releases/tag/v0.1.18)与 [v0.1.17 稳定版](https://github.com/NZESupB/KitonyTerms/releases/tag/v0.1.17)保留为历史版本，旧版说明用于解释原升级路径，不代表当前 Latest。
 
 稳定客户端读取 `/releases/latest`，可发现本正式版。Wails 版已有原生 CI 打包、领域回归和实际下载包核验，但尚不能承诺旧正式版在全部平台无缝升级；首次迁移请先阅读“从 v0.1.17 升级”。
@@ -27,7 +27,7 @@ KitonyTerms 是基于 **Go / Wails v3.1.0 / React** 的跨平台 SSH 与服务�
 
 从对应 Release 的 **Assets** 下载与设备架构匹配的文件。文件名中的 `x64` 表示 Intel/AMD 64 位，`aarch64` 表示 ARM64。
 
-| 平台 | v0.2.3 产物 | 前提与安装方式 |
+| 平台 | v0.2.4 产物 | 前提与安装方式 |
 |---|---|---|
 | Windows x64 / ARM64 | `windows-*-setup.exe`、`windows-*.zip` | 需要 WebView2；安装版运行 Setup，便携版解压后运行 `kitonyterms.exe`。未做 Authenticode 代码签名 |
 | macOS Apple Silicon / Intel | `macos-aarch64.dmg`、`macos-x64.dmg` | **macOS 15.0 或以上**；打开 DMG，将 `KitonyTerms.app` 拖到固定应用目录后运行。当前为 ad-hoc 签名，未公证 |
@@ -35,7 +35,7 @@ KitonyTerms 是基于 **Go / Wails v3.1.0 / React** 的跨平台 SSH 与服务�
 | Android ARM64 | `android-aarch64.apk`、`android-aarch64.aab` | APK 用于安装；最低声明 API 24，不支持 x86/x86_64。AAB 是分发输入，不能直接当 APK 安装 |
 | iOS ARM64 | `ios-aarch64-unsigned.ipa` | iOS 15.0 或以上的设备包；**无签名 IPA 不能直接安装**，需要自行选择侧载工具并完成签名，不是 App Store 包 |
 
-完整文件名以 `kitonyterms-v0.2.3-` 开头。下载页同时提供 `SHA256SUMS`、`update-manifest.json`、`build-*.json` 和 `verification-*.json`。安装前可用 macOS 的 `shasum -a 256`、Linux 的 `sha256sum` 或 Windows 的 `Get-FileHash -Algorithm SHA256` 计算安装包摘要，与 `SHA256SUMS` 对应行比较。
+完整文件名以 `kitonyterms-v0.2.4-` 开头。下载页同时提供 `SHA256SUMS`、`update-manifest.json`、`build-*.json` 和 `verification-*.json`。安装前可用 macOS 的 `shasum -a 256`、Linux 的 `sha256sum` 或 Windows 的 `Get-FileHash -Algorithm SHA256` 计算安装包摘要，与 `SHA256SUMS` 对应行比较。
 
 macOS 遇到系统安全提示时，按系统提示核实来源并在“隐私与安全性”中处理。不要通过关闭系统安全保护来安装。需要应用内更新时，应先将应用移出只读 DMG；不要直接从镜像或临时转移目录长期运行。
 
@@ -102,9 +102,9 @@ Android `v0.1.17` 与本次 `v0.1.18` 已通过实际 APK 包名、签名证书�
 
 ### 自动检查更新
 
-稳定版更新器请求 GitHub `/releases/latest`，并要求 Release 为非 draft、非 prerelease；随后核对版本、通道、目标包、大小、摘要与构建身份。当前正式版为 `v0.2.3`，`v0.1.18` 等历史预发布版不会被稳定更新器选用。
+稳定版更新器请求 GitHub `/releases/latest`，并要求 Release 为非 draft、非 prerelease；随后核对版本、通道、目标包、大小、摘要与构建身份。当前正式版为 `v0.2.4`，`v0.1.18` 等历史预发布版不会被稳定更新器选用。
 
-- 安装或试用当前 Wails 正式版：从上方 `v0.2.3` 页面手动下载，按备份流程安装；已安装的稳定客户端也可能通过应用内更新发现本版。
+- 安装或试用当前 Wails 正式版：从上方 `v0.2.4` 页面手动下载，按备份流程安装；已安装的稳定客户端也可能通过应用内更新发现本版。
 - 历史 `v0.1.17` 客户端的检测规则由已安装的旧程序决定，不能通过修改新版本源码或客户端设置来改写。
 - 发布稳定版并保持兼容的 schema 1 更新清单与有效目标包，是稳定更新器发现新版的前提；仅把预发布标为 Latest 不能满足客户端的全部校验。
 - 即使收到稳定更新，保存未上传内容、确认退出/重启、Windows UAC 和必要的安装目录授权仍可能需要用户操作。

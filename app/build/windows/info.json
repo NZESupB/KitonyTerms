@@ -1,12 +1,12 @@
 {
 	"fixed": {
-		"file_version": "0.2.3.0",
-		"product_version": "0.2.3.0"
+		"file_version": "0.2.4.0",
+		"product_version": "0.2.4.0"
 	},
 	"info": {
 		"0409": {
-			"ProductVersion": "0.2.3.0",
-			"FileVersion": "0.2.3.0",
+			"ProductVersion": "0.2.4.0",
+			"FileVersion": "0.2.4.0",
 			"CompanyName": "Kitony",
 			"FileDescription": "KitonyTerms",
 			"LegalCopyright": "© 2026 KitonyTerms",
@@ -16,8 +16,8 @@
 			"Comments": "Wails stable build"
 		},
 		"0804": {
-			"ProductVersion": "0.2.3.0",
-			"FileVersion": "0.2.3.0",
+			"ProductVersion": "0.2.4.0",
+			"FileVersion": "0.2.4.0",
 			"CompanyName": "Kitony",
 			"FileDescription": "KitonyTerms",
 			"LegalCopyright": "© 2026 KitonyTerms",

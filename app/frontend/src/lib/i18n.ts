@@ -122,7 +122,6 @@ export const english = {
   打开连接管理: "Open connections",
   "[连接已断开]": "[Connection disconnected]",
   "按 Enter 重新连接。": "Press Enter to reconnect.",
-  "[正在重新连接……]": "[Reconnecting…]",
   "[重新连接失败]": "[Reconnection failed]",
   "将建立新的 SSH 会话，不会恢复原来的 Shell 或进程。":
     "This creates a new SSH session; the original shell and processes will not be restored.",

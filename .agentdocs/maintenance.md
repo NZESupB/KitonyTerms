@@ -21,6 +21,8 @@ bash -n .github/scripts/package-ios-ipa.sh
 
 Python脚本用`python3 -B`，不留下pycache。发布通过[workflow](../.github/workflows/release.yml)，清单版本来自frontend/package.json，dev手动构建在所有job通过后才创建预发布tag；现有Release不覆盖。
 
+用户确认的发行说明风格：`.github/release-notes.md` 只写单次更新的重点内容，以简短条目描述用户可见变化，不重复平台清单、构建细节、验证台账和通用说明；详细材料沿用 README 与平台验证记录。
+
 ## 定向回归
 
 在app/执行：
